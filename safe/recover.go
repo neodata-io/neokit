@@ -1,3 +1,9 @@
+// Package safe guards background work that runs outside a request's own
+// recover middleware — schedulers, event hooks, detached goroutines — so a
+// panic there is logged with a stack trace and contained, rather than
+// crashing the whole process or silently ending that one goroutine forever.
+// Recover guards a single run; Go (see supervise.go) keeps a goroutine alive
+// across repeated panics.
 package safe
 
 import (

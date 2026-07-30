@@ -1,3 +1,11 @@
+// Package httpc is the HTTP client core: a BaseClient for JSON APIs with
+// built-in retries, bearer-token injection/refresh, and bounded reads; a
+// Fault classification (see fault.go) that turns an error into "what should
+// the caller do about it" instead of a status code to grep; and an
+// SSRF-guarded transport (see ssrf.go) for fetching URLs a caller only
+// partly controls. NewHTTPClient and NewWebSocketHTTPClient (see http.go)
+// are the two sanctioned ways to obtain an *http.Client — both carry the
+// retry/tracing transport a hand-rolled client would silently lose.
 package httpc
 
 import (

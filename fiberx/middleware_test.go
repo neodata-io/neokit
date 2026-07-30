@@ -93,11 +93,10 @@ func TestUnroutedRequestsDoNotMintSeries(t *testing.T) {
 // package cannot know them); the structural cases (304, 101) are silenced
 // regardless of QuietPath.
 func TestSkipLogSilencesQuietedPaths(t *testing.T) {
-	prev := QuietPath
-	QuietPath = func(path string) bool {
+	e := NewErrors(nil)
+	e.QuietPath = func(path string) bool {
 		return path == apiBase+"/health" || path == apiBase+"/monitor/services"
 	}
-	t.Cleanup(func() { QuietPath = prev })
 
 	cases := []struct {
 		name   string
@@ -115,7 +114,7 @@ func TestSkipLogSilencesQuietedPaths(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := skipLog(tc.path, tc.status); got != tc.want {
+			if got := e.skipLog(tc.path, tc.status); got != tc.want {
 				t.Errorf("skipLog(%q, %d) = %v, want %v", tc.path, tc.status, got, tc.want)
 			}
 		})
@@ -125,14 +124,12 @@ func TestSkipLogSilencesQuietedPaths(t *testing.T) {
 // With no QuietPath configured (the default a caller with no noisy routes of
 // its own gets for free), only the structural cases are silenced.
 func TestSkipLogWithNoQuietPathConfigured(t *testing.T) {
-	prev := QuietPath
-	QuietPath = nil
-	t.Cleanup(func() { QuietPath = prev })
+	e := NewErrors(nil)
 
-	if skipLog(apiBase+"/health", 200) {
+	if e.skipLog(apiBase+"/health", 200) {
 		t.Error("skipLog silenced a path with no QuietPath configured")
 	}
-	if !skipLog(apiBase+"/home", 304) {
+	if !e.skipLog(apiBase+"/home", 304) {
 		t.Error("skipLog must still silence 304s with no QuietPath configured")
 	}
 }

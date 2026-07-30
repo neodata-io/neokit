@@ -25,6 +25,16 @@ type DomainMapper func(err error) (status int, message, code string, ok bool)
 // simply means every error falls straight through to the generic path.
 type Errors struct {
 	mapper DomainMapper
+
+	// QuietPath reports whether a successful (non-4xx/5xx) request on the given
+	// route template is pure noise that would drown the useful log lines — a
+	// health check or a periodic status sweep a caller's own infrastructure polls
+	// on a timer. Nil (the default) means MetricsAndLogger only silences the
+	// structural cases (304, 101); a caller with noisy routes of its own sets
+	// this once, right after NewErrors. This is the same seam as DomainMapper:
+	// the route names a caller wants silenced are its own, not something this
+	// package can know.
+	QuietPath func(path string) bool
 }
 
 // NewErrors builds an Errors bound to m. m may be nil for a caller with no

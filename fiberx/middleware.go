@@ -100,7 +100,7 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 		// Logging is for humans, so it is noisier to be quieter: skip the traffic
 		// that carries no signal (metric scrapes, health probes, 304s) and only
 		// escalate the level for real problems.
-		if skipLog(path, status) {
+		if e.skipLog(path, status) {
 			return err
 		}
 
@@ -147,25 +147,16 @@ func observeDuration(ctx context.Context, method, path string, secs float64) {
 	obs.Observe(secs)
 }
 
-// QuietPath reports whether a successful (non-4xx/5xx) request on the given
-// route template is pure noise that would drown the useful log lines — a
-// health check or a periodic status sweep a caller's own infrastructure polls
-// on a timer. Left nil (the default), skipLog only silences the structural
-// cases below; a caller with noisy routes of its own sets this once at
-// startup. This is the same seam as DomainMapper: the route names a caller
-// wants silenced are its own, not something this package can know.
-var QuietPath func(path string) bool
-
 // skipLog reports whether a request is pure noise that would drown the useful
 // lines: not-modified/switching-protocols responses (browser caching, SSE
-// upgrades), plus whatever QuietPath calls out. Anything 4xx/5xx is always
+// upgrades), plus whatever e.QuietPath calls out. Anything 4xx/5xx is always
 // logged so failures on these paths still surface.
-func skipLog(path string, status int) bool {
+func (e *Errors) skipLog(path string, status int) bool {
 	if status >= 400 {
 		return false
 	}
 	if status == 304 || status == 101 {
 		return true
 	}
-	return QuietPath != nil && QuietPath(path)
+	return e.QuietPath != nil && e.QuietPath(path)
 }
