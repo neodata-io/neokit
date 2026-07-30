@@ -18,10 +18,11 @@ const goSafeRestartBackoff = 5 * time.Second
 // background job is logged and the goroutine is respawned after a short backoff,
 // instead of crashing the whole process (which would drop every live SSE stream and
 // the dashboard) or — the trap a plain one-shot recover falls into — silently dying
-// so that one subsystem (peak tracking, energy accumulation, charge nudges) stops
-// for the rest of the process lifetime with only a single log line. A clean return
-// (fn finished, e.g. its ctx was cancelled on shutdown) ends the loop. These
-// goroutines run outside Fiber's recover middleware, so they need their own guard.
+// so that one subsystem (a metering loop, a usage accumulator, a notification
+// scheduler) stops for the rest of the process lifetime with only a single log
+// line. A clean return (fn finished, e.g. its ctx was cancelled on shutdown) ends
+// the loop. These goroutines run outside Fiber's recover middleware, so they need
+// their own guard.
 func Go(name string, fn func()) {
 	goSafeWG.Add(1)
 	go func() {

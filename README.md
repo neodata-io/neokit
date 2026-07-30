@@ -1,8 +1,8 @@
 # neokit
 
-Small, domain-free Go building blocks extracted from [NeoGate](https://github.com/neodata-io/NeoGate):
-structured logging, an HTTP client with retries and SSRF guarding, GoFiber helpers,
-a stale-while-revalidate cache, and a SQLite migration runner.
+Small, domain-free Go building blocks extracted from NeoGate, a private household
+server project: structured logging, an HTTP client with retries and SSRF guarding,
+GoFiber helpers, a stale-while-revalidate cache, and a SQLite migration runner.
 
 Pre-1.0: the API may change between `v0.x` releases.
 

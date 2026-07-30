@@ -12,7 +12,7 @@ import (
 // This file owns how a plugin gets an *http.Client. There are exactly two
 // sanctioned ways — NewHTTPClient for everything that speaks HTTP, and
 // NewWebSocketHTTPClient for a WebSocket opening handshake — and a bare
-// &http.Client{} is rejected by the conventions test in internal/plugin.
+// &http.Client{} is rejected by the host's plugin conventions test.
 //
 // The reason is invisible until it bites: RetryTransport is also the seam that
 // installs otelhttp (see transport.go), so a hand-rolled client silently loses
@@ -24,8 +24,8 @@ import (
 // sanctioned paths agree.
 //
 // A plugin overrides it only with a reason worth writing down: an LLM completion
-// (ollama) or an interactive auth flow (fluvius) legitimately outruns it. "The
-// upstream felt slow once" does not.
+// or an interactive OAuth handshake legitimately outruns it. "The upstream felt
+// slow once" does not.
 const DefaultHTTPTimeout = 15 * time.Second
 
 // NoTimeout disables the client's overall timeout. Use it only where the caller's
@@ -56,9 +56,9 @@ type HTTPOptions struct {
 // [RetryTransport] — and therefore its otel client spans. It is the only
 // sanctioned way to build a client outside [BaseClient]:
 //
-//	http: neogate.NewHTTPClient(neogate.HTTPOptions{})                       // house default
-//	http: neogate.NewHTTPClient(neogate.HTTPOptions{Timeout: 3 * time.Minute}) // documented exception
-//	http: neogate.NewHTTPClient(neogate.HTTPOptions{Timeout: neogate.NoTimeout}) // long-poll; ctx bounds it
+//	http: httpc.NewHTTPClient(httpc.HTTPOptions{})                       // house default
+//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: 3 * time.Minute}) // documented exception
+//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: httpc.NoTimeout}) // long-poll; ctx bounds it
 //
 // For a WebSocket handshake use [NewWebSocketHTTPClient] instead — the retry and
 // tracing wrappers wrap the response body, which a WS upgrade cannot survive.
@@ -95,8 +95,8 @@ func NewHTTPClient(opts HTTPOptions) *http.Client {
 // thumbnails, its REST API) with a normal [NewHTTPClient], so those requests keep
 // their retries and spans.
 //
-//	c.ws = neogate.NewWebSocketHTTPClient(&tls.Config{InsecureSkipVerify: true}) // self-signed LAN device
-//	c.api = neogate.NewHTTPClient(neogate.HTTPOptions{})
+//	c.ws = httpc.NewWebSocketHTTPClient(&tls.Config{InsecureSkipVerify: true}) // self-signed LAN device
+//	c.api = httpc.NewHTTPClient(httpc.HTTPOptions{})
 func NewWebSocketHTTPClient(tlsConfig *tls.Config) *http.Client {
 	transport := http.DefaultTransport
 	if tlsConfig != nil {
@@ -116,10 +116,11 @@ func NewWebSocketHTTPClient(tlsConfig *tls.Config) *http.Client {
 }
 
 // InsecureTLSTransport returns a clone of http.DefaultTransport with certificate
-// verification disabled — for the self-signed LAN devices NeoGate integrates
-// (UniFi consoles, Proxmox nodes, webOS TVs). Cloning preserves proxy support,
-// HTTP/2, connection pooling and the handshake/idle timeouts; only verification
-// changes. Falls back to a bare transport only if DefaultTransport was replaced.
+// verification disabled — for the self-signed LAN devices a host integrates
+// (network-appliance consoles, hypervisor management UIs, smart TVs). Cloning
+// preserves proxy support, HTTP/2, connection pooling and the handshake/idle
+// timeouts; only verification changes. Falls back to a bare transport only if
+// DefaultTransport was replaced.
 func InsecureTLSTransport() *http.Transport {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
@@ -142,7 +143,7 @@ func InsecureTLSTransport() *http.Transport {
 //	resp, err := c.http.Do(req)
 //	if err != nil { return fmt.Errorf("myservice: %w", Redact(err)) }
 //	defer resp.Body.Close()
-//	if err := neogate.CheckStatus(ServiceID, resp); err != nil { return err }
+//	if err := httpc.CheckStatus(ServiceID, resp); err != nil { return err }
 //
 // The error body is bounded (8 KiB) for the same reason BaseClient bounds it: a
 // misbehaving upstream must not stream megabytes into an error string.
@@ -170,7 +171,7 @@ func CheckStatus(service string, resp *http.Response) error {
 //	if err != nil { return err }
 //	if status == http.StatusForbidden { return c.reauth(ctx) }   // caller's own branch
 //	if status < 200 || status >= 300 {
-//	    return fmt.Errorf("%s fetch: %w", ServiceID, neogate.StatusError(ServiceID, status))
+//	    return fmt.Errorf("%s fetch: %w", ServiceID, httpc.StatusError(ServiceID, status))
 //	}
 //
 // The body is deliberately omitted: an upstream body can carry credentials, and by
@@ -191,7 +192,7 @@ func StatusError(service string, status int) error {
 //
 //	resp, err := c.http.Do(req)
 //	if err != nil {
-//	    return fmt.Errorf("%s request: %w", ServiceID, neogate.Redact(err))
+//	    return fmt.Errorf("%s request: %w", ServiceID, httpc.Redact(err))
 //	}
 //
 // It is a no-op for errors that carry no URL, so it is always safe to apply.

@@ -8,8 +8,8 @@ import (
 // ErrNotFound is the shared sentinel a plugin returns (typically wrapped) when a
 // remote account or resource does not exist. The host matches it with
 // errors.Is, so plugins must return this value rather than a private error to
-// participate in that contract. internal/domain re-exports it as
-// domain.ErrNotFound for host-side use.
+// participate in that contract. A host's own domain package may re-export it
+// under a domain-specific name for host-side use.
 var ErrNotFound = errors.New("not found")
 
 // ErrAlreadyExists is the shared sentinel a plugin returns (typically wrapped)
@@ -22,14 +22,6 @@ var ErrNotFound = errors.New("not found")
 // Failed and the admin resolves the clash, e.g. by renaming, then retries just
 // that service) — it is never auto-resolved by silently rewriting the identity.
 var ErrAlreadyExists = errors.New("already exists")
-
-// ErrNotSaveable is the shared sentinel a plugin returns (typically wrapped) when
-// the thing playing right now has no stable identity worth saving as a favorite —
-// a local queue, an analog input — or when the player's firmware offers no way to
-// save one at all. The host maps it to a 422 and the UI simply stops offering the
-// action; the two cases are deliberately indistinguishable, because to the
-// household they are the same answer: "this can't be kept".
-var ErrNotSaveable = errors.New("not saveable")
 
 // IsConflict reports whether err is (or wraps) an HTTP 409 Conflict [APIError].
 // It is the shared way for a plugin to recognise that a create failed because

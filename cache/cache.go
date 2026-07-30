@@ -1,9 +1,9 @@
 // Package cache provides a tiny in-memory TTL cache with per-key single-flight
 // and stale-while-revalidate refreshes.
 //
-// It exists to collapse repeated home-tile reads — the same tile polled by
-// several devices at once — into a single upstream call per window, protecting
-// rate-limited vendor clouds and making tiles feel instant.
+// It exists to collapse repeated dashboard reads — the same view polled by
+// several clients at once — into a single upstream call per window, protecting
+// rate-limited vendor clouds and making views feel instant.
 package cache
 
 import (
@@ -129,7 +129,7 @@ func (c *Cache) Invalidate(key string) {
 //   - Stale — the previous value is returned immediately and a single background
 //     revalidation is started. Nobody waits on a TTL boundary. This is what keeps
 //     a slow upstream from periodically stalling every viewer at once: the sweep
-//     behind /api/access/status costs seconds when the television is off, and
+//     behind a device-status endpoint costs seconds when a device is offline, and
 //     before this it was paid on the request path, by whoever happened to poll
 //     first, while everyone else queued behind the same lock.
 //   - Cold (never loaded, or just invalidated) — fn runs synchronously, once, with

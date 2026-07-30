@@ -88,16 +88,16 @@ func (c *BaseClient) Bytes(ctx context.Context, method, url string, maxBytes int
 // FetchImage GETs url with hc and returns the body as an [ImageBlob]: it bounds
 // the read at maxBytes (MaxImageBytes when <= 0) and defaults a missing
 // Content-Type to image/jpeg. By default it sends no auth — the usual case for
-// public cover-art CDNs (TMDB, Spotify) — but an optional [AuthFunc] can set
+// public cover-art / media-metadata CDNs — but an optional [AuthFunc] can set
 // request headers for a server that needs a token. It is the equivalent of
 // [BaseClient.Image] for a plugin that talks to art endpoints through a bare
 // *http.Client instead of a BaseClient. The caller is responsible for validating
 // url first (see a caller-side allowlist check) so the proxy can't be pointed at an arbitrary host.
 //
 //	// public CDN, no auth:
-//	return neogate.FetchImage(ctx, c.http, posterURL, 0)
+//	return httpc.FetchImage(ctx, c.http, posterURL, 0)
 //	// server that needs a token header:
-//	return neogate.FetchImage(ctx, c.http, u, 0, func(r *http.Request) { c.addHeaders(r) })
+//	return httpc.FetchImage(ctx, c.http, u, 0, func(r *http.Request) { c.addHeaders(r) })
 func FetchImage(ctx context.Context, hc *http.Client, url string, maxBytes int64, auth ...AuthFunc) (*ImageBlob, error) {
 	if maxBytes <= 0 {
 		maxBytes = MaxImageBytes
@@ -136,9 +136,9 @@ func FetchImage(ctx context.Context, hc *http.Client, url string, maxBytes int64
 // one-liner behind a home-screen thumbnail proxy: a plugin returns the blob
 // straight to the host, which streams it to the browser from a single origin.
 //
-//	func (p *Plugin) MediaThumbnail(ctx context.Context, id string, box neogate.ThumbBox) (*neogate.ImageBlob, error) {
-//	    return p.client.Image(ctx, p.client.URL("/Items/%s/Images/Primary?fillWidth=%d&fillHeight=%d",
-//	        url.PathEscape(id), box.Width, box.Height), 0)
+//	func (c *client) MediaThumbnail(ctx context.Context, id string, width, height int) (*httpc.ImageBlob, error) {
+//	    return c.Image(ctx, c.URL("/Items/%s/Images/Primary?fillWidth=%d&fillHeight=%d",
+//	        url.PathEscape(id), width, height), 0)
 //	}
 //
 // Note the url.PathEscape. A thumbnail id reaches a plugin from an open proxy

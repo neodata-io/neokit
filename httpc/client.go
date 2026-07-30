@@ -87,7 +87,7 @@ const tokenRefreshMargin = time.Minute
 // most once per refresh, and owns all token state — a plugin supplies just its
 // auth call. Use it instead of hand-rolling the mutex + expiry bookkeeping.
 //
-//	bc.Tokens = neogate.NewCachingTokenSource(func(ctx context.Context) (string, time.Duration, error) {
+//	bc.Tokens = httpc.NewCachingTokenSource(func(ctx context.Context) (string, time.Duration, error) {
 //	    return login(ctx) // returns (token, ttl, err)
 //	})
 func NewCachingTokenSource(login LoginFunc) TokenSource {
@@ -145,10 +145,10 @@ func (c *cachingTokenSource) setExpiry(ttl time.Duration) {
 // error wrapping, and auth header injection. Integration clients embed this
 // to avoid duplicating boilerplate.
 //
-//	type client struct { neogate.BaseClient }
+//	type client struct { httpc.BaseClient }
 //
 //	func newClient(url, apiKey string) *client {
-//	    return &client{BaseClient: neogate.NewBaseClient(url, "myservice", neogate.HeaderAuth("X-Api-Key", apiKey))}
+//	    return &client{BaseClient: httpc.NewBaseClient(url, "myservice", httpc.HeaderAuth("X-Api-Key", apiKey))}
 //	}
 type BaseClient struct {
 	BaseURL    string
@@ -169,8 +169,8 @@ type BaseClient struct {
 // To change the budget, replace the client through the same sanctioned
 // constructor rather than hand-rolling one, so the retry/otel transport survives:
 //
-//	bc := neogate.NewBaseClient(url, ServiceID, auth)
-//	bc.HTTPClient = neogate.NewHTTPClient(neogate.HTTPOptions{Timeout: 3 * time.Minute})
+//	bc := httpc.NewBaseClient(url, ServiceID, auth)
+//	bc.HTTPClient = httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: 3 * time.Minute})
 func NewBaseClient(baseURL, service string, auth AuthFunc) BaseClient {
 	return BaseClient{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
@@ -232,7 +232,8 @@ func DoWithTokenRetry(ctx context.Context, ts TokenSource, do func(token string)
 }
 
 // BearerGet issues an authenticated GET and returns the raw status for callers that
-// special-case it (Tesla 408=asleep, Spotify 204=idle), with the SDK's token-retry.
+// special-case it (a vehicle API's 408=asleep, a media API's 204=idle), with the
+// SDK's token-retry.
 func BearerGet(ctx context.Context, hc *http.Client, tokens TokenSource, service, url string) (int, []byte, error) {
 	return DoWithTokenRetry(ctx, tokens, func(token string) (int, []byte, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

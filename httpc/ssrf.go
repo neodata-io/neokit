@@ -22,10 +22,11 @@ import (
 // legitimate. Use it whenever it fits.
 //
 // This file is the answer for the case where it does not. Some upstreams
-// genuinely hand back absolute artwork URLs on public CDNs — BluOS returns one
-// for every streaming source, so rejecting absolute URLs outright would blank
-// the now-playing tile. There the URL cannot be constrained by shape, only by
-// destination, and the check has to happen against the *resolved* address.
+// genuinely hand back absolute artwork URLs on public CDNs — a multi-room audio
+// platform returns one for every streaming source, so rejecting absolute URLs
+// outright would blank the now-playing tile. There the URL cannot be constrained
+// by shape, only by destination, and the check has to happen against the
+// *resolved* address.
 
 // IsPrivateAddr reports whether ip is in one of the address classes an SSRF
 // payload aims at: RFC1918/ULA private space, loopback, link-local (which
@@ -57,7 +58,7 @@ func IsPrivateAddr(ip netip.Addr) bool {
 //
 // Pass it as [HTTPOptions.Transport] so the retry and otel layers still wrap it:
 //
-//	http: neogate.NewHTTPClient(neogate.HTTPOptions{Transport: neogate.SSRFGuardedTransport()})
+//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Transport: httpc.SSRFGuardedTransport()})
 func SSRFGuardedTransport() *http.Transport {
 	dialer := &net.Dialer{}
 	return &http.Transport{

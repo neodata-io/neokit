@@ -47,7 +47,7 @@ func DefaultRetryConfig() RetryConfig {
 // default, so every plugin that embeds BaseClient is resilient automatically; a
 // plugin with a hand-rolled client opts in with one line:
 //
-//	http: &http.Client{Timeout: 15 * time.Second, Transport: neogate.NewRetryTransport(nil)}
+//	http: &http.Client{Timeout: 15 * time.Second, Transport: httpc.NewRetryTransport(nil)}
 type RetryTransport struct {
 	base http.RoundTripper
 	cfg  RetryConfig
@@ -78,8 +78,8 @@ func NewRetryTransportConfig(base http.RoundTripper, cfg RetryConfig) *RetryTran
 }
 
 // spanName gives outbound client spans a low-cardinality, readable name like
-// "GET api.easee.cloud" — otelhttp's default is the bare method, which collapses
-// every upstream into one name in Tempo.
+// "GET api.vendor.example" — otelhttp's default is the bare method, which
+// collapses every upstream into one name in Tempo.
 func spanName(_ string, r *http.Request) string {
 	return r.Method + " " + r.URL.Host
 }

@@ -4,13 +4,13 @@
 //
 // Like tracing it is opt-in and env-driven: Init is a no-op unless an OTLP endpoint
 // is configured, and every knob (endpoint, headers, TLS) comes from the standard
-// OTEL_* env vars the SDK reads — there are no NeoGate-specific metrics knobs. When
+// OTEL_* env vars the SDK reads — there are no host-specific metrics knobs. When
 // enabled it pushes metrics via OTLP/HTTP to a collector and registers Go runtime
-// instrumentation (goroutines, GC pauses, heap) so a long-running 29-plugin host is
+// instrumentation (goroutines, GC pauses, heap) so a long-running plugin host is
 // observable without hand-instrumenting a thing.
 //
 // Division of labour with the existing Prometheus endpoint: request-level metrics
-// stay on the /metrics pull endpoint (see httpx.MetricsAndLogger), where the HTTP
+// stay on the /metrics pull endpoint (see fiberx.MetricsAndLogger), where the HTTP
 // duration histogram now carries trace exemplars so a slow bucket in Grafana links
 // straight to its span in Tempo. This package adds the *push* pillar and the
 // runtime signals. When no endpoint is configured the global MeterProvider stays
