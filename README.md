@@ -14,8 +14,10 @@ Pre-1.0: the API may change between `v0.x` releases.
 | `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify`, SSRF guard |
 | `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters |
 | `cache` | stale-while-revalidate `GetOrFetch` |
-| `sqlitex` | `PRAGMA user_version` append-only migration runner |
+| `sqlitex` | `PRAGMA user_version` append-only migration runner, `VACUUM INTO` snapshot backup |
 | `tracing` `metrics` | OpenTelemetry and Prometheus wiring |
 | `safe` `ids` `clock` | goroutine recovery, id/token generation, injectable clock |
+| `netx` | `AddrInUseHint` — a readable message for a listener already bound |
+| `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
 
 MIT.
