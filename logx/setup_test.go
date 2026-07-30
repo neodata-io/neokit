@@ -125,12 +125,11 @@ func TestSetupAnnouncementRespectsThreshold(t *testing.T) {
 	assert.NotContains(t, out, "logging configured")
 }
 
-// The root logger must not claim "service": the SDK hands that key to plugins
-// (neogate.Log stamps service=<integration>), and every host-side line about a
-// plugin uses it the same way. A root attr under the same name puts two
-// "service" keys in one JSON record, and an aggregator keeps whichever it sees
-// last — so the process identity and the integration name silently overwrite
-// each other.
+// The root logger must not claim "service": that key is reserved for
+// per-component loggers, and every line about a given component uses it the
+// same way. A root attr under the same name puts two "service" keys in one
+// JSON record, and an aggregator keeps whichever it sees last — so the
+// process identity and the component name silently overwrite each other.
 func TestRootLoggerDoesNotShadowPluginServiceKey(t *testing.T) {
 	out := captureSetup(t, "info", "json", func() {
 		slog.Default().With(slog.String("service", "fluvius")).Info("health check failed")
