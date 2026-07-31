@@ -62,3 +62,36 @@ func TestPushRunStepsProducesTheDocumentedOrder(t *testing.T) {
 		t.Error(`"tracing" must be last, so a span from any earlier step still exports`)
 	}
 }
+
+// The drain signal is unexported, so this is the only level it can be asserted
+// at directly. [TestStreamContextEndsOnDrain] covers the same property through
+// the public API and a real listener; this one pins the mechanism, and that a
+// Close reaching it twice cannot panic at the worst possible moment.
+func TestCloseReleasesTheDrainSignal(t *testing.T) {
+	a, err := New(Options{
+		Name: "testapp", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Base: config.Base{LogLevel: "error", LogFormat: "json"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	select {
+	case <-a.drain.ctx.Done():
+		t.Fatal("the drain signal must stay open while the app runs")
+	default:
+	}
+
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case <-a.drain.ctx.Done():
+	default:
+		t.Error("Close must release the drain signal")
+	}
+
+	// Run's "streams" step and a caller's deferred Close both reach
+	// closeDraining. The old channel-close needed a sync.Once to survive this.
+	a.closeDraining()
+}

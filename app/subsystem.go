@@ -34,10 +34,13 @@ type Subsystem struct {
 
 // Declare records a subsystem for the boot report and, when it is on and has a
 // check, for readiness.
+//
+// Call it during boot, from the goroutine that called [New], before [App.Run] —
+// the report is rendered at the top of Run and a subsystem declared after that
+// would be missing from it anyway. Declaring concurrently is not supported; the
+// readiness registry behind it is, so a check that fires later is fine.
 func (a *App) Declare(s Subsystem) {
-	a.mu.Lock()
 	a.subsystems = append(a.subsystems, s)
-	a.mu.Unlock()
 
 	if s.On && s.Ready != nil {
 		a.Health.Register(s.Name, s.Ready)
@@ -48,8 +51,6 @@ func (a *App) Declare(s Subsystem) {
 // neokit's own (tracing, metrics export), so this and the boot report never
 // disagree about what the process is.
 func (a *App) Subsystems() []Subsystem {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
 	out := make([]Subsystem, len(a.subsystems))
 	copy(out, a.subsystems)
 	return out

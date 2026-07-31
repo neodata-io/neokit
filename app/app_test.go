@@ -49,7 +49,7 @@ func TestNewExposesEveryDependency(t *testing.T) {
 	a := newApp(t)
 
 	if a.Log == nil || a.Fiber == nil || a.Errors == nil ||
-		a.Shutdown == nil || a.Health == nil || a.Ctx == nil || a.Draining == nil {
+		a.Shutdown == nil || a.Health == nil || a.Ctx == nil {
 		t.Fatalf("New left a dependency nil: %+v", a)
 	}
 	if a.Name != "testapp" || a.Version != "1.2.3" {

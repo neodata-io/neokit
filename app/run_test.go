@@ -92,25 +92,6 @@ func TestReportNamesEverySubsystem(t *testing.T) {
 	}
 }
 
-// Draining is closed before the drain so long-lived handlers can return.
-func TestDrainingClosesOnShutdown(t *testing.T) {
-	a := newApp(t)
-	select {
-	case <-a.Draining:
-		t.Fatal("Draining must be open while the app runs")
-	default:
-	}
-
-	if err := a.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	select {
-	case <-a.Draining:
-	case <-time.After(time.Second):
-		t.Error("Draining must be closed by shutdown")
-	}
-}
-
 // A failing teardown step must reach the caller, or a process exits 0 having
 // failed to flush.
 func TestCloseSurfacesAStepError(t *testing.T) {
