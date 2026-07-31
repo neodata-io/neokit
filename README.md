@@ -57,6 +57,26 @@ Run one from the repository root with `go run ./examples/minimal-api`. They are
 ordinary Go types and constructors: copy the pieces your service needs rather
 than adopting the whole thing.
 
+## A new project
+
+There is no generator. A service starts as one file — copy the shape from
+`app`'s package documentation, embed `config.Base` in your own config struct,
+and add what you need:
+
+```go
+cfg, err := config.Load[Config]()
+a, err := app.New(app.Options{Name: "okstables", Version: version, Base: cfg.Base})
+defer a.Close()
+
+a.Fiber.Get("/api/v1/hello", func(c fiber.Ctx) error {
+    return c.JSON(fiber.Map{"hello": "okstables"})
+})
+return a.Run()
+```
+
+That is the whole boot. A scaffolding command would only write this out for you
+and then need a template set kept in step with the API forever.
+
 ## The diagnostics port
 
 `app` serves Prometheus metrics, `/healthz` and `/readyz` on a second listener,
