@@ -15,14 +15,21 @@ import (
 // application that has not configured a login pays nothing for having the gate
 // mounted.
 //
-// "Nothing" is measurable here — the disabled middleware must not allocate, must
-// not read a cookie, and must not reach the session store. Run:
+// "Nothing" is measurable here, and the honest way to measure it is a
+// *comparison*: these run a full request through fiber's test harness, which
+// dominates the absolute numbers, so the figure that carries the claim is
+// allocs/op against BenchmarkBaselineNoMiddleware — the identical app with no
+// auth middleware mounted at all.
 //
-//	go test ./oidcauth/fiberauth -bench 'Middleware|Guard' -benchmem
+//	go test ./oidcauth/fiberauth -run XXX -bench 'ResolveIdentity|Guard|Baseline' -benchmem
 //
-// BenchmarkResolveIdentityDisabled is expected at 0 allocs/op; the enabled
-// no-cookie path is the honest comparison, since that is the overwhelmingly
-// common request on a deployment that *does* have a login.
+// A disabled gate must match the baseline's allocation count exactly: it returns
+// on its first branch, reading no cookie and never reaching the session store. If
+// BenchmarkResolveIdentityDisabled ever exceeds BenchmarkBaselineNoMiddleware,
+// something has started doing work before the "is a login configured" check.
+//
+// The enabled-but-no-cookie path is the second number worth watching, since on a
+// deployment that *does* have a login it is the overwhelmingly common request.
 
 // benchApp mounts the middleware in front of a trivial handler.
 func benchApp(g *Gate, mw fiber.Handler) *fiber.App {
