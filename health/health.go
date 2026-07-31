@@ -68,10 +68,20 @@ func (r *Registry) Len() int {
 
 // CheckResult is one dependency's answer.
 type CheckResult struct {
-	Name string        `json:"name"`
-	OK   bool          `json:"ok"`
-	Err  string        `json:"error,omitempty"`
-	Took time.Duration `json:"tookMs"`
+	Name string `json:"name"`
+	OK   bool   `json:"ok"`
+	Err  string `json:"error,omitempty"`
+
+	// Took is the check's duration for Go callers.
+	//
+	// It is not serialised directly: time.Duration marshals as its raw int64
+	// nanoseconds, so a field named "tookMs" carrying 80000000 would be wrong by
+	// six orders of magnitude. TookMs below is what goes on the wire.
+	Took time.Duration `json:"-"`
+
+	// TookMs is Took in whole milliseconds, which is the resolution a readiness
+	// probe is actually read at.
+	TookMs int64 `json:"tookMs"`
 }
 
 // Result is the whole sweep. A registry with no checks is ready: a service with
@@ -126,6 +136,7 @@ func run(ctx context.Context, c check) (res CheckResult) {
 	start := time.Now()
 	defer func() {
 		res.Took = time.Since(start)
+		res.TookMs = res.Took.Milliseconds()
 		if p := recover(); p != nil {
 			res.OK = false
 			res.Err = fmt.Sprintf("check panicked: %v", p)

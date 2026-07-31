@@ -158,3 +158,30 @@ func TestDuplicateNamesAreBothReported(t *testing.T) {
 		t.Error("the failing duplicate must still make the registry unready")
 	}
 }
+
+// time.Duration marshals as raw nanoseconds, so a field named tookMs carrying a
+// nanosecond count is wrong by six orders of magnitude — and reads correctly
+// while being wrong, which is why it needs a test rather than a careful reader.
+func TestReadyBodyReportsMilliseconds(t *testing.T) {
+	r := health.New()
+	r.Register("slow", func(context.Context) error {
+		time.Sleep(30 * time.Millisecond)
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	r.ReadyHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	var got health.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not a Result: %v (%s)", err, rec.Body)
+	}
+	if len(got.Checks) != 1 {
+		t.Fatalf("Checks = %+v, want one", got.Checks)
+	}
+	// A 30ms check is tens of ms, not tens of millions. The upper bound is what
+	// catches a nanosecond count; the lower bound catches a zeroed field.
+	if ms := got.Checks[0].TookMs; ms < 1 || ms > 5000 {
+		t.Errorf("TookMs = %d, want a plausible millisecond count", ms)
+	}
+}
