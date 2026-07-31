@@ -2,12 +2,14 @@ package debugserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/neodata-io/neokit/health"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -128,5 +130,46 @@ func TestServeReturnsNilAfterShutdown(t *testing.T) {
 func TestServeReportsARealListenFailure(t *testing.T) {
 	if err := Serve(New(Config{Addr: "127.0.0.1:99999"})); err == nil {
 		t.Fatal("Serve returned nil for an unbindable address, want the listen error")
+	}
+}
+
+func TestHealthEndpointsMountWhenConfigured(t *testing.T) {
+	reg := health.New()
+	reg.Register("dep", func(context.Context) error { return nil })
+	srv := New(Config{Addr: ":0", Health: reg})
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s = %d, want 200", path, rec.Code)
+		}
+	}
+}
+
+// Nil keeps the package usable on its own — a caller that only wants metrics
+// must not be forced to construct a registry.
+func TestHealthEndpointsAbsentWhenNotConfigured(t *testing.T) {
+	srv := New(Config{Addr: ":0"})
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404 when no registry is configured", path, rec.Code)
+		}
+	}
+}
+
+// A failing dependency must take the instance out of rotation.
+func TestReadyzReflectsAFailingCheck(t *testing.T) {
+	reg := health.New()
+	reg.Register("dep", func(context.Context) error { return errors.New("down") })
+	srv := New(Config{Addr: ":0", Health: reg})
+
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz = %d, want 503", rec.Code)
 	}
 }

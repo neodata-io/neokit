@@ -35,6 +35,7 @@ import (
 	"net/http/pprof"
 	"time"
 
+	"github.com/neodata-io/neokit/health"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -62,6 +63,14 @@ type Config struct {
 	// already registering into.
 	Gatherer prometheus.Gatherer
 
+	// Health mounts /healthz (liveness) and /readyz (readiness) when non-nil.
+	//
+	// Nil mounts neither, so a caller that only wants metrics is not forced to
+	// construct a registry. They belong on this listener rather than the
+	// application port so they inherit its binding — a readiness body names
+	// dependencies and their errors, which is diagnostic detail, not public API.
+	Health *health.Registry
+
 	// ReadHeaderTimeout bounds the request-header read. Zero means
 	// defaultReadHeaderTimeout; there is deliberately no way to ask for
 	// unbounded.
@@ -83,6 +92,11 @@ func New(cfg Config) *http.Server {
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
+
+	if cfg.Health != nil {
+		mux.Handle("/healthz", health.LiveHandler())
+		mux.Handle("/readyz", cfg.Health.ReadyHandler())
+	}
 
 	if cfg.Pprof {
 		// Index also serves every profile that has no dedicated handler (/heap,
