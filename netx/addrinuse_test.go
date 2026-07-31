@@ -57,11 +57,8 @@ func TestAddrInUseHint_NamesHolderProcessWhenFound(t *testing.T) {
 	assert.Contains(t, msg, "kill 5201")
 }
 
-// The regression this pins: the hint used to be built with fmt.Errorf and no
-// %w, which discarded the cause. Since the doc tells callers to route *every*
-// listen error through this function, that silently destroyed the ability to
-// test for EADDRINUSE anywhere downstream — and the old tests, which only
-// asserted on message substrings, could not see it.
+// Callers are told to route every listen error through this, so the cause has
+// to survive: errors.Is must still reach EADDRINUSE downstream.
 func TestAddrInUseHint_PreservesTheWrappedSyscallError(t *testing.T) {
 	t.Parallel()
 
@@ -86,6 +83,22 @@ func TestAddrInUseHint_NilLookupFallsBackToTheDefault(t *testing.T) {
 
 	require.Error(t, got)
 	assert.ErrorIs(t, got, syscall.EADDRINUSE)
+}
+
+// The default is [NoLookup], not [LsofLookup]: omitting the argument must not
+// execute a subprocess. Asserting on the generic message is the observable
+// proxy — a lookup that ran and found this process would name it and offer a
+// kill command.
+func TestAddrInUseHint_DefaultsToNoLookup(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("listen tcp :8080: %w", syscall.EADDRINUSE)
+	got := AddrInUseHint(err, 8080, "PORT")
+
+	require.Error(t, got)
+	assert.ErrorIs(t, got, syscall.EADDRINUSE)
+	assert.Contains(t, got.Error(), "stop whatever is listening on it")
+	assert.NotContains(t, got.Error(), "kill ")
 }
 
 func TestNoLookup_FindsNothing(t *testing.T) {

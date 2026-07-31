@@ -3,7 +3,6 @@ package httpc
 import (
 	"context"
 	"errors"
-	"io"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -68,7 +67,8 @@ func NewRetryTransport(base http.RoundTripper) *RetryTransport {
 // installed, the wrapper costs +1195ns, +2810B and +22 allocations per request,
 // while this retry loop costs ~5ns and allocates nothing — so the claim was
 // wrong by more than an order of magnitude, and it was charged to every caller
-// for spans nobody collected. See BenchmarkTransport_AsShipped.
+// for spans nobody collected. See BenchmarkTransport_Default and
+// BenchmarkTransport_Traced.
 func NewRetryTransportConfig(base http.RoundTripper, cfg RetryConfig) *RetryTransport {
 	if base == nil {
 		base = http.DefaultTransport
@@ -136,9 +136,14 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Read Retry-After (a header, so still available) before draining the body.
 		wait := backoffFor(resp, delay)
 		// Drain and close the discarded response so the connection can be reused.
+		// The cap used to be 4 KiB, which is under the size of a typical verbose
+		// 5xx explanation — so anything larger was not reused, and each attempt
+		// opened a fresh connection. Measured at three per call against a 500
+		// with a 64 KiB body. That is the wrong way round: it spent new TCP and
+		// TLS handshakes on an upstream that was already failing, turning a retry
+		// policy meant to ride out a blip into extra load on the thing blipping.
 		if resp != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-			_ = resp.Body.Close()
+			drainClose(resp.Body)
 		}
 
 		select {

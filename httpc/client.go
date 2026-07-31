@@ -293,7 +293,7 @@ func (c *BaseClient) attempt(ctx context.Context, method, url string, rawBody []
 	if err != nil {
 		return used, err
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp.Body)
 	if out != nil {
 		// Bounded, like every other read in this file. send already caps the
 		// *error* body at 8 KiB and ReadAllLimited exists so "a compromised or
@@ -345,7 +345,11 @@ func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response
 		// Bound the error body: a misbehaving upstream could otherwise stream
 		// megabytes into an error string we only surface for diagnostics.
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		resp.Body.Close()
+		// Keep reading past what the message keeps. The 8 KiB above bounds what
+		// gets *stored*; stopping the read there also stopped the connection being
+		// reusable, so every verbose 5xx cost a new TCP (and TLS) handshake —
+		// worst exactly when an upstream is already unwell.
+		drainClose(resp.Body)
 		return resp, &APIError{Service: c.Service, StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 	return resp, nil

@@ -15,35 +15,25 @@ import (
 // ("", 0); it must never fail the caller, since this is only ever a diagnostic.
 type Lookup func(port int) (label string, pid int)
 
-// NoLookup is a Lookup that never identifies anything. Pass it to
-// [AddrInUseHint] to get the generic message with no subprocess execution —
-// the right choice for a hardened or minimal deployment, where [LsofLookup]
-// would find nothing anyway. See [AddrInUseHint] on why it is not the default.
+// NoLookup is a Lookup that never identifies anything, and is [AddrInUseHint]'s
+// default: the generic message, with no subprocess execution.
 func NoLookup(int) (string, int) { return "", 0 }
 
 // AddrInUseHint turns the kernel's terse "bind: address already in use" into a
-// message that names the culprit process and the command to clear it. The usual
-// cause is a stale instance of the same binary still listening from a previous
-// run, and "which process do I kill" shouldn't cost a manual round-trip through
-// lsof. envVar is the setting that would move this listener elsewhere (e.g. PORT).
+// message naming the port and the setting that would move this listener
+// elsewhere (envVar, e.g. PORT). Pass [LsofLookup] to also name the process
+// holding the port and the command to kill it.
 //
-// Any error that isn't EADDRINUSE is returned untouched, so a caller can wrap
-// every listen error through this unconditionally. The returned error always
-// wraps the original, so errors.Is(…, syscall.EADDRINUSE) still holds
-// downstream — which is exactly what "wrap unconditionally" has to mean, and
-// what an earlier version quietly broke by formatting without %w.
+// Any error that isn't EADDRINUSE is returned untouched, so every listen error
+// can be routed through this unconditionally. The result always wraps the
+// original, so errors.Is(…, syscall.EADDRINUSE) still holds downstream.
 //
-// lookup is optional and defaults to [LsofLookup], which executes lsof. That
-// default is a deliberate trade and worth stating plainly: a library reaching
-// for an external binary is normally the wrong instinct, and it is kept because
-// naming the offending process is the entire value of this function on the
-// developer machines where a port clash actually happens. Pass [NoLookup] to
-// opt out, or any Lookup of your own. Only the first is used.
+// lookup is optional; only the first is used, and a nil one selects the default.
 func AddrInUseHint(err error, port int, envVar string, lookup ...Lookup) error {
 	if !isAddrInUse(err) {
 		return err
 	}
-	find := Lookup(LsofLookup)
+	find := Lookup(NoLookup)
 	if len(lookup) > 0 && lookup[0] != nil {
 		find = lookup[0]
 	}
@@ -55,19 +45,20 @@ func AddrInUseHint(err error, port int, envVar string, lookup ...Lookup) error {
 		port, envVar, err)
 }
 
-// lsofTimeout bounds the diagnostic. A hint is never worth delaying a startup
-// failure over, and this runs on a path where the process is already failing.
+// lsofTimeout bounds the diagnostic: a hint is never worth delaying a startup
+// failure over.
 const lsofTimeout = 2 * time.Second
 
 // LsofLookup best-effort identifies the process listening on port by executing
-// lsof, returning a human label ("api (pid 5201)") and the pid.
+// lsof, returning a human label ("api (pid 5201)") and the pid. Pass it to
+// [AddrInUseHint] to opt into naming the offending process — worth it on a
+// developer machine, where a stale instance of the same binary is the usual
+// cause of a port clash.
 //
-// It is the default [AddrInUseHint] lookup. Being an exec, it is also the part
-// of this package that will not work everywhere: lsof is absent from slim and
-// distroless containers, and on a hardened host it must run as root to see
-// another user's sockets. Both cases simply return ("", 0) and the caller falls
-// back to the generic message, so a missing lsof costs nothing. Every error is
-// swallowed for the same reason.
+// Being an exec, it does not work everywhere: lsof is absent from slim and
+// distroless images, and on a hardened host it must run as root to see another
+// user's sockets. Every error is swallowed and returns ("", 0), so the caller
+// falls back to the generic message and a missing lsof costs nothing.
 func LsofLookup(port int) (string, int) {
 	lsof, err := exec.LookPath("lsof")
 	if err != nil {
