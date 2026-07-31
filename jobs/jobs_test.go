@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,14 @@ import (
 
 // quiet silences a job's own logging so a test's output stays readable.
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// TestMain silences the process-wide logger. Several tests panic deliberately,
+// and safe.Do reports a panic to slog.Default with a full stack trace — signal in
+// production, pure noise in `go test` output.
+func TestMain(m *testing.M) {
+	slog.SetDefault(quiet())
+	os.Exit(m.Run())
+}
 
 // A restart is exactly when the work is most overdue, and a plain ticker waits
 // out a full interval first.
