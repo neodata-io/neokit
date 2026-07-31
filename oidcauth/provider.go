@@ -70,12 +70,9 @@ func (p *Provider) PostLogoutURI() string { return p.cfg.BaseURL + p.cfg.PostLog
 // CookieSecure reports whether this deployment is HTTPS, and therefore whether
 // auth cookies must carry the Secure attribute.
 //
-// It reads the configured BaseURL, never the request. Behind a TLS-terminating
-// reverse proxy the request itself arrives over plain HTTP, so every
-// scheme-sniffing heuristic reports "http" for a page the browser loaded over
-// HTTPS — dropping Secure on exactly the deployments that need it. BaseURL is
-// the URL the browser actually uses, so it is right under both direct TLS and a
-// proxy.
+// It reads the configured BaseURL, never the request: behind a TLS-terminating
+// proxy the request arrives over plain HTTP, so scheme-sniffing would drop
+// Secure on exactly the deployments that need it. See [Config.BaseURL].
 func (p *Provider) CookieSecure() bool {
 	u, err := url.Parse(p.cfg.BaseURL)
 	return err == nil && u.Scheme == "https"
@@ -159,15 +156,13 @@ func (p *Provider) Exchange(ctx context.Context, code, nonce, verifier string) (
 
 	idToken, err := prov.Verifier(&gooidc.Config{ClientID: p.cfg.ClientID}).Verify(p.clientCtx(ctx), rawID)
 	if err != nil {
-		// Signature, issuer, audience and expiry all fail here. The detail is the
-		// attacker's, not the operator's — and `%w`-wrapping is NOT safe: a failed
-		// JWKS fetch renders as "get keys failed: <status> <body>", which would put
-		// an upstream body into an admin-facing log.
+		// Signature, issuer, audience and expiry all fail here. Do NOT %w-wrap err:
+		// a failed JWKS fetch renders as "get keys failed: <status> <body>", which
+		// would put an upstream body into an admin-facing log.
 		//
-		// Expiry is the one cause worth naming, because it is the one that is
-		// usually nobody's fault: a container whose clock has drifted rejects every
-		// token it is handed, and "check the clock" is the entire fix.
-		// TokenExpiredError is typed and body-free, so lifting it costs nothing.
+		// Expiry is worth naming because it is usually nobody's fault — a drifted
+		// container clock rejects every token, and "check the clock" is the whole
+		// fix. TokenExpiredError is typed and body-free, so lifting it is safe.
 		var expired *gooidc.TokenExpiredError
 		if errors.As(err, &expired) {
 			return Identity{}, fmt.Errorf("%w: the id_token was already expired on arrival — check the server clock", ErrTokenInvalid)
@@ -315,10 +310,9 @@ func (p *Provider) EndSessionURL(ctx context.Context) (string, error) {
 // It bypasses the discovery cache, so it reflects the network now rather than at
 // first login.
 //
-// The credential half is what makes it worth having. Discovery is
-// unauthenticated, so on its own it waves a mistyped secret straight through —
-// and the gate then closes on a login that can never complete. Verifying the
-// credentials here is what makes "a typo cannot lock you out" actually true.
+// The credential half matters: discovery is unauthenticated, so on its own it
+// waves a mistyped secret through and the gate then closes on a login that can
+// never complete.
 func (p *Provider) CheckHealth(ctx context.Context) error {
 	prov, err := gooidc.NewProvider(p.clientCtx(ctx), p.cfg.Issuer)
 	if err != nil {
@@ -423,11 +417,8 @@ var tokenEndpointErrors = map[string]bool{
 //
 // An explicit code wins over the status: a provider that answers 401 alongside a
 // named `invalid_grant` is describing the code, and reading the status first is
-// how a stale code gets misreported as a bad secret.
-//
-// Both the login exchange and the health probe classify through this one
-// function, because a "test connection" that disagrees with a real sign-in about
-// which half is broken is worse than no test at all.
+// how a stale code gets misreported as a bad secret. Both the login exchange and
+// the health probe classify through here so they cannot disagree.
 func clientWasRejected(re *oauth2.RetrieveError) bool {
 	if re.ErrorCode != "" {
 		return re.ErrorCode == "invalid_client"

@@ -19,47 +19,34 @@ const restartBackoff = 5 * time.Second
 // Group supervises a set of background goroutines and joins them at shutdown.
 //
 // Membership is tracked with a counter and a broadcast channel rather than a
-// sync.WaitGroup, and that is a correctness requirement, not a style choice.
-// WaitGroup requires that an Add taking the counter off zero happens-before any
-// Wait. Go and Wait are independent exported entry points, so nothing could
-// enforce that ordering, and a process that spawned background work while a
-// drain was joining died on:
-//
-//	panic: sync: WaitGroup is reused before previous Wait has returned
-//
-// That panic was thrown from inside the goroutine Wait itself spawned, which
-// put it beyond the reach of any recover the caller could install — so the
-// package whose whole purpose is stopping a panic from killing the process
-// killed the process. A counter guarded by the same mutex Wait reads under has
-// no such ordering rule, and needs no helper goroutine, so a drain that times
-// out no longer leaves one blocked forever either.
+// sync.WaitGroup, and that is a correctness requirement: WaitGroup needs an Add
+// taking the counter off zero to happen-before any Wait, but Go and Wait are
+// independent exported entry points, so nothing can enforce that ordering.
+// Spawning into a group while a drain is joining would panic from inside
+// WaitGroup's own helper goroutine, out of reach of any caller's recover.
 //
 // The zero Group is ready to use, and a Group may be drained more than once.
 // Prefer one Group per subsystem: its Wait joins that Group's goroutines and no
-// one else's, which is the property the package-level default cannot offer.
+// one else's, which the package-level default cannot offer.
 type Group struct {
-	// n counts live supervised goroutines. It is an atomic rather than a
-	// mu-guarded int so that spawning stays as cheap as the WaitGroup.Add it
-	// replaced: taking mu on every Go doubled the cost of a parallel spawn,
-	// because every goroutine start contended on one lock. mu below guards only
-	// idle, which is touched once per drain and once when the count reaches
-	// zero — both rare.
+	// n counts live supervised goroutines. Atomic rather than mu-guarded so that
+	// spawning stays cheap: taking mu on every Go doubles the cost of a parallel
+	// spawn, since every goroutine start contends on one lock. mu guards only
+	// idle, which is touched once per drain and once when the count hits zero.
 	n atomic.Int64
 
 	mu sync.Mutex
 
 	// idle is created by Wait and closed when n falls back to zero. It is
 	// allocated lazily, on the first Wait that finds work in flight, rather than
-	// whenever n leaves zero: a group is spawned into constantly and drained
-	// once, so eagerly minting a channel per 0→1 transition put an allocation on
-	// every Go — measured at +127 B and +16% on spawn, and roughly double under
-	// parallel spawn. Wait reads it under mu and then selects on it, so a
-	// goroutine finishing concurrently is never missed.
+	// on every 0→1 transition, which would put an allocation on every Go. Wait
+	// reads it under mu and then selects on it, so a goroutine finishing
+	// concurrently is never missed.
 	idle chan struct{}
 
 	// Log receives supervision events (a panic, a restart, a drain that timed
-	// out). Nil means slog.Default(). A library should not force its
-	// diagnostics into a process-wide logger the caller cannot redirect.
+	// out). Nil means slog.Default(). A library should not force its diagnostics
+	// into a process-wide logger the caller cannot redirect.
 	Log *slog.Logger
 }
 
@@ -117,10 +104,8 @@ func (g *Group) Go(name string, fn func()) {
 // mid-call isn't cut off by having its connection closed underneath it.
 //
 // It returns [ErrDrainTimeout] if the drain did not finish. The caller is about
-// to tear down the very resources the stragglers are still using, so "some are
-// still running" is a decision for the caller to make rather than a warning to
-// bury — the previous version returned normally and only logged, which silently
-// reintroduced the race the drain exists to prevent.
+// to tear down the very resources the stragglers are still using, so that is a
+// decision for the caller rather than a warning to bury in a log.
 //
 // Wait does not stop the group: goroutines may be supervised again afterwards,
 // and Wait may be called repeatedly.

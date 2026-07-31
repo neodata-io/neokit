@@ -114,7 +114,28 @@ func TestDoJSON_RefreshesAndRetriesOnce_On401(t *testing.T) {
 	}
 }
 
-func TestBearerGet_RetriesOn401(t *testing.T) {
+// bearerGet is the request/decode half a caller writes for itself now that the
+// BearerGet convenience is gone. It is kept here so these tests still pin
+// [DoWithTokenRetry]'s contract: refresh exactly once on a 401, and pass any
+// other status straight back untouched.
+func bearerGet(ctx context.Context, hc *http.Client, ts TokenSource, url string) (int, []byte, error) {
+	return DoWithTokenRetry(ctx, ts, func(token string) (int, []byte, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := hc.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer drainClose(resp.Body)
+		body, err := ReadAllLimited(resp.Body, 0)
+		return resp.StatusCode, body, err
+	})
+}
+
+func TestDoWithTokenRetry_RetriesOn401(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -131,9 +152,9 @@ func TestBearerGet_RetriesOn401(t *testing.T) {
 		return fmt.Sprintf("token-%d", atomic.AddInt32(&logins, 1)), time.Hour, nil
 	})
 
-	status, body, err := BearerGet(context.Background(), srv.Client(), ts, "svc", srv.URL)
+	status, body, err := bearerGet(context.Background(), srv.Client(), ts, srv.URL)
 	if err != nil {
-		t.Fatalf("BearerGet: %v", err)
+		t.Fatalf("bearerGet: %v", err)
 	}
 	if status != http.StatusOK {
 		t.Errorf("status = %d, want 200 after the 401 refresh", status)
@@ -149,9 +170,9 @@ func TestBearerGet_RetriesOn401(t *testing.T) {
 	}
 }
 
-// A 204 (Spotify "nothing playing") is not a 401, so BearerGet passes the status
-// straight back without a retry or a second login.
-func TestBearerGet_PassesThrough204(t *testing.T) {
+// A 204 ("nothing playing") is not a 401, so the status passes straight back
+// without a retry or a second login.
+func TestDoWithTokenRetry_PassesThrough204(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -164,9 +185,9 @@ func TestBearerGet_PassesThrough204(t *testing.T) {
 		return fmt.Sprintf("token-%d", atomic.AddInt32(&logins, 1)), time.Hour, nil
 	})
 
-	status, _, err := BearerGet(context.Background(), srv.Client(), ts, "svc", srv.URL)
+	status, _, err := bearerGet(context.Background(), srv.Client(), ts, srv.URL)
 	if err != nil {
-		t.Fatalf("BearerGet: %v", err)
+		t.Fatalf("bearerGet: %v", err)
 	}
 	if status != http.StatusNoContent {
 		t.Errorf("status = %d, want 204 passthrough", status)

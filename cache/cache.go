@@ -78,13 +78,10 @@ func New() *Cache {
 // ErrTypeMismatch reports that a key already holds a value of a different type
 // than the caller asked for — two packages colliding in one key namespace.
 //
-// It is an error rather than a panic because of where the panic used to happen:
-// inside the entry's critical section, in a `v := e.val.(T)` guarded by a
-// Lock/Unlock pair with no defer between them. The unwind skipped the Unlock,
-// so the entry's mutex stayed locked forever and every later GetOrFetch *and*
-// Invalidate for that key blocked with no timeout and no diagnostic. A recover
-// higher up (the whole reason a recover middleware exists) turned a crash into
-// a silently wedged key, which is worse.
+// It is an error rather than a panic because the panic would unwind out of the
+// entry's critical section: a failed `e.val.(T)` skips the Unlock, wedging the
+// key forever for every later GetOrFetch and Invalidate, with no timeout and no
+// diagnostic.
 var ErrTypeMismatch = errors.New("cache: key holds a value of a different type")
 
 // load reads an entry under its own lock and reports what the caller should do:
@@ -137,13 +134,11 @@ func (c *Cache) entryFor(key string) *entry {
 	return e
 }
 
-// Len reports how many distinct keys the cache is holding, live or stale.
-//
-// It exists for callers that need to assert on cache *occupancy* rather than on
-// a value — notably any endpoint whose key derives from unauthenticated input,
-// where "did this request consume an entry" is the property worth pinning
-// (see the link-icon handler). Counting keys, not live entries: an expired entry
-// still occupies a slot until it is evicted, which is what the cap governs.
+// Len reports how many distinct keys the cache is holding, live or stale — for
+// callers that need to assert on occupancy rather than on a value, notably any
+// endpoint whose key derives from unauthenticated input. It counts keys, not
+// live entries: an expired entry still occupies a slot until it is evicted,
+// which is what the cap governs.
 func (c *Cache) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -171,11 +166,8 @@ func (c *Cache) Invalidate(key string) {
 //
 //   - Fresh — returned immediately.
 //   - Stale — the previous value is returned immediately and a single background
-//     revalidation is started. Nobody waits on a TTL boundary. This is what keeps
-//     a slow upstream from periodically stalling every viewer at once: the sweep
-//     behind a device-status endpoint costs seconds when a device is offline, and
-//     before this it was paid on the request path, by whoever happened to poll
-//     first, while everyone else queued behind the same lock.
+//     revalidation is started. Nobody waits on a TTL boundary, so a slow upstream
+//     never periodically stalls every viewer at once.
 //   - Cold (never loaded, or just invalidated) — fn runs synchronously, once, with
 //     concurrent callers queueing and sharing the result.
 //

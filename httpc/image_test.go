@@ -12,16 +12,23 @@ import (
 
 var pngBytes = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 
-func TestFetchImage_SuccessAndContentType(t *testing.T) {
+// artClient is the documented shape for a caller that holds only a bare
+// *http.Client: a zero BaseClient, no BaseURL. These tests exercise it directly
+// so the migration path in [BaseClient.Image]'s doc stays honest.
+func artClient(hc *http.Client, auth AuthFunc) *BaseClient {
+	return &BaseClient{HTTPClient: hc, Service: "art", Auth: auth}
+}
+
+func TestImage_SuccessAndContentType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(pngBytes)
 	}))
 	defer srv.Close()
 
-	blob, err := FetchImage(context.Background(), srv.Client(), srv.URL, 0)
+	blob, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0)
 	if err != nil {
-		t.Fatalf("FetchImage: %v", err)
+		t.Fatalf("Image: %v", err)
 	}
 	if !bytes.Equal(blob.Data, pngBytes) {
 		t.Errorf("data = %v, want %v", blob.Data, pngBytes)
@@ -31,23 +38,23 @@ func TestFetchImage_SuccessAndContentType(t *testing.T) {
 	}
 }
 
-func TestFetchImage_DefaultsContentType(t *testing.T) {
+func TestImage_DefaultsContentType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "") // force empty
 		_, _ = w.Write(pngBytes)
 	}))
 	defer srv.Close()
 
-	blob, err := FetchImage(context.Background(), srv.Client(), srv.URL, 0)
+	blob, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0)
 	if err != nil {
-		t.Fatalf("FetchImage: %v", err)
+		t.Fatalf("Image: %v", err)
 	}
 	if blob.ContentType != "image/jpeg" {
 		t.Errorf("ContentType = %q, want image/jpeg default", blob.ContentType)
 	}
 }
 
-func TestFetchImage_AppliesAuth(t *testing.T) {
+func TestImage_AppliesAuth(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Token") != "sekret" {
 			w.WriteHeader(http.StatusForbidden)
@@ -58,45 +65,45 @@ func TestFetchImage_AppliesAuth(t *testing.T) {
 	defer srv.Close()
 
 	// Without auth → 403 → error.
-	if _, err := FetchImage(context.Background(), srv.Client(), srv.URL, 0); err == nil {
+	if _, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0); err == nil {
 		t.Fatal("expected error without auth")
 	}
 	// With the auth hook → 200.
-	blob, err := FetchImage(context.Background(), srv.Client(), srv.URL, 0, HeaderAuth("X-Token", "sekret"))
+	blob, err := artClient(srv.Client(), HeaderAuth("X-Token", "sekret")).
+		Image(context.Background(), srv.URL, 0)
 	if err != nil {
-		t.Fatalf("FetchImage with auth: %v", err)
+		t.Fatalf("Image with auth: %v", err)
 	}
 	if !bytes.Equal(blob.Data, pngBytes) {
 		t.Error("auth request did not return the image")
 	}
 }
 
-func TestFetchImage_EnforcesSizeLimit(t *testing.T) {
+func TestImage_EnforcesSizeLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(make([]byte, 100))
 	}))
 	defer srv.Close()
 
-	if _, err := FetchImage(context.Background(), srv.Client(), srv.URL, 10); err == nil {
+	if _, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 10); err == nil {
 		t.Fatal("expected an error when the body exceeds maxBytes")
 	}
 }
 
-func TestFetchImage_Non2xx(t *testing.T) {
+func TestImage_Non2xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
-	if _, err := FetchImage(context.Background(), srv.Client(), srv.URL, 0); err == nil {
+	if _, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0); err == nil {
 		t.Fatal("expected an error for a 404")
 	}
 }
 
-// TestFetchImage_ClassifiableError proves FetchImage wraps a *APIError (via
-// CheckStatus) rather than a stringified "HTTP %d": only then does Classify walk
-// the chain and tell the caller whose problem the failure is.
-func TestFetchImage_ClassifiableError(t *testing.T) {
+// An art fetch must fail with a *APIError rather than a stringified "HTTP %d":
+// only then does Classify walk the chain and tell the caller whose problem it is.
+func TestImage_ClassifiableError(t *testing.T) {
 	cases := []struct {
 		status int
 		want   Fault
@@ -108,7 +115,7 @@ func TestFetchImage_ClassifiableError(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(c.status)
 		}))
-		_, err := FetchImage(context.Background(), srv.Client(), srv.URL, 0)
+		_, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0)
 		srv.Close()
 		if err == nil {
 			t.Fatalf("status %d: expected an error", c.status)

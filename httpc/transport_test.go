@@ -16,7 +16,7 @@ func fastRetry() RetryConfig {
 }
 
 func newRetryClient(cfg RetryConfig) *http.Client {
-	return &http.Client{Timeout: 5 * time.Second, Transport: NewRetryTransportConfig(nil, cfg)}
+	return &http.Client{Timeout: 5 * time.Second, Transport: NewRetryTransport(nil, cfg)}
 }
 
 func TestRetryTransport_RetriesThenSucceeds(t *testing.T) {
@@ -170,7 +170,7 @@ func (s *stubRT) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestRetryTransport_RetriesTransportError(t *testing.T) {
 	base := &stubRT{failuresLeft: 2}
-	rt := NewRetryTransportConfig(base, fastRetry())
+	rt := NewRetryTransport(base, fastRetry())
 
 	req, _ := http.NewRequest(http.MethodGet, "http://example.invalid/x", nil)
 	resp, err := rt.RoundTrip(req)

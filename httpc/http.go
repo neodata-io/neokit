@@ -9,31 +9,16 @@ import (
 	"time"
 )
 
-// This file owns how a plugin gets an *http.Client. There are exactly two
-// sanctioned ways — NewHTTPClient for everything that speaks HTTP, and
-// NewWebSocketHTTPClient for a WebSocket opening handshake — and a bare
-// &http.Client{} is rejected by the host's plugin conventions test.
-//
-// The reason is invisible until it bites: RetryTransport is also the seam that
-// installs otelhttp (see transport.go), so a hand-rolled client silently loses
-// distributed tracing, not just retries. Nothing in the type system says so,
-// which is exactly why it is a constructor and a lint rather than a doc line.
-
 // DefaultHTTPTimeout is the overall request budget applied when
-// [HTTPOptions.Timeout] is zero. It matches [NewBaseClient]'s, so the two
-// sanctioned paths agree.
-//
-// A plugin overrides it only with a reason worth writing down: an LLM completion
-// or an interactive OAuth handshake legitimately outruns it. "The upstream felt
-// slow once" does not.
+// [HTTPOptions.Timeout] is zero. It matches [NewBaseClient]'s.
 const DefaultHTTPTimeout = 15 * time.Second
 
-// NoTimeout disables the client's overall timeout. Use it only where the caller's
-// context is the real bound — a long-poll, a streamed download. It is a named
-// constant rather than a bare 0 so that an unbounded client is always a
-// deliberate, greppable choice: a zero Timeout in [HTTPOptions] means "give me
-// the default", so forgetting the field cannot accidentally produce a client
-// that hangs forever.
+// NoTimeout disables the client's overall timeout, for cases where the caller's
+// context is the real bound — a long-poll, a streamed download.
+//
+// It is a named constant rather than a bare 0 because a zero [HTTPOptions.Timeout]
+// means "give me the default": forgetting the field cannot then accidentally
+// produce a client that hangs forever, and going unbounded stays greppable.
 const NoTimeout = -1
 
 // HTTPOptions configures [NewHTTPClient]. The zero value is the house default: a
@@ -50,31 +35,22 @@ type HTTPOptions struct {
 	// RetryConfig with MaxRetries: 0 issues each request exactly once.
 	Retry *RetryConfig
 	// Tracing opens an otel client span per request attempt and carries the
-	// traceparent header outbound.
-	//
-	// It is opt-in, and that is a deliberate reversal. The wrapper used to be
-	// installed unconditionally, on the stated grounds that "when tracing is
-	// disabled the global provider is a no-op, so the spans cost nothing".
-	// Measured against a stub transport with no provider installed, that was
-	// wrong by more than an order of magnitude: otelhttp costs +1195ns, +2810B
-	// and +22 allocations per request, against a retry loop that itself costs
-	// ~5ns and allocates nothing. Every caller paid it for spans nobody
-	// collected.
-	//
-	// Set it where a collector actually runs.
+	// traceparent header outbound. Set it where a collector actually runs: the
+	// wrapper costs roughly +1.2µs and +22 allocations per request even with no
+	// provider installed, which is why it is opt-in.
 	Tracing bool
 }
 
-// NewHTTPClient builds an *http.Client that always carries [RetryTransport]. It
-// is the only sanctioned way to build a client outside [BaseClient]:
+// NewHTTPClient builds an *http.Client carrying [RetryTransport]. It is the
+// sanctioned way to build a client outside [BaseClient] — a hand-rolled
+// &http.Client{} silently loses retries and, with Tracing set, spans.
 //
-//	http: httpc.NewHTTPClient(httpc.HTTPOptions{})                       // house default
-//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: 3 * time.Minute}) // documented exception
-//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: httpc.NoTimeout}) // long-poll; ctx bounds it
-//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Tracing: true})            // + otel client spans
+//	httpc.NewHTTPClient(httpc.HTTPOptions{})                       // house default
+//	httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: 3 * time.Minute})
+//	httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: httpc.NoTimeout}) // ctx bounds it
+//	httpc.NewHTTPClient(httpc.HTTPOptions{Tracing: true})            // + otel spans
 //
-// For a WebSocket handshake use [NewWebSocketHTTPClient] instead — the retry
-// wrapper wraps the response body, which a WS upgrade cannot survive.
+// For a WebSocket handshake use [NewWebSocketHTTPClient] instead.
 func NewHTTPClient(opts HTTPOptions) *http.Client {
 	timeout := opts.Timeout
 	switch {
@@ -89,59 +65,43 @@ func NewHTTPClient(opts HTTPOptions) *http.Client {
 		cfg = *opts.Retry
 	}
 
-	rt := NewRetryTransportConfig(opts.Transport, cfg)
+	rt := NewRetryTransport(opts.Transport, cfg)
 	if opts.Tracing {
 		rt = NewTracedRetryTransport(opts.Transport, cfg)
 	}
 	return &http.Client{Timeout: timeout, Transport: rt}
 }
 
-// NewWebSocketHTTPClient returns a client for a WebSocket opening handshake, and
-// is the one sanctioned exception to "every client carries RetryTransport".
+// NewWebSocketHTTPClient returns a client for a WebSocket opening handshake.
 //
-// It deliberately installs NO retry/otel transport: those wrap the response body,
-// and a WS upgrade needs the raw hijacked connection — a wrapped body makes the
-// dial fail at runtime, which no unit test would catch. It also sets no timeout:
-// the dial context is the bound, and an http.Client.Timeout would tear down the
-// long-lived socket mid-session.
+// It installs no retry or otel transport and no timeout, and both omissions are
+// load-bearing: those wrappers wrap the response body, but a WS upgrade needs the
+// raw hijacked connection, so a wrapped body fails the dial at runtime; and an
+// http.Client.Timeout would tear down the long-lived socket mid-session.
 //
-// Use it ONLY for the handshake. Fetch anything else the device serves (icons,
-// thumbnails, its REST API) with a normal [NewHTTPClient], so those requests keep
-// their retries and spans.
-//
-//	c.ws = httpc.NewWebSocketHTTPClient(&tls.Config{InsecureSkipVerify: true}) // self-signed LAN device
-//	c.api = httpc.NewHTTPClient(httpc.HTTPOptions{})
+// Use it only for the handshake. Fetch anything else the device serves with a
+// normal [NewHTTPClient], so those requests keep their retries.
 func NewWebSocketHTTPClient(tlsConfig *tls.Config) *http.Client {
-	transport := http.DefaultTransport
-	if tlsConfig != nil {
-		// Clone the default transport so a custom TLS config keeps its proxy support,
-		// HTTP/2 and pooling; fall back to a bare transport only if DefaultTransport
-		// was replaced (the assertion would otherwise panic).
-		if base, ok := http.DefaultTransport.(*http.Transport); ok {
-			t := base.Clone()
-			t.TLSClientConfig = tlsConfig
-			transport = t
-		} else {
-			transport = &http.Transport{TLSClientConfig: tlsConfig}
-		}
-	}
-	// No Timeout, and no RetryTransport: see the doc comment. Both are load-bearing.
-	return &http.Client{Transport: transport}
+	return &http.Client{Transport: cloneTransport(tlsConfig)}
 }
 
-// InsecureTLSTransport returns a clone of http.DefaultTransport with certificate
-// verification disabled — for the self-signed LAN devices a host integrates
-// (network-appliance consoles, hypervisor management UIs, smart TVs). Cloning
-// preserves proxy support, HTTP/2, connection pooling and the handshake/idle
-// timeouts; only verification changes. Falls back to a bare transport only if
-// DefaultTransport was replaced.
+// InsecureTLSTransport returns a transport with certificate verification
+// disabled, for the self-signed LAN devices a host integrates.
 func InsecureTLSTransport() *http.Transport {
+	return cloneTransport(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec // self-signed LAN device by design
+}
+
+// cloneTransport returns http.DefaultTransport with tlsConfig applied. Cloning
+// rather than building fresh preserves proxy support, HTTP/2, pooling and the
+// handshake/idle timeouts; it falls back to a bare transport only if
+// DefaultTransport was replaced, where the type assertion would otherwise panic.
+func cloneTransport(tlsConfig *tls.Config) *http.Transport {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
-		return &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // self-signed LAN device by design
+		return &http.Transport{TLSClientConfig: tlsConfig}
 	}
 	t := base.Clone()
-	t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // self-signed LAN device by design
+	t.TLSClientConfig = tlsConfig
 	return t
 }
 
@@ -149,18 +109,9 @@ func InsecureTLSTransport() *http.Transport {
 // when it is 2xx — leaving the body unread and intact for the caller to decode.
 //
 // It gives a hand-rolled client the same structured error [BaseClient.DoJSON]
-// produces, so errors.As(&APIError) and [IsConflict] work against every plugin
-// rather than only the ones that embed BaseClient. Without it, a client that
-// formats the status into a string ("myservice: HTTP 409") makes it impossible
-// for any caller to branch on the status.
-//
-//	resp, err := c.http.Do(req)
-//	if err != nil { return fmt.Errorf("myservice: %w", Redact(err)) }
-//	defer resp.Body.Close()
-//	if err := httpc.CheckStatus(ServiceID, resp); err != nil { return err }
-//
-// The error body is bounded (8 KiB) for the same reason BaseClient bounds it: a
-// misbehaving upstream must not stream megabytes into an error string.
+// produces, so errors.As(&APIError) and [IsConflict] keep working. A client that
+// formats the status into a string instead ("myservice: HTTP 409") makes it
+// impossible for any caller to branch on it.
 func CheckStatus(service string, resp *http.Response) error {
 	if resp == nil {
 		return fmt.Errorf("%s: no response", service)
@@ -168,31 +119,18 @@ func CheckStatus(service string, resp *http.Response) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	raw, _ := ReadAllLimited(resp.Body, 8<<10)
-	return &APIError{Service: service, StatusCode: resp.StatusCode, Body: string(raw)}
+	raw, _ := ReadAllLimited(resp.Body, errorBodyLimit)
+	return newAPIError(service, resp.StatusCode, raw)
 }
 
 // StatusError returns an *[APIError] for a status the caller already holds,
-// without a live *http.Response.
+// without a live *http.Response — for helpers that return a bare (status, body)
+// pair so the caller can branch on the status itself.
 //
-// It exists for clients whose transport helper returns a bare (status, body) pair
-// so the caller can branch on the status itself — a 403 that means "re-login", a
-// 408 that means "the car is asleep", a 204 that means "nothing playing". Those
-// cannot use [CheckStatus] (the response is already consumed), and hand-rolling
-// an &APIError{…} in the plugin is precisely the drift the SDK exists to prevent.
-//
-//	status, body, err := c.get(ctx, path)
-//	if err != nil { return err }
-//	if status == http.StatusForbidden { return c.reauth(ctx) }   // caller's own branch
-//	if status < 200 || status >= 300 {
-//	    return fmt.Errorf("%s fetch: %w", ServiceID, httpc.StatusError(ServiceID, status))
-//	}
-//
-// The body is deliberately omitted: an upstream body can carry credentials, and by
-// this point the caller has it anyway. errors.As and [IsConflict] work on the
-// result exactly as they do on CheckStatus's.
+// The body is deliberately omitted: an upstream body can carry credentials, and
+// the caller has it anyway. errors.As and [IsConflict] work as with [CheckStatus].
 func StatusError(service string, status int) error {
-	return &APIError{Service: service, StatusCode: status}
+	return newAPIError(service, status, nil)
 }
 
 // Redact returns err with credential-bearing detail stripped. For a *url.Error —
@@ -200,17 +138,10 @@ func StatusError(service string, status int) error {
 // userinfo, keeping scheme://host/path.
 //
 // Wrap any transport error from a client whose auth rides in the URL rather than
-// a header (an api_key or securityToken query parameter). Otherwise the token
-// travels inside err.Error() into logs, into the activity feed, and out through
-// the management API.
-//
-//	resp, err := c.http.Do(req)
-//	if err != nil {
-//	    return fmt.Errorf("%s request: %w", ServiceID, httpc.Redact(err))
-//	}
-//
-// It is a no-op for errors that carry no URL, so it is always safe to apply.
-// Apply it to the raw transport error, before adding your own context with %w.
+// a header (an api_key query parameter); otherwise the token travels inside
+// err.Error() into logs and out through any API that surfaces them. Apply it to
+// the raw transport error, before adding context with %w. It is a no-op for
+// errors carrying no URL, so it is always safe to apply.
 func Redact(err error) error {
 	var urlErr *url.Error
 	if !errors.As(err, &urlErr) {

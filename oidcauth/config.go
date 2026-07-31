@@ -20,14 +20,12 @@
 //
 // # Errors never carry an upstream body
 //
-// Every failure path in this package deliberately drops the provider's response
-// body and returns one of the sentinels in errors.go instead. That is not
-// tidiness. A discovery URL typo'd onto an internal service echoes that service's
-// body back to whoever pressed the button; a token endpoint renders
-// `error_description` as provider-controlled free text; a failed JWKS fetch is
-// rendered by the underlying library as "get keys failed: <status> <body>". Each
-// one puts bytes you do not control into an admin-facing message or a log. The
-// sentinels carry the diagnosis; the body is dropped.
+// Every failure path drops the provider's response body and returns one of the
+// sentinels in errors.go instead. A discovery URL typo'd onto an internal
+// service would otherwise echo that service's body back to whoever pressed the
+// button, and `error_description` is provider-controlled free text — bytes you
+// do not control, landing in an admin-facing message or a log. The sentinels
+// carry the diagnosis; the body is dropped.
 package oidcauth
 
 import (
@@ -73,12 +71,12 @@ type Config struct {
 	// BaseURL is *this application's* own public origin (e.g.
 	// "https://app.example.com"). The redirect URI is BaseURL+CallbackPath.
 	//
-	// It comes from configuration rather than from the request's Host header on
+	// It comes from configuration rather than the request's Host header on
 	// purpose: Host is attacker-controlled, and a redirect URI derived from it is
-	// how an open redirect becomes a token leak. It is also what
-	// [Provider.CookieSecure] reads, so the session cookie's Secure flag is right
-	// behind a TLS-terminating reverse proxy — where the request itself arrives
-	// over plain HTTP and every scheme-sniffing heuristic gets it wrong.
+	// how an open redirect becomes a token leak. [Provider.CookieSecure] reads it
+	// too, so the session cookie's Secure flag stays right behind a
+	// TLS-terminating proxy, where the request arrives over plain HTTP and
+	// scheme-sniffing gets it wrong.
 	BaseURL string
 
 	// OwnerGroup gates administrative access: an identity is [Identity.Owner]

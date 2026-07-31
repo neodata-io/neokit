@@ -21,9 +21,9 @@ import (
 	"time"
 )
 
-// APIError is returned by [BaseClient.DoJSON] when the server responds with a
-// non-2xx status. Plugins can use errors.As to branch on StatusCode (e.g. to
-// detect 401 for token refresh) instead of matching on the error string.
+// APIError is returned when a server responds with a non-2xx status. Callers use
+// errors.As to branch on StatusCode (e.g. to detect 401 for token refresh)
+// instead of matching on the error string.
 type APIError struct {
 	Service    string
 	StatusCode int
@@ -31,12 +31,22 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	// A body-less APIError (see StatusError, for callers that only hold a status)
-	// must not render a dangling "403: ".
+	// A body-less APIError (see StatusError) must not render a dangling "403: ".
 	if e.Body == "" {
 		return fmt.Sprintf("%s API %d", e.Service, e.StatusCode)
 	}
 	return fmt.Sprintf("%s API %d: %s", e.Service, e.StatusCode, e.Body)
+}
+
+// errorBodyLimit bounds how much of a non-2xx body is kept in an [APIError]: a
+// misbehaving upstream must not stream megabytes into an error string.
+const errorBodyLimit = 8 << 10
+
+// newAPIError is the single construction point for a status error, so
+// [CheckStatus], [StatusError] and [BaseClient.send] cannot drift on how one is
+// shaped. A nil body means "status only".
+func newAPIError(service string, status int, body []byte) *APIError {
+	return &APIError{Service: service, StatusCode: status, Body: string(body)}
 }
 
 // AuthFunc sets authentication headers on an outgoing request.
@@ -239,27 +249,6 @@ func DoWithTokenRetry(ctx context.Context, ts TokenSource, do func(token string)
 	return do(fresh)
 }
 
-// BearerGet issues an authenticated GET and returns the raw status for callers that
-// special-case it (a vehicle API's 408=asleep, a media API's 204=idle), with the
-// SDK's token-retry.
-func BearerGet(ctx context.Context, hc *http.Client, tokens TokenSource, service, url string) (int, []byte, error) {
-	return DoWithTokenRetry(ctx, tokens, func(token string) (int, []byte, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return 0, nil, fmt.Errorf("%s build request: %w", service, err)
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := hc.Do(req)
-		if err != nil {
-			return 0, nil, fmt.Errorf("%s request: %w", service, err)
-		}
-		defer resp.Body.Close()
-		body, err := ReadAllLimited(resp.Body, 0)
-		return resp.StatusCode, body, err
-	})
-}
-
 // attempt issues a single request and returns the bearer token it used (empty
 // when no TokenSource is configured), so DoJSON can hand it back as the stale
 // token on the post-401 retry. stale is forwarded to the TokenSource: "" on the
@@ -295,13 +284,8 @@ func (c *BaseClient) attempt(ctx context.Context, method, url string, rawBody []
 	}
 	defer drainClose(resp.Body)
 	if out != nil {
-		// Bounded, like every other read in this file. send already caps the
-		// *error* body at 8 KiB and ReadAllLimited exists so "a compromised or
-		// runaway upstream can't stream unbounded bytes into memory" — but the
-		// success path, which is the one ~15 plugins take on every call, decoded
-		// straight from resp.Body with no ceiling at all. Overpass and Open-Meteo
-		// responses are routinely megabytes, so the gap was widest exactly where
-		// the payloads are biggest.
+		// Bounded like every other read here: a compromised or runaway upstream
+		// must not stream unbounded bytes into memory.
 		if err := json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(out); err != nil {
 			return used, fmt.Errorf("%s response decode failed: %w", c.Service, err)
 		}
@@ -314,8 +298,7 @@ func (c *BaseClient) attempt(ctx context.Context, method, url string, rawBody []
 // close it; on any error the body is already drained and closed here (the caller
 // may still read resp.StatusCode — e.g. to detect a 401 for a token refresh). It
 // is the shared do/debug/status core behind both DoJSON's attempt and
-// [BaseClient.Bytes], so the two can't drift on how a request is timed, traced in
-// the debug ring, or turned into an error.
+// [BaseClient.Bytes].
 func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response, error) {
 	start := time.Now()
 	resp, err := c.HTTPClient.Do(req)
@@ -342,15 +325,11 @@ func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response
 		})
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Bound the error body: a misbehaving upstream could otherwise stream
-		// megabytes into an error string we only surface for diagnostics.
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		// Keep reading past what the message keeps. The 8 KiB above bounds what
-		// gets *stored*; stopping the read there also stopped the connection being
-		// reusable, so every verbose 5xx cost a new TCP (and TLS) handshake —
-		// worst exactly when an upstream is already unwell.
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
+		// errorBodyLimit bounds what is *stored*; drainClose keeps reading so the
+		// connection stays reusable, which matters most when an upstream is unwell.
 		drainClose(resp.Body)
-		return resp, &APIError{Service: c.Service, StatusCode: resp.StatusCode, Body: string(raw)}
+		return resp, newAPIError(c.Service, resp.StatusCode, raw)
 	}
 	return resp, nil
 }

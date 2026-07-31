@@ -58,7 +58,7 @@ func BenchmarkTransport_RetryOnly(b *testing.B) {
 // the retry loop and nothing else. It must stay at parity with
 // BenchmarkTransport_RetryOnly.
 func BenchmarkTransport_Default(b *testing.B) {
-	drive(b, NewRetryTransport(stubRoundTripper{}))
+	drive(b, NewRetryTransport(stubRoundTripper{}, DefaultRetryConfig()))
 }
 
 // BenchmarkTransport_Traced is the opt-in path, with no provider installed. The

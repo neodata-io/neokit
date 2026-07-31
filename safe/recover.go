@@ -17,15 +17,13 @@ import (
 // Do runs fn, recovering and logging any panic, and reports whether one
 // occurred.
 //
-// Prefer it over [Recover]. Recover depends on being invoked *directly* by a
-// deferred call, which is a property the compiler will not check: the natural-
-// looking
+// Prefer it over [Recover], which depends on being invoked *directly* by a
+// deferred call — a property the compiler will not check. The natural-looking
 //
 //	defer func() { safe.Recover("job"); cleanup() }()
 //
-// silently guards nothing, because recover() returns nil unless it is called by
-// the deferred function itself. That form compiles, reads as correct, and lets
-// the panic through. Do has no such positioning to get wrong.
+// guards nothing: recover() returns nil unless called by the deferred function
+// itself. Do has no such positioning to get wrong.
 func Do(name string, fn func()) (panicked bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -63,9 +61,8 @@ func logPanic(log *slog.Logger, name string, r any) {
 		log = slog.Default()
 	}
 	// LogAttrs rather than the variadic form: passing these through ...any boxes
-	// each one onto the heap, and this runs on a path that is already degraded.
-	// There is no request context to carry at a panic site, so Background is the
-	// honest value rather than a nil the callee would have to repair.
+	// each onto the heap. There is no request context at a panic site, so
+	// Background is the honest value rather than a nil the callee must repair.
 	log.LogAttrs(context.Background(), slog.LevelError, "goroutine panic",
 		slog.String("goroutine", name),
 		slog.Any("panic", r),

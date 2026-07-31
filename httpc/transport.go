@@ -43,49 +43,34 @@ func DefaultRetryConfig() RetryConfig {
 //
 // It composes: install it as an *http.Client's Transport, wrapping any base
 // RoundTripper (http.DefaultTransport when nil). BaseClient installs it by
-// default, so every plugin that embeds BaseClient is resilient automatically; a
-// plugin with a hand-rolled client opts in with one line:
-//
-//	http: &http.Client{Timeout: 15 * time.Second, Transport: httpc.NewRetryTransport(nil)}
+// default, so every client that embeds BaseClient is resilient automatically.
 type RetryTransport struct {
 	base http.RoundTripper
 	cfg  RetryConfig
 }
 
-// NewRetryTransport wraps base (or http.DefaultTransport when nil) with the
-// default retry policy.
-func NewRetryTransport(base http.RoundTripper) *RetryTransport {
-	return NewRetryTransportConfig(base, DefaultRetryConfig())
-}
-
-// NewRetryTransportConfig is NewRetryTransport with an explicit policy.
+// NewRetryTransport wraps base (or http.DefaultTransport when nil) with cfg.
+// Pass [DefaultRetryConfig] for the standard policy.
 //
-// It does not install tracing; use [NewTracedRetryTransport] for that. The
-// otelhttp wrapper used to be applied here unconditionally, justified by the
-// claim that "when tracing is disabled the global provider is a no-op, so the
-// spans cost nothing". Measured against a stub transport with no provider
-// installed, the wrapper costs +1195ns, +2810B and +22 allocations per request,
-// while this retry loop costs ~5ns and allocates nothing — so the claim was
-// wrong by more than an order of magnitude, and it was charged to every caller
-// for spans nobody collected. See BenchmarkTransport_Default and
-// BenchmarkTransport_Traced.
-func NewRetryTransportConfig(base http.RoundTripper, cfg RetryConfig) *RetryTransport {
+// It installs no tracing; use [NewTracedRetryTransport] for that.
+func NewRetryTransport(base http.RoundTripper, cfg RetryConfig) *RetryTransport {
 	if base == nil {
 		base = http.DefaultTransport
 	}
 	return &RetryTransport{base: base, cfg: cfg}
 }
 
-// NewTracedRetryTransport is [NewRetryTransportConfig] plus otel client spans:
-// every request opens a span parented to the request's context and carries the
+// NewTracedRetryTransport is [NewRetryTransport] plus otel client spans: every
+// request opens a span parented to the request's context and carries the
 // traceparent header outbound.
 //
 // otelhttp sits *inside* the retry loop, so each attempt is its own span and a
 // retried upstream shows its retries in the trace.
 //
 // Use it where a collector actually runs. With no provider installed the spans
-// go nowhere but still cost the full per-request price above, which is why this
-// is a separate constructor rather than the default.
+// go nowhere but still cost ~1.2µs and 22 allocations per request, which is why
+// this is a separate constructor rather than the default — see
+// BenchmarkTransport_Default and BenchmarkTransport_Traced.
 func NewTracedRetryTransport(base http.RoundTripper, cfg RetryConfig) *RetryTransport {
 	if base == nil {
 		base = http.DefaultTransport
@@ -135,13 +120,9 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		// Read Retry-After (a header, so still available) before draining the body.
 		wait := backoffFor(resp, delay)
-		// Drain and close the discarded response so the connection can be reused.
-		// The cap used to be 4 KiB, which is under the size of a typical verbose
-		// 5xx explanation — so anything larger was not reused, and each attempt
-		// opened a fresh connection. Measured at three per call against a 500
-		// with a 64 KiB body. That is the wrong way round: it spent new TCP and
-		// TLS handshakes on an upstream that was already failing, turning a retry
-		// policy meant to ride out a blip into extra load on the thing blipping.
+		// Drain and close the discarded response so the connection can be reused;
+		// otherwise every retry against a verbose 5xx costs a fresh TCP and TLS
+		// handshake, aimed at an upstream that is already failing.
 		if resp != nil {
 			drainClose(resp.Body)
 		}

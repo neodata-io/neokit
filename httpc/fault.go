@@ -7,19 +7,13 @@ import (
 	"net/http"
 )
 
-// Fault classifies *why* a call failed, so the host can decide what to do about
-// it and what to tell the admin.
+// Fault classifies *why* a call failed, so a caller can decide what to do about
+// it: "unhealthy" is true and useless — it says nothing about whether to fix a
+// password or wait five minutes, to back off or give up.
 //
-// The host could always see that a health check failed. It could never see the one
-// thing that decides what happens next: whose problem it is. "myservice: unhealthy"
-// is true and useless — the admin cannot tell whether to fix a password or wait
-// five minutes, and a scheduler cannot tell whether to back off or give up. Both
-// were guessing, and the information to stop guessing was right there in the error
-// all along.
-//
-// It is a closed, small set on purpose. The temptation is to grow one constant per
-// upstream quirk; the discipline is that a Fault must change what a *caller* does.
-// If two faults lead to the same decision, they are one fault.
+// It is a closed, small set on purpose. The discipline is that a Fault must
+// change what a caller does; if two faults lead to the same decision, they are
+// one fault.
 type Fault string
 
 const (
