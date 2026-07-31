@@ -1,32 +1,74 @@
 // Package safe guards background work that runs outside a request's own
 // recover middleware — schedulers, event hooks, detached goroutines — so a
-// panic there is logged with a stack trace and contained, rather than
-// crashing the whole process or silently ending that one goroutine forever.
-// Recover guards a single run; Go (see supervise.go) keeps a goroutine alive
-// across repeated panics.
+// panic there is logged with a stack trace and contained, rather than crashing
+// the whole process or silently ending that one goroutine forever.
+//
+// [Do] guards a single run and cannot be misused. [Recover] is the deferred
+// form. [Group] (see supervise.go) keeps a goroutine alive across repeated
+// panics and joins the set at shutdown.
 package safe
 
 import (
+	"context"
 	"log/slog"
 	"runtime/debug"
 )
 
+// Do runs fn, recovering and logging any panic, and reports whether one
+// occurred.
+//
+// Prefer it over [Recover]. Recover depends on being invoked *directly* by a
+// deferred call, which is a property the compiler will not check: the natural-
+// looking
+//
+//	defer func() { safe.Recover("job"); cleanup() }()
+//
+// silently guards nothing, because recover() returns nil unless it is called by
+// the deferred function itself. That form compiles, reads as correct, and lets
+// the panic through. Do has no such positioning to get wrong.
+func Do(name string, fn func()) (panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			logPanic(nil, name, r)
+		}
+	}()
+	fn()
+	return false
+}
+
 // Recover recovers a panic in a detached goroutine and logs it with a stack
-// trace, so a panic in best-effort background work (schedulers, event hooks) is
-// contained and diagnosable instead of crashing the whole process. Such
-// goroutines run outside Fiber's recover middleware, so they need their own guard.
-// Use it as the first deferred call in the goroutine:
+// trace. It must be the deferred call itself:
 //
 //	go func() { defer safe.Recover("myJob"); doWork() }()
+//
+// Wrapping it in another closure — `defer func() { safe.Recover("x") }()` —
+// does nothing at all, for the reason given on [Do]. Prefer [Do] unless you
+// need the panic to keep unwinding a specific frame.
 func Recover(name string) {
 	if r := recover(); r != nil {
-		LogPanic(name, r)
+		logPanic(nil, name, r)
 	}
 }
 
-// LogPanic logs an already-recovered panic value with a stack trace. Callers that
-// need to *react* to a panic (e.g. respawn the goroutine) recover it themselves and
-// pass the value here so the log format stays identical to Recover's.
-func LogPanic(name string, r any) {
-	slog.Error("goroutine panic", "goroutine", name, "panic", r, "stack", string(debug.Stack()))
+// LogPanic logs an already-recovered panic value with a stack trace. Callers
+// that need to *react* to a panic (e.g. respawn the goroutine) recover it
+// themselves and pass the value here so the log format stays identical to
+// [Recover]'s.
+func LogPanic(name string, r any) { logPanic(nil, name, r) }
+
+// logPanic is the single formatting point. A nil logger means slog.Default().
+func logPanic(log *slog.Logger, name string, r any) {
+	if log == nil {
+		log = slog.Default()
+	}
+	// LogAttrs rather than the variadic form: passing these through ...any boxes
+	// each one onto the heap, and this runs on a path that is already degraded.
+	// There is no request context to carry at a panic site, so Background is the
+	// honest value rather than a nil the callee would have to repair.
+	log.LogAttrs(context.Background(), slog.LevelError, "goroutine panic",
+		slog.String("goroutine", name),
+		slog.Any("panic", r),
+		slog.String("stack", string(debug.Stack())),
+	)
 }
