@@ -8,6 +8,8 @@ package cache
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -71,6 +73,48 @@ type entry struct {
 // New creates an empty cache with the default key cap.
 func New() *Cache {
 	return &Cache{entries: make(map[string]*entry), maxEntries: defaultMaxEntries}
+}
+
+// ErrTypeMismatch reports that a key already holds a value of a different type
+// than the caller asked for — two packages colliding in one key namespace.
+//
+// It is an error rather than a panic because of where the panic used to happen:
+// inside the entry's critical section, in a `v := e.val.(T)` guarded by a
+// Lock/Unlock pair with no defer between them. The unwind skipped the Unlock,
+// so the entry's mutex stayed locked forever and every later GetOrFetch *and*
+// Invalidate for that key blocked with no timeout and no diagnostic. A recover
+// higher up (the whole reason a recover middleware exists) turned a crash into
+// a silently wedged key, which is worse.
+var ErrTypeMismatch = errors.New("cache: key holds a value of a different type")
+
+// load reads an entry under its own lock and reports what the caller should do:
+// whether a usable value was found (hit) and whether this caller is the one
+// that should start a background revalidation (spawn).
+//
+// It exists so the lock is released by a defer on every path — including the
+// type-assertion failure — which is what makes ErrTypeMismatch survivable.
+// Nothing here can block: the fetch happens in the caller, after this returns.
+func load[T any](e *entry, key string) (v T, hit, spawn bool, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if !e.loaded {
+		return v, false, false, nil
+	}
+	got, ok := e.val.(T)
+	if !ok {
+		return v, false, false, fmt.Errorf("%w: %q holds %T, not %T", ErrTypeMismatch, key, e.val, v)
+	}
+	if time.Now().Before(e.expires) {
+		return got, true, false, nil // fresh
+	}
+	// Stale. Claim the refresh under this same lock so a burst of readers
+	// produces exactly one revalidation.
+	if !e.refreshing {
+		e.refreshing = true
+		return got, true, true, nil
+	}
+	return got, true, false, nil
 }
 
 func (c *Cache) entryFor(key string) *entry {
@@ -150,41 +194,42 @@ func (c *Cache) Invalidate(key string) {
 func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error)) (T, error) {
 	e := c.entryFor(key)
 
-	e.mu.Lock()
-	if e.loaded {
-		v := e.val.(T)
-		if time.Now().Before(e.expires) {
-			e.mu.Unlock()
-			return v, nil // fresh
-		}
+	v, hit, spawn, err := load[T](e, key)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	if hit {
 		// Stale: hand back what we have and refresh behind it. `refreshing` is the
-		// gate — a burst of reads on a stale key spawns one refresh, not one each.
-		if !e.refreshing {
-			e.refreshing = true
+		// gate — a burst of reads on a stale key spawns one refresh, not one each —
+		// and load already claimed it for us, so only one caller reaches this.
+		if spawn {
 			go revalidate(e, key, ttl, fn)
 		}
-		e.mu.Unlock()
 		return v, nil
 	}
-	e.mu.Unlock()
 
 	// Cold. Queue behind any caller already fetching this key.
 	e.fetch.Lock()
 	defer e.fetch.Unlock()
 
 	// Re-check under the fetch gate: whoever we queued behind has published by now.
-	e.mu.Lock()
-	if e.loaded {
-		v := e.val.(T)
-		e.mu.Unlock()
+	v, hit, _, err = load[T](e, key)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	if hit {
 		return v, nil
 	}
+
+	e.mu.Lock()
 	gen := e.gen
 	e.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
-	v, err := fn(ctx)
+	v, err = fn(ctx)
 	if err != nil {
 		return v, err // hand the value back but don't cache the failure
 	}
