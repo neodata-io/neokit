@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/neodata-io/neokit/config"
@@ -50,29 +51,19 @@ func TestLoadReadsTheEnvironmentIncludingEmbeddedFields(t *testing.T) {
 	}
 }
 
-// A malformed value must name the variable. "strconv.Atoi: parsing \"abc\"" with
-// no variable name is the error that costs an hour.
-func TestLoadNamesTheOffendingVariable(t *testing.T) {
+// A malformed value must say which setting and what it choked on. "invalid
+// syntax" with neither is the error that costs an hour.
+func TestLoadNamesTheOffendingField(t *testing.T) {
 	t.Setenv("PORT", "not-a-number")
 
 	_, err := config.Load[appConfig]()
 	if err == nil {
 		t.Fatal("want an error for an unparseable PORT")
 	}
-	if !contains(err.Error(), "PORT") {
-		t.Errorf("err = %v, want it to name PORT", err)
+	if !strings.Contains(err.Error(), "Port") {
+		t.Errorf("err = %v, want it to name the Port field", err)
 	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
+	if !strings.Contains(err.Error(), "not-a-number") {
+		t.Errorf("err = %v, want it to quote the value it could not parse", err)
 	}
-	return -1
 }

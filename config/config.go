@@ -9,7 +9,6 @@ package config
 
 import (
 	"fmt"
-	"reflect"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
@@ -64,102 +63,12 @@ func Load[T any]() (T, error) {
 	cfg, err := env.ParseAs[T]()
 	if err != nil {
 		var zero T
-		// env's own error already names the offending variable; wrapping keeps
-		// that and says where it came from.
-		errWithVar := enrichErrorWithEnvVar(err, reflect.TypeOf(cfg))
-		return zero, fmt.Errorf("parse environment: %w", errWithVar)
+		// env's error names the offending field and the value it could not
+		// parse, which is what a developer needs; wrapping says where it came
+		// from. Deliberately NOT reflected over to recover the env var name —
+		// mapping Port to PORT is trivial for a reader, and reflection here
+		// would be exactly the magic this library exists to avoid.
+		return zero, fmt.Errorf("parse environment: %w", err)
 	}
 	return cfg, nil
-}
-
-// enrichErrorWithEnvVar enhances an env parsing error to include the environment
-// variable name (from the struct tag) alongside the field name for clarity.
-func enrichErrorWithEnvVar(err error, typ reflect.Type) error {
-	if err == nil || typ == nil {
-		return err
-	}
-
-	errStr := err.Error()
-	if !contains(errStr, `field "`) {
-		return err
-	}
-
-	// Extract the field name from the error message.
-	fieldName := extractFieldName(errStr)
-	if fieldName == "" {
-		return err
-	}
-
-	// Look up the env var name from the struct tags.
-	envVarName := findEnvTag(typ, fieldName)
-	if envVarName == "" {
-		return err
-	}
-
-	// If the error doesn't already mention the env var, add it.
-	if !contains(errStr, envVarName) {
-		return fmt.Errorf("%s (env var %s)", err, envVarName)
-	}
-	return err
-}
-
-// extractFieldName pulls the struct field name from an env error like
-// `field "FieldName"`.
-func extractFieldName(errStr string) string {
-	start := indexOf(errStr, `field "`)
-	if start < 0 {
-		return ""
-	}
-	start += len(`field "`)
-	end := indexOf(errStr[start:], `"`)
-	if end < 0 {
-		return ""
-	}
-	return errStr[start : start+end]
-}
-
-// findEnvTag searches a struct type for the field name and returns its
-// env tag value, if present. It recursively checks embedded structs.
-func findEnvTag(typ reflect.Type, fieldName string) string {
-	if typ == nil {
-		return ""
-	}
-
-	// Handle pointer types.
-	if typ.Kind() == reflect.Ptr {
-		typ = typ.Elem()
-	}
-
-	if typ.Kind() != reflect.Struct {
-		return ""
-	}
-
-	for i := 0; i < typ.NumField(); i++ {
-		f := typ.Field(i)
-		if f.Name == fieldName {
-			if tag, ok := f.Tag.Lookup("env"); ok {
-				return tag
-			}
-		}
-		// Recursively check embedded structs.
-		if f.Anonymous {
-			if tag := findEnvTag(f.Type, fieldName); tag != "" {
-				return tag
-			}
-		}
-	}
-	return ""
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
