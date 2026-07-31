@@ -57,9 +57,15 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 			c.SetContext(logx.WithRequestID(c.Context(), rid))
 		}
 
+		// Deferred, not paired inline: a panic in a downstream handler unwinds
+		// straight past a plain Dec(), so the gauge was permanently corrupted by
+		// exactly one per panicking request. Whether that happens depends on where
+		// the recover middleware is registered relative to this one, which is not
+		// something a library should require a caller to get right.
 		httpRequestsInFlight.Inc()
+		defer httpRequestsInFlight.Dec()
+
 		err := c.Next()
-		httpRequestsInFlight.Dec()
 
 		// The route template (e.g. /api/invites/:id) — and it can only be read
 		// HERE, after c.Next(). Read before the chain runs, the router hasn't

@@ -72,6 +72,23 @@ type APIError struct {
 
 func (e *APIError) Error() string { return e.Message }
 
+// normalized fills in the fields a hand-written APIError is most likely to
+// leave unset.
+//
+// Every field is exported and there is no constructor, so `&APIError{Message:
+// "nope"}` is the obvious way to write one — and it used to render as HTTP 200
+// with an error body, because c.Status(0) leaves fasthttp's default untouched.
+// A client saw 200 and treated the failure as success. A zero status is
+// therefore read as "the author didn't say", not as a status.
+func normalized(e *APIError) {
+	if e.Status == 0 {
+		e.Status = fiber.StatusInternalServerError
+	}
+	if e.Code == "" {
+		e.Code = CodeForStatus(e.Status)
+	}
+}
+
 // Unwrap exposes a *fiber.Error carrying the status and public message. Render,
 // WriteError, and StatusForError all match *APIError first, so this is never the
 // path that renders the full envelope (code + fields). It exists purely as a
@@ -88,7 +105,9 @@ func (e *APIError) Unwrap() error { return fiber.NewError(e.Status, e.Message) }
 func (e *Errors) Render(c fiber.Ctx, err error) error {
 	var ae *APIError
 	if errors.As(err, &ae) {
-		return c.Status(ae.Status).JSON(ae)
+		out := *ae // copy: rendering must not mutate the caller's error
+		normalized(&out)
+		return c.Status(out.Status).JSON(out)
 	}
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
@@ -157,7 +176,9 @@ func logCause(c fiber.Ctx, status int, cause error) {
 func (e *Errors) StatusForError(err error) int {
 	var ae *APIError
 	if errors.As(err, &ae) {
-		return ae.Status
+		out := *ae
+		normalized(&out) // a zero Status must not be recorded as 0 in the metrics
+		return out.Status
 	}
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
