@@ -2,6 +2,7 @@ package sqlitex
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,15 @@ import (
 // The caller owns the returned *sql.DB and must Close it — normally by pushing
 // it onto a lifecycle.Stack.
 func Open(path string, migrate func(*sql.DB) error) (*sql.DB, error) {
+	// An empty path is never a legitimate target, and it is not harmless: SQLite
+	// accepts it and hands back a private, anonymous database that accepts writes
+	// and vanishes on restart. A deployment that forgot to set its path would
+	// start, look healthy, serve traffic, and lose everything — silently. Ask for
+	// a non-persistent database with ":memory:" instead, which says so.
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("sqlitex: database path is empty (use \":memory:\" for a non-persistent database)")
+	}
+
 	memory := path == ":memory:"
 	if !memory {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func (f *fakeSnap) SnapshotTo(_ context.Context, dst string) error {
 func TestWriteDailyIsIdempotentWithinADay(t *testing.T) {
 	dir := t.TempDir()
 	snap := &fakeSnap{}
-	s := backup.New(snap, dir, 7)
+	s := backup.New(snap, backup.Options{Dir: dir, Retention: 7})
 
 	for range 3 {
 		if err := s.WriteDaily(context.Background()); err != nil {
@@ -44,7 +45,7 @@ func TestRetentionKeepsTheNewest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := backup.New(&fakeSnap{}, dir, 3)
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 3})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestRetentionKeepsTheNewest(t *testing.T) {
 // written, which is the one outcome a backup system must never have.
 func TestRetentionIsClampedToAtLeastOne(t *testing.T) {
 	dir := t.TempDir()
-	s := backup.New(&fakeSnap{}, dir, 0)
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 0})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestRetentionIsClampedToAtLeastOne(t *testing.T) {
 // working directory.
 func TestEmptyDirDisablesScheduledBackups(t *testing.T) {
 	snap := &fakeSnap{}
-	s := backup.New(snap, "", 7)
+	s := backup.New(snap, backup.Options{Dir: "", Retention: 7})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("a disabled backup must not be an error: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestEmptyDirDisablesScheduledBackups(t *testing.T) {
 // reflect the database now, not whenever the scheduler last ran.
 func TestBackupStreamsAFreshSnapshot(t *testing.T) {
 	snap := &fakeSnap{}
-	s := backup.New(snap, t.TempDir(), 7)
+	s := backup.New(snap, backup.Options{Dir: t.TempDir(), Retention: 7})
 
 	var buf writeCounter
 	if err := s.Backup(context.Background(), &buf); err != nil {
@@ -127,12 +128,74 @@ func TestListIsNewestFirst(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	s := backup.New(&fakeSnap{}, dir, 10)
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 10})
 	got, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(got) != 3 || got[0].Name != "backup-2026-01-03.db" {
 		t.Errorf("List = %+v, want newest-dated first", got)
+	}
+}
+
+// A directory that already has files in it is the case this exists for: a
+// hardcoded prefix would make an existing deployment's backups invisible to List
+// and to prune the day it migrated.
+func TestCustomPrefixIsUsedForWritingAndReading(t *testing.T) {
+	dir := t.TempDir()
+	snap := &fakeSnap{}
+	s := backup.New(snap, backup.Options{Dir: dir, Retention: 7, Prefix: "neogate-"})
+
+	if err := s.WriteDaily(context.Background()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	got, err := s.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("List = %+v, want the one backup just written", got)
+	}
+	if !strings.HasPrefix(got[0].Name, "neogate-") {
+		t.Errorf("Name = %q, want the configured prefix", got[0].Name)
+	}
+}
+
+// A file under a different prefix is not this service's to list or to delete.
+func TestAForeignPrefixIsIgnoredEntirely(t *testing.T) {
+	dir := t.TempDir()
+	foreign := filepath.Join(dir, "someone-elses-2026-01-01.db")
+	if err := os.WriteFile(foreign, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 1, Prefix: "backup-"})
+
+	// Write enough of our own that pruning is guaranteed to run.
+	if err := s.WriteDaily(context.Background()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	got, err := s.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, info := range got {
+		if info.Name == "someone-elses-2026-01-01.db" {
+			t.Error("List returned a file under a foreign prefix")
+		}
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("prune deleted a file it does not own: %v", err)
+	}
+}
+
+func TestEmptyPrefixFallsBackToTheDefault(t *testing.T) {
+	dir := t.TempDir()
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
+	if err := s.WriteDaily(context.Background()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	got, _ := s.List(context.Background())
+	if len(got) != 1 || !strings.HasPrefix(got[0].Name, backup.DefaultPrefix) {
+		t.Errorf("List = %+v, want the default prefix", got)
 	}
 }

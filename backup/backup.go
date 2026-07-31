@@ -30,28 +30,54 @@ type Snapshotter interface {
 }
 
 const (
-	filePrefix = "backup-"
+	// DefaultPrefix begins a backup filename when Options.Prefix is empty.
+	DefaultPrefix = "backup-"
+
 	fileSuffix = ".db"
 	dateLayout = "2006-01-02"
 )
+
+// Options configures a [Service].
+type Options struct {
+	// Dir is where scheduled backups are written. Empty disables them — writing
+	// into the working directory instead would scatter database copies wherever
+	// the process happened to start.
+	Dir string
+
+	// Retention is how many backups to keep. Clamped to at least 1: a retention
+	// of zero would delete each backup the moment it was written, the one
+	// outcome a backup system must never have.
+	Retention int
+
+	// Prefix begins every backup filename. Empty means [DefaultPrefix].
+	//
+	// It is configurable because this package adopts a directory that may already
+	// have files in it. A hardcoded prefix would make an existing deployment's
+	// backups invisible to List and to prune the day it migrated — orphaned
+	// rather than deleted, which is worse: they stop being listed and never stop
+	// accumulating.
+	Prefix string
+}
 
 // Service produces snapshots and owns the on-disk backup directory.
 type Service struct {
 	snap      Snapshotter
 	dir       string
 	retention int
+	prefix    string
 	now       func() time.Time
 }
 
-// New wires the service. An empty dir disables the scheduled backup — writing
-// into the working directory instead would scatter database copies wherever the
-// process happened to start. retention is clamped to at least 1, because a
-// retention of zero would delete each backup the moment it was written.
-func New(s Snapshotter, dir string, retention int) *Service {
-	if retention < 1 {
-		retention = 1
+// New wires the service. See [Options] for field meaning.
+func New(s Snapshotter, o Options) *Service {
+	if o.Retention < 1 {
+		o.Retention = 1
 	}
-	return &Service{snap: s, dir: dir, retention: retention, now: time.Now}
+	prefix := o.Prefix
+	if prefix == "" {
+		prefix = DefaultPrefix
+	}
+	return &Service{snap: s, dir: o.Dir, retention: o.Retention, prefix: prefix, now: time.Now}
 }
 
 // Backup streams a fresh snapshot to w.
@@ -95,7 +121,7 @@ func (s *Service) WriteDaily(ctx context.Context) error {
 		return fmt.Errorf("backup: create directory: %w", err)
 	}
 
-	path := filepath.Join(s.dir, filePrefix+s.now().Format(dateLayout)+fileSuffix)
+	path := filepath.Join(s.dir, s.prefix+s.now().Format(dateLayout)+fileSuffix)
 	if _, err := os.Stat(path); err == nil {
 		s.prune()
 		return nil // already written today
@@ -131,7 +157,7 @@ func (s *Service) List(context.Context) ([]Info, error) {
 
 	out := make([]Info, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() || !isBackupName(e.Name()) {
+		if e.IsDir() || !s.isBackupName(e.Name()) {
 			continue
 		}
 		fi, err := e.Info()
@@ -159,6 +185,6 @@ func (s *Service) prune() {
 	}
 }
 
-func isBackupName(name string) bool {
-	return strings.HasPrefix(name, filePrefix) && strings.HasSuffix(name, fileSuffix)
+func (s *Service) isBackupName(name string) bool {
+	return strings.HasPrefix(name, s.prefix) && strings.HasSuffix(name, fileSuffix)
 }

@@ -3,6 +3,7 @@ package sqlitex_test
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -86,6 +87,23 @@ func TestMemoryDatabaseIsPinnedToOneConnection(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("count = %d, want 1 — the pool handed out a second empty database", n)
+	}
+}
+
+// An empty path is the one input that fails by succeeding: SQLite accepts it and
+// returns a writable anonymous database whose contents are gone after a restart.
+// A deployment that forgot to set its path would look perfectly healthy.
+func TestOpenRejectsAnEmptyPath(t *testing.T) {
+	for _, path := range []string{"", "   "} {
+		db, err := sqlitex.Open(path, nil)
+		if err == nil {
+			db.Close()
+			t.Errorf("Open(%q) returned no error — it must refuse an empty path", path)
+			continue
+		}
+		if !strings.Contains(err.Error(), ":memory:") {
+			t.Errorf("Open(%q) error = %v, want it to point at :memory:", path, err)
+		}
 	}
 }
 
