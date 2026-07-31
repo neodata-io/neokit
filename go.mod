@@ -3,7 +3,7 @@ module github.com/neodata-io/neokit
 go 1.25.0
 
 require (
-	github.com/caarlos0/env/v11 v11.4.2-0.20260707022951-a3a36cc60fa2
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/gofiber/fiber/v3 v3.4.0
