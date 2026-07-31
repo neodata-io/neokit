@@ -52,11 +52,6 @@ const (
 	defaultBodyLimit   = 1 << 20 // 1 MiB
 	defaultReadTimeout = 15 * time.Second
 	defaultIdleTimeout = 120 * time.Second
-
-	// TEMPORARY (Task 6): Task 7 adds run.go with the real
-	// shutdownGraceTimeout/shutdownStepTimeout/httpDrainTimeout and deletes this
-	// one. It exists here only so Close (below) and the package compile.
-	shutdownStepTimeout = 15 * time.Second
 )
 
 // Options configures [New]. Only Name is required.
@@ -114,6 +109,10 @@ type App struct {
 	banner   bool
 	cancel   context.CancelFunc
 	draining chan struct{}
+	// drainOnce guards closeDraining: Run's teardown step and a caller's
+	// deferred Close can both reach it, and closing a closed channel panics —
+	// at shutdown, of all moments.
+	drainOnce sync.Once
 
 	mu         sync.RWMutex
 	subsystems []Subsystem
@@ -271,12 +270,9 @@ func mergeFiberConfig(base, over fiber.Config) fiber.Config {
 	return base
 }
 
-// TEMPORARY (Task 6): Task 7 replaces this with the real Close in run.go, which
-// also drains the HTTP server and closes the Draining channel first. Delete
-// this stub and the shutdownStepTimeout constant above there.
-//
-// Close runs the teardown stack.
-func (a *App) Close() error {
-	a.cancel()
-	return a.Shutdown.Shutdown(context.Background(), shutdownStepTimeout)
+// closeDraining closes the channel at most once. Run's teardown step and Close
+// can both reach it, and closing a closed channel panics — at shutdown, of all
+// moments.
+func (a *App) closeDraining() {
+	a.drainOnce.Do(func() { close(a.draining) })
 }
