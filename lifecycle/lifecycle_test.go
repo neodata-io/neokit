@@ -166,6 +166,36 @@ func TestNilStepIsIgnored(t *testing.T) {
 	}
 }
 
+// Names reports push order so a caller can assert the *real* teardown order
+// instead of restating one — push order is a correctness property, and a step
+// pushed in the wrong place closes a resource while something still depends on it.
+func TestNamesReportsPushOrder(t *testing.T) {
+	s := &Stack{Log: quiet()}
+	for _, n := range []string{"database", "http", "metrics"} {
+		s.Push(n, func(context.Context) error { return nil })
+	}
+	got := s.Names()
+	want := []string{"database", "http", "metrics"}
+	if len(got) != len(want) {
+		t.Fatalf("Names() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Names()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// Must be a copy — a caller mutating it must not corrupt the stack's record.
+	got[0] = "clobbered"
+	if s.Names()[0] != "database" {
+		t.Error("Names() handed out its backing array")
+	}
+	// Push ignores a nil step, so it must not appear here either.
+	s.Push("ignored", nil)
+	if len(s.Names()) != 3 {
+		t.Errorf("Names() = %v, want the nil step absent", s.Names())
+	}
+}
+
 type closerFunc func() error
 
 func (f closerFunc) Close() error { return f() }

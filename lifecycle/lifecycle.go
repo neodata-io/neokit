@@ -106,6 +106,22 @@ func (s *Stack) Len() int {
 	return len(s.steps)
 }
 
+// Names returns the registered step names in push order. Shutdown runs them in
+// reverse, so this is the teardown order read backwards.
+//
+// It exists because push order is a correctness property — a step pushed in the
+// wrong place closes a resource while something still depends on it — and a
+// caller that cannot inspect it can only assert the order it typed itself.
+func (s *Stack) Names() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.steps))
+	for i, st := range s.steps {
+		out[i] = st.name
+	}
+	return out
+}
+
 // Shutdown runs every registered step in reverse order, bounding each one by
 // each (zero means "only ctx bounds it"), and returns every error joined.
 //

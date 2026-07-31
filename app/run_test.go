@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,60 +14,7 @@ import (
 
 	"github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/config"
-	"github.com/neodata-io/neokit/lifecycle"
 )
-
-// The teardown order the builder produces. The application's own steps sit
-// between the builder's, and the whole thing is the build order backwards —
-// nothing is closed while something depending on it is still alive.
-func TestTeardownOrder(t *testing.T) {
-	var ran []string
-	var shut lifecycle.Stack
-	shut.Log = quiet()
-
-	// What New pushes, in order.
-	for _, n := range []string{"tracing", "metrics-export"} {
-		shut.Push(n, func(context.Context) error { ran = append(ran, n); return nil })
-	}
-	// What the application pushes.
-	for _, n := range []string{"database", "workers"} {
-		shut.Push(n, func(context.Context) error { ran = append(ran, n); return nil })
-	}
-	// What Run pushes.
-	for _, n := range []string{"metrics-server", "background-context", "api", "streams"} {
-		shut.Push(n, func(context.Context) error { ran = append(ran, n); return nil })
-	}
-	if err := shut.Shutdown(context.Background(), time.Second); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-
-	at := func(name string) int {
-		i := slices.Index(ran, name)
-		if i < 0 {
-			t.Fatalf("step %q never ran: %v", name, ran)
-		}
-		return i
-	}
-	// Streams are released before the drain, or the drain waits them out.
-	if at("streams") > at("api") {
-		t.Error(`"streams" must precede "api"`)
-	}
-	// The context is cancelled after the drain: reversing them lets a late
-	// request start background work concurrently with the wait for it.
-	if at("background-context") < at("api") {
-		t.Error(`"background-context" must follow "api"`)
-	}
-	// The application's own resources outlive the HTTP server.
-	for _, n := range []string{"api", "background-context"} {
-		if at(n) > at("database") {
-			t.Errorf("%q runs after \"database\" — a query would hit a closed store", n)
-		}
-	}
-	// Traces flush last, so a span from any earlier step still exports.
-	if at("tracing") != len(ran)-1 {
-		t.Errorf(`"tracing" must be last: %v`, ran)
-	}
-}
 
 // Close covers the early-return paths while Run covers the normal one. Both fire
 // on a normal boot, so the second must be inert — a store closed twice, or a
