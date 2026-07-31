@@ -44,22 +44,9 @@ func (a *App) Declare(s Subsystem) {
 	}
 }
 
-// declareBuiltin is Declare for a subsystem neokit itself owns (tracing,
-// metrics export), kept out of Subsystems() so that method reflects only what
-// the application declared — see the builtins field comment on App.
-func (a *App) declareBuiltin(s Subsystem) {
-	a.mu.Lock()
-	a.builtins = append(a.builtins, s)
-	a.mu.Unlock()
-
-	if s.On && s.Ready != nil {
-		a.Health.Register(s.Name, s.Ready)
-	}
-}
-
-// Subsystems returns the application's declared subsystems in declaration
-// order. It deliberately excludes neokit's own built-ins (tracing, metrics
-// export) — see report, which includes both.
+// Subsystems returns the declared subsystems in declaration order — including
+// neokit's own (tracing, metrics export), so this and the boot report never
+// disagree about what the process is.
 func (a *App) Subsystems() []Subsystem {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -74,11 +61,7 @@ func (a *App) Subsystems() []Subsystem {
 // default — is a handful of stray log lines scattered across the wiring, from
 // which nobody can answer "is tracing on?" without reading the code.
 func (a *App) report(addr string) string {
-	a.mu.RLock()
-	subs := make([]Subsystem, 0, len(a.builtins)+len(a.subsystems))
-	subs = append(subs, a.builtins...)
-	subs = append(subs, a.subsystems...)
-	a.mu.RUnlock()
+	subs := a.Subsystems()
 	// Longest name sets the column, so the details line up and the block can be
 	// scanned rather than read.
 	width := 0

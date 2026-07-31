@@ -90,9 +90,12 @@ func TestDeclareRegistersAReadinessCheck(t *testing.T) {
 	if a.Health.Len() != 1 {
 		t.Errorf("Health has %d checks, want the declared one", a.Health.Len())
 	}
-	subs := a.Subsystems()
-	if len(subs) != 1 || subs[0].Name != "database" || !subs[0].On {
-		t.Errorf("Subsystems = %+v", subs)
+	got, ok := findSubsystem(a, "database")
+	if !ok {
+		t.Fatalf("database missing from Subsystems(): %+v", a.Subsystems())
+	}
+	if !got.On || got.Detail != "./data/app.db" {
+		t.Errorf("Subsystem = %+v", got)
 	}
 }
 
@@ -120,9 +123,32 @@ func TestDeclareWithoutACheckIsFine(t *testing.T) {
 	if a.Health.Len() != 0 {
 		t.Error("a subsystem with no Ready must register no check")
 	}
-	if len(a.Subsystems()) != 1 {
-		t.Error("it must still appear in the report")
+	if _, ok := findSubsystem(a, "web push"); !ok {
+		t.Errorf("it must still appear in the report: %+v", a.Subsystems())
 	}
+}
+
+// New declares its own subsystems, so a caller reading Subsystems() sees the
+// whole process — including the parts neokit switched on or left off. A view
+// that showed only the caller's own declarations would disagree with the boot
+// report about what this process is.
+func TestSubsystemsIncludesTheBuildersOwn(t *testing.T) {
+	a := newApp(t)
+	for _, name := range []string{"tracing", "metrics export"} {
+		if _, ok := findSubsystem(a, name); !ok {
+			t.Errorf("%q missing from Subsystems(): %+v", name, a.Subsystems())
+		}
+	}
+}
+
+// findSubsystem looks one up by name.
+func findSubsystem(a *app.App, name string) (app.Subsystem, bool) {
+	for _, s := range a.Subsystems() {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return app.Subsystem{}, false
 }
 
 // The error envelope must be installed as Fiber's ErrorHandler, or a returned

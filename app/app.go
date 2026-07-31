@@ -117,12 +117,6 @@ type App struct {
 
 	mu         sync.RWMutex
 	subsystems []Subsystem
-	// builtins are neokit's own subsystems (tracing, metrics export) declared by
-	// New rather than the application. They appear in the boot report next to
-	// the application's own, but never in Subsystems(): that method answers
-	// "what did *this application* declare", and tracing/metrics belong to every
-	// app equally rather than being one application's inventory.
-	builtins []Subsystem
 }
 
 // New performs the boot sequence and returns the constructed application.
@@ -177,7 +171,7 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.Shutdown.Push("tracing", traceShutdown)
-	a.declareBuiltin(otelSubsystem("tracing"))
+	a.Declare(otelSubsystem("tracing"))
 
 	metricShutdown, err := metrics.Init(ctx, metrics.Config{ServiceName: o.Name, Version: o.Version})
 	if err != nil {
@@ -185,7 +179,7 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.Shutdown.Push("metrics-export", metricShutdown)
-	a.declareBuiltin(otelSubsystem("metrics export"))
+	a.Declare(otelSubsystem("metrics export"))
 
 	a.Fiber = a.newFiber(o)
 	return a, nil
