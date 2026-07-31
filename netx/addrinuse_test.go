@@ -7,55 +7,91 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// stubPortLookup replaces portLookup for the duration of the test, so no test
-// here ever shells out to lsof.
-func stubPortLookup(t *testing.T, holder string, pid int) {
-	t.Helper()
-	prev := portLookup
-	portLookup = func(int) (string, int) { return holder, pid }
-	t.Cleanup(func() { portLookup = prev })
+// stubLookup returns a Lookup that reports a fixed holder, so no test here ever
+// shells out to lsof. It is passed in per call rather than swapped into package
+// state, which is what lets these run in parallel.
+func stubLookup(holder string, pid int) Lookup {
+	return func(int) (string, int) { return holder, pid }
 }
 
 func TestAddrInUseHint_IgnoresUnrelatedErrors(t *testing.T) {
-	// portLookup must never even be consulted for an error that isn't
+	t.Parallel()
+
+	// The lookup must never even be consulted for an error that isn't
 	// EADDRINUSE — calling it here would fail the test.
-	prev := portLookup
-	portLookup = func(int) (string, int) {
-		t.Fatal("portLookup should not be called for a non-EADDRINUSE error")
+	never := Lookup(func(int) (string, int) {
+		t.Error("lookup must not be called for a non-EADDRINUSE error")
 		return "", 0
-	}
-	t.Cleanup(func() { portLookup = prev })
+	})
 
 	original := errors.New("some other failure")
-	got := AddrInUseHint(original, 8080, "PORT")
+	got := AddrInUseHint(original, 8080, "PORT", never)
 
 	assert.Same(t, original, got, "a non-EADDRINUSE error must be returned untouched")
 }
 
 func TestAddrInUseHint_NamesPortAndEnvVarWithNoHolderFound(t *testing.T) {
-	// Absent lookup (e.g. lsof missing, or nothing found) must still produce a
-	// usable, generic hint — never a blank or missing message.
-	stubPortLookup(t, "", 0)
+	t.Parallel()
 
 	err := fmt.Errorf("listen tcp :8080: %w", syscall.EADDRINUSE)
-	got := AddrInUseHint(err, 8080, "PORT")
+	got := AddrInUseHint(err, 8080, "PORT", NoLookup)
 
-	assert.Error(t, got)
+	require.Error(t, got)
 	assert.Contains(t, got.Error(), "8080")
 	assert.Contains(t, got.Error(), "PORT")
 }
 
 func TestAddrInUseHint_NamesHolderProcessWhenFound(t *testing.T) {
-	stubPortLookup(t, "api (pid 5201)", 5201)
+	t.Parallel()
 
 	err := fmt.Errorf("listen tcp :9090: %w", syscall.EADDRINUSE)
-	got := AddrInUseHint(err, 9090, "METRICS_PORT")
+	got := AddrInUseHint(err, 9090, "METRICS_PORT", stubLookup("api (pid 5201)", 5201))
 
 	msg := got.Error()
 	assert.Contains(t, msg, "9090")
 	assert.Contains(t, msg, "METRICS_PORT")
 	assert.Contains(t, msg, "api (pid 5201)")
 	assert.Contains(t, msg, "kill 5201")
+}
+
+// The regression this pins: the hint used to be built with fmt.Errorf and no
+// %w, which discarded the cause. Since the doc tells callers to route *every*
+// listen error through this function, that silently destroyed the ability to
+// test for EADDRINUSE anywhere downstream — and the old tests, which only
+// asserted on message substrings, could not see it.
+func TestAddrInUseHint_PreservesTheWrappedSyscallError(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("listen tcp :8080: %w", syscall.EADDRINUSE)
+
+	withHolder := AddrInUseHint(err, 8080, "PORT", stubLookup("api (pid 1)", 1))
+	assert.ErrorIs(t, withHolder, syscall.EADDRINUSE,
+		"the hint must still unwrap to EADDRINUSE when a holder was identified")
+
+	withoutHolder := AddrInUseHint(err, 8080, "PORT", NoLookup)
+	assert.ErrorIs(t, withoutHolder, syscall.EADDRINUSE,
+		"the hint must still unwrap to EADDRINUSE when no holder was found")
+}
+
+// A nil Lookup in the variadic slot must fall back to the default rather than
+// panicking — the zero value of a caller's config field lands here.
+func TestAddrInUseHint_NilLookupFallsBackToTheDefault(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("listen tcp :1: %w", syscall.EADDRINUSE)
+	got := AddrInUseHint(err, 1, "PORT", nil)
+
+	require.Error(t, got)
+	assert.ErrorIs(t, got, syscall.EADDRINUSE)
+}
+
+func TestNoLookup_FindsNothing(t *testing.T) {
+	t.Parallel()
+
+	label, pid := NoLookup(8080)
+	assert.Empty(t, label)
+	assert.Zero(t, pid)
 }
