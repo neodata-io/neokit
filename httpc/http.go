@@ -37,31 +37,44 @@ const DefaultHTTPTimeout = 15 * time.Second
 const NoTimeout = -1
 
 // HTTPOptions configures [NewHTTPClient]. The zero value is the house default: a
-// 15s budget, the standard retry policy, and otel client spans.
+// 15s budget, the standard retry policy, and no tracing.
 type HTTPOptions struct {
 	// Timeout is the overall budget for a request, including its retries. Zero
 	// means DefaultHTTPTimeout; NoTimeout means none.
 	Timeout time.Duration
 	// Transport is the base RoundTripper to wrap — use it for a custom TLS config
 	// or a self-signed LAN device. Nil means http.DefaultTransport. It is wrapped,
-	// never replaced: the retry and tracing layers always sit on top.
+	// never replaced: the retry layer always sits on top.
 	Transport http.RoundTripper
 	// Retry overrides the backoff policy. Nil means DefaultRetryConfig(). A
-	// RetryConfig with MaxRetries: 0 issues each request exactly once while
-	// keeping the otel span.
+	// RetryConfig with MaxRetries: 0 issues each request exactly once.
 	Retry *RetryConfig
+	// Tracing opens an otel client span per request attempt and carries the
+	// traceparent header outbound.
+	//
+	// It is opt-in, and that is a deliberate reversal. The wrapper used to be
+	// installed unconditionally, on the stated grounds that "when tracing is
+	// disabled the global provider is a no-op, so the spans cost nothing".
+	// Measured against a stub transport with no provider installed, that was
+	// wrong by more than an order of magnitude: otelhttp costs +1195ns, +2810B
+	// and +22 allocations per request, against a retry loop that itself costs
+	// ~5ns and allocates nothing. Every caller paid it for spans nobody
+	// collected.
+	//
+	// Set it where a collector actually runs.
+	Tracing bool
 }
 
-// NewHTTPClient builds an *http.Client that always carries the host's
-// [RetryTransport] — and therefore its otel client spans. It is the only
-// sanctioned way to build a client outside [BaseClient]:
+// NewHTTPClient builds an *http.Client that always carries [RetryTransport]. It
+// is the only sanctioned way to build a client outside [BaseClient]:
 //
 //	http: httpc.NewHTTPClient(httpc.HTTPOptions{})                       // house default
 //	http: httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: 3 * time.Minute}) // documented exception
 //	http: httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: httpc.NoTimeout}) // long-poll; ctx bounds it
+//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Tracing: true})            // + otel client spans
 //
-// For a WebSocket handshake use [NewWebSocketHTTPClient] instead — the retry and
-// tracing wrappers wrap the response body, which a WS upgrade cannot survive.
+// For a WebSocket handshake use [NewWebSocketHTTPClient] instead — the retry
+// wrapper wraps the response body, which a WS upgrade cannot survive.
 func NewHTTPClient(opts HTTPOptions) *http.Client {
 	timeout := opts.Timeout
 	switch {
@@ -76,10 +89,11 @@ func NewHTTPClient(opts HTTPOptions) *http.Client {
 		cfg = *opts.Retry
 	}
 
-	return &http.Client{
-		Timeout:   timeout,
-		Transport: NewRetryTransportConfig(opts.Transport, cfg),
+	rt := NewRetryTransportConfig(opts.Transport, cfg)
+	if opts.Tracing {
+		rt = NewTracedRetryTransport(opts.Transport, cfg)
 	}
+	return &http.Client{Timeout: timeout, Transport: rt}
 }
 
 // NewWebSocketHTTPClient returns a client for a WebSocket opening handshake, and

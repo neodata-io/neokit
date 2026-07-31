@@ -61,15 +61,32 @@ func NewRetryTransport(base http.RoundTripper) *RetryTransport {
 
 // NewRetryTransportConfig is NewRetryTransport with an explicit policy.
 //
-// The base is wrapped with otelhttp so every request issued through this
-// transport opens a client span (parented to the request's context) and
-// carries the traceparent header outbound. This is the single seam that gives
-// all BaseClient-embedding plugins — and every hand-rolled client that passes
-// NewRetryTransport(nil) — distributed tracing for free. Because otelhttp sits
-// *inside* the retry loop, each attempt is its own span, so a retried upstream
-// shows its retries in Tempo. When tracing is disabled the global provider is a
-// no-op, so the spans cost nothing.
+// It does not install tracing; use [NewTracedRetryTransport] for that. The
+// otelhttp wrapper used to be applied here unconditionally, justified by the
+// claim that "when tracing is disabled the global provider is a no-op, so the
+// spans cost nothing". Measured against a stub transport with no provider
+// installed, the wrapper costs +1195ns, +2810B and +22 allocations per request,
+// while this retry loop costs ~5ns and allocates nothing — so the claim was
+// wrong by more than an order of magnitude, and it was charged to every caller
+// for spans nobody collected. See BenchmarkTransport_AsShipped.
 func NewRetryTransportConfig(base http.RoundTripper, cfg RetryConfig) *RetryTransport {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return &RetryTransport{base: base, cfg: cfg}
+}
+
+// NewTracedRetryTransport is [NewRetryTransportConfig] plus otel client spans:
+// every request opens a span parented to the request's context and carries the
+// traceparent header outbound.
+//
+// otelhttp sits *inside* the retry loop, so each attempt is its own span and a
+// retried upstream shows its retries in the trace.
+//
+// Use it where a collector actually runs. With no provider installed the spans
+// go nowhere but still cost the full per-request price above, which is why this
+// is a separate constructor rather than the default.
+func NewTracedRetryTransport(base http.RoundTripper, cfg RetryConfig) *RetryTransport {
 	if base == nil {
 		base = http.DefaultTransport
 	}
