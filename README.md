@@ -1,15 +1,27 @@
 # neokit
 
-Small, domain-free Go building blocks extracted from NeoGate, a private household
-server project: structured logging, an HTTP client with retries and SSRF guarding,
-GoFiber helpers, a stale-while-revalidate cache, and a SQLite migration runner.
+Composable Go building blocks for small services. Neokit does not replace the
+standard library or a web framework; it is the operational layer around them —
+safe HTTP clients, structured errors and logs, health checks, ordered shutdown,
+observability, caching, and optional integrations.
+
+Take one package at a time, or start with `app` when a service wants the whole
+boot sequence from one constructor. There is no service container and no lookup
+by string: every dependency `app` builds is an exported field on it, and a
+handler stays an ordinary Fiber handler over ordinary types. Reflection is
+confined to the two places Go offers no alternative — decoding the environment
+in `config`, and `validator` tags in `fiberx`. Nothing reaches a binary unless
+its package is imported.
+
+The one global: `app.New` installs its logger as `slog.Default()`, unless you
+pass your own through `Options.Log`.
 
 Pre-1.0: the API may change between `v0.x` releases.
 
 ## Packages
 
 | Package | What |
-|---|---|
+| --- | --- |
 | `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
 | `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify`, SSRF guard |
 | `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters |
@@ -32,6 +44,41 @@ Pre-1.0: the API may change between `v0.x` releases.
 
 Every package is independent: importing one never drags in another's dependencies.
 A binary that does not import `oidcauth` links neither `go-oidc` nor `oauth2`.
+
+## Start here
+
+| Need | Example |
+| --- | --- |
+| A small HTTP service | [`examples/minimal-api`](examples/minimal-api) |
+| HTTP, health, metrics, shutdown, and SQLite | [`examples/production-service`](examples/production-service) |
+| A bounded, retrying external API client | [`examples/external-client`](examples/external-client) |
+
+Run one from the repository root with `go run ./examples/minimal-api`. They are
+ordinary Go types and constructors: copy the pieces your service needs rather
+than adopting the whole thing.
+
+## The diagnostics port
+
+`app` serves Prometheus metrics, `/healthz` and `/readyz` on a second listener,
+bound to `127.0.0.1:9090`. Loopback is the default because a readiness body
+names your dependencies and their errors — operational detail, not public API.
+**A scrape from another container needs `METRICS_BIND_ADDR=0.0.0.0`.** pprof is
+off unless `ENABLE_PPROF=true`, because a heap profile carries whatever secrets
+are live in the process.
+
+Neither fact is one you should have to infer from a default, so the boot report
+states both before the listeners come up:
+
+```text
+production-service 1.4.0 · :8080
+  ✓ database        ./data/app.db
+  ✓ diagnostics     127.0.0.1:9090 · metrics, health
+  ✗ metrics export  OTEL_EXPORTER_OTLP_ENDPOINT unset
+  ✗ tracing         OTEL_EXPORTER_OTLP_ENDPOINT unset
+```
+
+That block is generated from the same `app.Subsystem` declarations that register
+the `/readyz` checks, so it cannot drift from what the process actually is.
 
 ## Login gate in ten lines
 

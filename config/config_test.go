@@ -29,12 +29,22 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if got.MetricsPort != 9090 {
 		t.Errorf("MetricsPort = %d, want 9090", got.MetricsPort)
 	}
+	// Compared against the constant, not a second literal: the struct tag cannot
+	// reference it, so this is what stops the two from drifting apart.
+	if got.MetricsBindAddr != config.DefaultMetricsBindAddr {
+		t.Errorf("MetricsBindAddr = %q, want %q", got.MetricsBindAddr, config.DefaultMetricsBindAddr)
+	}
+	if got.EnablePprof {
+		t.Error("EnablePprof = true, want profiling disabled by default")
+	}
 }
 
 func TestLoadReadsTheEnvironmentIncludingEmbeddedFields(t *testing.T) {
 	t.Setenv("PORT", "9999")
 	t.Setenv("TEST_ISSUER", "https://id.example.com")
 	t.Setenv("CORS_ORIGINS", "https://a.test,https://b.test")
+	t.Setenv("METRICS_BIND_ADDR", "::1")
+	t.Setenv("ENABLE_PPROF", "true")
 
 	got, err := config.Load[appConfig]()
 	if err != nil {
@@ -48,6 +58,9 @@ func TestLoadReadsTheEnvironmentIncludingEmbeddedFields(t *testing.T) {
 	}
 	if len(got.CorsOrigins) != 2 {
 		t.Errorf("CorsOrigins = %v, want two entries split on the comma", got.CorsOrigins)
+	}
+	if got.MetricsBindAddr != "::1" || !got.EnablePprof {
+		t.Errorf("diagnostics settings were not parsed: %+v", got.Base)
 	}
 }
 

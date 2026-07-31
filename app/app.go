@@ -157,6 +157,7 @@ func New(o Options) (*App, error) {
 		cancel:   cancel,
 		draining: draining,
 	}
+	a.Errors.Log = log
 	if o.QuietPaths != nil {
 		a.Errors.QuietPath = o.QuietPaths
 	}
@@ -179,6 +180,7 @@ func New(o Options) (*App, error) {
 	}
 	a.Shutdown.Push("metrics-export", metricShutdown)
 	a.Declare(otelSubsystem("metrics export"))
+	a.Declare(diagnosticsSubsystem(a.diagnosticsAddr(), o.Base.EnablePprof))
 
 	a.Fiber = a.newFiber(o)
 	return a, nil
@@ -192,6 +194,21 @@ func otelSubsystem(name string) Subsystem {
 		return Subsystem{Name: name, On: false, Detail: "OTEL_EXPORTER_OTLP_ENDPOINT unset"}
 	}
 	return Subsystem{Name: name, On: true, Detail: endpoint}
+}
+
+// diagnosticsSubsystem is the report line for the diagnostics listener.
+//
+// The two facts worth stating are the two that are otherwise invisible. That
+// port binds loopback by default, so a scrape from another container fails with
+// nothing wrong on this side to find; and whether pprof — which will hand over a
+// heap dump — is mounted is recorded nowhere else the operator can see. Neither
+// should have to be inferred from a default.
+func diagnosticsSubsystem(addr string, pprof bool) Subsystem {
+	mounted := "metrics, health"
+	if pprof {
+		mounted += ", pprof"
+	}
+	return Subsystem{Name: "diagnostics", On: true, Detail: addr + " · " + mounted}
 }
 
 // newFiber builds the HTTP server and the standard middleware chain.

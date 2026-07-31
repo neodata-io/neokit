@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,6 +32,10 @@ const DefaultTimeout = 3 * time.Second
 type check struct {
 	name string
 	fn   CheckFunc
+
+	// running is held for as long as fn has not returned. It is what caps the
+	// cost of a check that ignores its context — see runBounded.
+	running atomic.Bool
 }
 
 // Registry holds the readiness checks. The zero value is not usable; construct
@@ -40,7 +45,7 @@ type Registry struct {
 	Timeout time.Duration
 
 	mu     sync.RWMutex
-	checks []check
+	checks []*check
 }
 
 func New() *Registry { return &Registry{} }
@@ -56,7 +61,7 @@ func (r *Registry) Register(name string, fn CheckFunc) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.checks = append(r.checks, check{name: name, fn: fn})
+	r.checks = append(r.checks, &check{name: name, fn: fn})
 }
 
 // Len reports how many checks are registered.
@@ -93,9 +98,14 @@ type Result struct {
 }
 
 // Check runs every registered check concurrently under one bounded context.
+//
+// The sweep returns at the deadline whether or not every check has answered: one
+// that ignores ctx is reported as failed and left to finish on its own, so a
+// wedged dependency cannot hold the readiness endpoint open. A check is never
+// entered twice concurrently — see runBounded.
 func (r *Registry) Check(ctx context.Context) Result {
 	r.mu.RLock()
-	checks := make([]check, len(r.checks))
+	checks := make([]*check, len(r.checks))
 	copy(checks, r.checks)
 	r.mu.RUnlock()
 
@@ -112,7 +122,7 @@ func (r *Registry) Check(ctx context.Context) Result {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = run(ctx, c)
+			results[i] = runBounded(ctx, c)
 		}()
 	}
 	wg.Wait()
@@ -126,12 +136,54 @@ func (r *Registry) Check(ctx context.Context) Result {
 	return out
 }
 
+// runBounded does not wait beyond ctx's deadline, and never leaves more than one
+// call of c.fn in flight.
+//
+// Go cannot stop a callback that ignores its context. Handing the call to a
+// goroutine with a buffered result channel is what lets the readiness request
+// answer on time and lets the callback finish whenever it eventually does. On
+// its own, though, that trades a hang for a leak: readiness is polled on a
+// timer, so a permanently wedged dependency would strand a fresh goroutine —
+// and everything its check closed over — every few seconds for the life of the
+// process. The running flag bounds the wedged case to one stranded goroutine in
+// total, and says so in the result: "still running" tells an operator the
+// dependency is stuck rather than slow, which a repeated deadline error does not.
+func runBounded(ctx context.Context, c *check) CheckResult {
+	started := time.Now()
+	if !c.running.CompareAndSwap(false, true) {
+		return notAnswered(c.name, "still running from an earlier check", time.Since(started))
+	}
+
+	result := make(chan CheckResult, 1)
+	go func() {
+		res := run(ctx, c)
+		// Released before the send, so the sweep that receives res can never
+		// observe the flag still held and report a finished check as wedged.
+		c.running.Store(false)
+		result <- res
+	}()
+
+	select {
+	case res := <-result:
+		return res
+	case <-ctx.Done():
+		return notAnswered(c.name, ctx.Err().Error(), time.Since(started))
+	}
+}
+
+// notAnswered is the result for a check that did not report within the sweep.
+// took is how long readiness waited, which is not how long the check has been
+// running — that is the point of reporting it.
+func notAnswered(name, reason string, took time.Duration) CheckResult {
+	return CheckResult{Name: name, Err: reason, Took: took, TookMs: took.Milliseconds()}
+}
+
 // run executes one check, converting a panic into a failure.
 //
 // A panicking check is a bug in that check, not a reason to take the endpoint
 // down: an unrecovered panic here is a 500 with no body, at exactly the moment
 // an operator is asking what is wrong.
-func run(ctx context.Context, c check) (res CheckResult) {
+func run(ctx context.Context, c *check) (res CheckResult) {
 	res = CheckResult{Name: c.name}
 	start := time.Now()
 	defer func() {

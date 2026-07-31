@@ -116,7 +116,7 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 
 		// requestId is stamped on automatically by logx.ContextHandler from the
 		// context set above — no need to add it here.
-		slog.Log(c.Context(), level, "http",
+		e.logger().Log(c.Context(), level, "http",
 			"method", method,
 			"path", path, // template path, matches the Prometheus label
 			"status", status,

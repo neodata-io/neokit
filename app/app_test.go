@@ -134,10 +134,59 @@ func TestDeclareWithoutACheckIsFine(t *testing.T) {
 // report about what this process is.
 func TestSubsystemsIncludesTheBuildersOwn(t *testing.T) {
 	a := newApp(t)
-	for _, name := range []string{"tracing", "metrics export"} {
+	for _, name := range []string{"tracing", "metrics export", "diagnostics"} {
 		if _, ok := findSubsystem(a, name); !ok {
 			t.Errorf("%q missing from Subsystems(): %+v", name, a.Subsystems())
 		}
+	}
+}
+
+// The diagnostics listener binds loopback and leaves pprof off, and both of
+// those are silent: a scrape from another container just stops arriving, with
+// nothing wrong on this side to find. The report is where an operator gets to
+// read the address that was actually used, so it has to be the real one.
+func TestTheReportNamesTheDiagnosticsAddressAndWhatIsMountedOnIt(t *testing.T) {
+	a, err := app.New(app.Options{
+		Name: "testapp",
+		Base: config.Base{MetricsPort: 9090},
+		Log:  quiet(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	got, ok := findSubsystem(a, "diagnostics")
+	if !ok {
+		t.Fatalf("no diagnostics line: %+v", a.Subsystems())
+	}
+	if !strings.Contains(got.Detail, "127.0.0.1:9090") {
+		t.Errorf("detail = %q, want the loopback default spelled out", got.Detail)
+	}
+	if strings.Contains(got.Detail, "pprof") {
+		t.Errorf("detail = %q, want no pprof claim when it is not mounted", got.Detail)
+	}
+	if !strings.Contains(a.Report(":8080"), "127.0.0.1:9090") {
+		t.Errorf("boot report does not name the diagnostics address:\n%s", a.Report(":8080"))
+	}
+}
+
+// Enabling pprof publishes heap dumps on that port. The report must say so —
+// it is the only place the decision is visible at runtime.
+func TestTheReportSaysWhenPprofIsMounted(t *testing.T) {
+	a, err := app.New(app.Options{
+		Name: "testapp",
+		Base: config.Base{MetricsPort: 9090, MetricsBindAddr: "0.0.0.0", EnablePprof: true},
+		Log:  quiet(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	got, _ := findSubsystem(a, "diagnostics")
+	if !strings.Contains(got.Detail, "0.0.0.0:9090") || !strings.Contains(got.Detail, "pprof") {
+		t.Errorf("detail = %q, want the configured address and pprof named", got.Detail)
 	}
 }
 

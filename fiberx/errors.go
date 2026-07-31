@@ -26,6 +26,10 @@ type DomainMapper func(err error) (status int, message, code string, ok bool)
 type Errors struct {
 	mapper DomainMapper
 
+	// Log receives request failures and summary records. Nil means
+	// slog.Default(), preserving the standalone package's usual behavior.
+	Log *slog.Logger
+
 	// QuietPath reports whether a successful (non-4xx/5xx) request on the given
 	// route template is pure noise that would drown the useful log lines — a
 	// health check or a periodic status sweep a caller's own infrastructure polls
@@ -129,12 +133,12 @@ func (e *Errors) WriteError(c fiber.Ctx, err error) error {
 	// honor it rather than flattening it through the mapper/status switch.
 	var ae *APIError
 	if errors.As(err, &ae) {
-		logCause(c, ae.Status, err)
+		e.logCause(c, ae.Status, err)
 		return c.Status(ae.Status).JSON(ae)
 	}
 
 	status, msg, code := e.mapError(err)
-	logCause(c, status, err)
+	e.logCause(c, status, err)
 	return c.Status(status).JSON(fiber.Map{"error": msg, "code": code})
 }
 
@@ -144,13 +148,13 @@ func (e *Errors) WriteError(c fiber.Ctx, err error) error {
 // (e.g. localized) public message on a failure: bare fiber.NewError drops the cause,
 // and the ErrorHandler only logs when it falls through to WriteError.
 func (e *Errors) Fail(c fiber.Ctx, status int, public string, cause error) error {
-	logCause(c, status, cause)
+	e.logCause(c, status, cause)
 	return fiber.NewError(status, public)
 }
 
 // logCause emits the single correlated "why" line for a failure. A nil cause is a
 // no-op (a client-supplied 4xx with nothing internal to explain).
-func logCause(c fiber.Ctx, status int, cause error) {
+func (e *Errors) logCause(c fiber.Ctx, status int, cause error) {
 	if cause == nil {
 		return
 	}
@@ -160,11 +164,18 @@ func logCause(c fiber.Ctx, status int, cause error) {
 	}
 	// Correlated by requestId, which logx.ContextHandler stamps automatically from
 	// the request context — the same id on the `http` summary line.
-	slog.Log(c.Context(), level, "request failed",
+	e.logger().Log(c.Context(), level, "request failed",
 		"status", status,
 		"path", c.Path(),
 		logx.Err(cause), // the mapped error's real cause, not the public message
 	)
+}
+
+func (e *Errors) logger() *slog.Logger {
+	if e.Log != nil {
+		return e.Log
+	}
+	return slog.Default()
 }
 
 // StatusForError returns the HTTP status the app's ErrorHandler will ultimately

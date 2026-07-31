@@ -1,6 +1,8 @@
 package fiberx
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http/httptest"
 	"testing"
 
@@ -131,5 +133,23 @@ func TestSkipLogWithNoQuietPathConfigured(t *testing.T) {
 	}
 	if !e.skipLog(apiBase+"/home", 304) {
 		t.Error("skipLog must still silence 304s with no QuietPath configured")
+	}
+}
+
+func TestMetricsAndLoggerUsesTheConfiguredLogger(t *testing.T) {
+	var logs bytes.Buffer
+	e := NewErrors(nil)
+	e.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	app := fiber.New()
+	app.Use(e.MetricsAndLogger())
+	app.Get("/ok", func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusOK) })
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/ok", nil))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	_ = resp.Body.Close()
+	if !bytes.Contains(logs.Bytes(), []byte("msg=http")) {
+		t.Errorf("configured logger did not receive request summary: %s", logs.String())
 	}
 }

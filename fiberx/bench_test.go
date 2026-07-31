@@ -25,7 +25,9 @@ func benchApp(b *testing.B, level slog.Level) (*fiber.App, *httptest.ResponseRec
 	b.Helper()
 	quietLogger(b, level)
 	app := fiber.New()
-	app.Use(NewErrors(nil).MetricsAndLogger())
+	e := NewErrors(nil)
+	e.Log = slog.Default()
+	app.Use(e.MetricsAndLogger())
 	app.Get("/items/:id", func(c fiber.Ctx) error { return c.SendString("ok") })
 	return app, nil
 }
@@ -53,6 +55,7 @@ func BenchmarkMetricsAndLogger_Quiet(b *testing.B) {
 	quietLogger(b, slog.LevelInfo)
 	app := fiber.New()
 	e := NewErrors(nil)
+	e.Log = slog.Default()
 	e.QuietPath = func(string) bool { return true }
 	app.Use(e.MetricsAndLogger())
 	app.Get("/items/:id", func(c fiber.Ctx) error { return c.SendString("ok") })

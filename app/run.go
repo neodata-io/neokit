@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/neodata-io/neokit/config"
 	"github.com/neodata-io/neokit/debugserver"
 	"github.com/neodata-io/neokit/lifecycle"
 	"github.com/neodata-io/neokit/logx"
@@ -59,9 +61,9 @@ func (a *App) Run() error {
 		}
 	}()
 
-	debugAddr := fmt.Sprintf(":%d", a.Cfg.MetricsPort)
+	debugAddr := a.diagnosticsAddr()
 	debug := debugserver.New(debugserver.Config{
-		Addr: debugAddr, Pprof: true, Health: a.Health, ErrorLog: a.Log,
+		Addr: debugAddr, Pprof: a.Cfg.EnablePprof, Health: a.Health, ErrorLog: a.Log,
 	})
 	go func() {
 		// Serve returns nil on our own Shutdown, so anything here is a listener
@@ -139,6 +141,15 @@ func (a *App) Close() error {
 	a.cancel()
 	a.closeDraining()
 	return err
+}
+
+// diagnosticsAddr is where the diagnostics listener binds. An empty
+// MetricsBindAddr means loopback, not every interface: [config.Base] carries the
+// same default for configuration parsed from the environment, and this covers a
+// Base assembled in code.
+func (a *App) diagnosticsAddr() string {
+	host := cmp.Or(strings.TrimSpace(a.Cfg.MetricsBindAddr), config.DefaultMetricsBindAddr)
+	return net.JoinHostPort(host, fmt.Sprint(a.Cfg.MetricsPort))
 }
 
 // listenAddress returns a host:port net.Listen accepts and the Fiber network for

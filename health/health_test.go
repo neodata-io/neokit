@@ -127,6 +127,64 @@ func TestASlowCheckIsBounded(t *testing.T) {
 	}
 }
 
+// Context-aware checks already return at the deadline. This covers the more
+// dangerous case: a third-party callback that never observes its context must
+// not leave readiness blocked forever.
+func TestANonCooperativeCheckIsBounded(t *testing.T) {
+	r := health.New()
+	r.Timeout = 30 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	r.Register("wedged", func(context.Context) error {
+		<-release
+		return nil
+	})
+
+	start := time.Now()
+	got := r.Check(context.Background())
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("Check took %v — a context-ignoring check held readiness open", took)
+	}
+	if got.Ready || len(got.Checks) != 1 || got.Checks[0].Err == "" {
+		t.Errorf("result = %+v, want the timed-out check reported as failed", got)
+	}
+}
+
+// Readiness is polled on a timer, so bounding one sweep is only half the job: if
+// every sweep started a fresh call, a permanently wedged dependency would strand
+// a goroutine — and everything its check closed over — every few seconds until
+// the process died of it. Counting entries is the direct statement of the
+// invariant: N sweeps against a wedged check enter it once.
+func TestAWedgedCheckIsEnteredOnceNoMatterHowOftenReadinessIsPolled(t *testing.T) {
+	r := health.New()
+	r.Timeout = 20 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	var entered atomic.Int64
+	r.Register("wedged", func(context.Context) error {
+		entered.Add(1)
+		<-release
+		return nil
+	})
+
+	const sweeps = 5
+	var last health.Result
+	for range sweeps {
+		last = r.Check(context.Background())
+	}
+
+	if n := entered.Load(); n != 1 {
+		t.Errorf("check entered %d times over %d sweeps, want 1 — every sweep stranded a goroutine", n, sweeps)
+	}
+	if last.Ready {
+		t.Error("a wedged check must keep the instance out of rotation")
+	}
+	if got := last.Checks[0].Err; !strings.Contains(got, "still running") {
+		t.Errorf("error = %q, want it to name the check as stuck rather than merely slow", got)
+	}
+}
+
 // A panicking check is a bug in that check, not a reason to take the endpoint
 // down — an unrecovered panic in an HTTP handler is a 500 with no body, at
 // exactly the moment an operator is asking what is wrong.
