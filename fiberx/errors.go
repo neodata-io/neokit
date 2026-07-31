@@ -76,10 +76,9 @@ func (e *APIError) Error() string { return e.Message }
 // leave unset.
 //
 // Every field is exported and there is no constructor, so `&APIError{Message:
-// "nope"}` is the obvious way to write one — and it used to render as HTTP 200
-// with an error body, because c.Status(0) leaves fasthttp's default untouched.
-// A client saw 200 and treated the failure as success. A zero status is
-// therefore read as "the author didn't say", not as a status.
+// "nope"}` is the obvious way to write one. A zero Status must therefore read as
+// "the author didn't say" rather than as a status: c.Status(0) leaves fasthttp's
+// default untouched, rendering an error body under HTTP 200.
 func normalized(e *APIError) {
 	if e.Status == 0 {
 		e.Status = fiber.StatusInternalServerError

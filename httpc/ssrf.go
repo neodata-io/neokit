@@ -10,23 +10,15 @@ import (
 	"strings"
 )
 
-// This file owns the one guard a plugin needs when it fetches a URL that a
-// *caller* influenced — cover art referenced by an upstream payload, a poster
-// path echoed back through an opaque id. Those fetches leave the host, carry the
-// host's network position, and hand the response body back to a browser, which
-// is the whole of SSRF: an unauthenticated caller borrowing NeoGate's LAN access
-// to read something it could not reach itself.
+// This file owns the guard needed when fetching a URL a *caller* influenced.
+// Such fetches leave the process carrying its network position and hand the
+// response back to a browser — the whole of SSRF: an unauthenticated caller
+// borrowing the host's LAN access to read what it could not reach itself.
 //
-// A caller-side allowlist check is the strict answer and the right default: the artwork is a
-// path on a service the plugin already talks to, so nothing absolute is ever
-// legitimate. Use it whenever it fits.
-//
-// This file is the answer for the case where it does not. Some upstreams
-// genuinely hand back absolute artwork URLs on public CDNs — a multi-room audio
-// platform returns one for every streaming source, so rejecting absolute URLs
-// outright would blank the now-playing tile. There the URL cannot be constrained
-// by shape, only by destination, and the check has to happen against the
-// *resolved* address.
+// A caller-side allowlist is the strict answer and the right default; use it
+// whenever it fits. This file is for when it does not — some upstreams do hand
+// back absolute URLs on public CDNs, and there the URL can be constrained only
+// by destination, checked against the *resolved* address.
 
 // IsPrivateAddr reports whether ip is in one of the address classes an SSRF
 // payload aims at: RFC1918/ULA private space, loopback, link-local (which

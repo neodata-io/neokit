@@ -1,19 +1,15 @@
 // Package lifecycle owns process startup and shutdown: a context cancelled by
 // the usual termination signals, and an ordered stack of teardown steps.
 //
-// Shutdown order is the part that is hard, and the part a framework must not
-// hide. Teardown has to run in the reverse of the order things were built,
-// because a step can only be torn down while everything that depends on it is
-// still alive — stop accepting requests before you close the database the
-// in-flight ones are reading. [Stack] enforces exactly that (LIFO) and nothing
-// else: it does not start anything, does not own your goroutines, and does not
-// decide what depends on what. You push a step when you have finished building
-// the thing it tears down, right next to the thing itself, so the ordering is
-// readable at the call site rather than encoded in a dependency graph.
+// Teardown has to run in reverse of the order things were built, because a step
+// can only be torn down while everything depending on it is still alive — stop
+// accepting requests before closing the database the in-flight ones are reading.
+// [Stack] enforces exactly that (LIFO) and nothing else: it starts nothing, owns
+// no goroutines, and decides no dependencies. Push a step right after building
+// the thing it tears down, so the ordering is readable at the call site.
 //
-// Everything that makes a hand-written shutdown subtly wrong is handled: each
-// step is bounded so one wedged Close cannot hold the process open, a panicking
-// step cannot skip the steps below it, every step's outcome and duration is
+// Each step is bounded so one wedged Close cannot hold the process open, a
+// panicking step cannot skip the steps below it, every outcome and duration is
 // logged, and every error is collected rather than the first one winning.
 package lifecycle
 
@@ -35,15 +31,13 @@ import (
 // Signals returns a context cancelled on SIGINT or SIGTERM — the two a
 // container runtime and a terminal actually send.
 //
-// It is [signal.NotifyContext] with that set filled in, which is the only part
-// worth sharing: the stdlib call is easy to reach for with an incomplete set,
-// and a server that handles SIGINT but not SIGTERM shuts down cleanly when you
-// press ^C and is killed uncleanly by every orchestrator on earth.
+// It is [signal.NotifyContext] with that set filled in: a server handling SIGINT
+// but not SIGTERM shuts down cleanly on ^C and is killed uncleanly by every
+// orchestrator.
 //
-// Call the returned stop function (usually deferred) to release the signal
-// handler and restore the default disposition — after which a second signal
-// terminates the process immediately, which is the behaviour an operator
-// pressing ^C twice expects.
+// Call the returned stop function (usually deferred) to release the handler and
+// restore the default disposition, after which a second signal terminates the
+// process immediately — what an operator pressing ^C twice expects.
 func Signals(parent context.Context) (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 }
@@ -77,14 +71,12 @@ type Stack struct {
 // Push registers a teardown step. Steps run in reverse registration order, so
 // push each one immediately after building the resource it releases.
 //
-// A nil fn is ignored rather than deferred into a panic at shutdown — the
-// natural call `stack.Push("store", store.Close)` on a store that turned out to
-// be nil is a wiring mistake worth surviving, since the alternative is a crash
-// during the one code path that must not crash.
+// A nil fn is ignored rather than deferred into a panic at shutdown: the natural
+// `stack.Push("store", store.Close)` on a nil store is a wiring mistake worth
+// surviving, since the alternative crashes the one path that must not crash.
 //
-// Pushing after [Stack.Shutdown] has run is a no-op and is logged: the step
-// would never run, and silently dropping it would leave a resource open with
-// nothing to say so.
+// Pushing after [Stack.Shutdown] is a no-op and is logged — the step would never
+// run, and dropping it silently would leave a resource open with nothing to say so.
 func (s *Stack) Push(name string, fn Step) {
 	if fn == nil {
 		return
@@ -120,10 +112,9 @@ func (s *Stack) Len() int {
 // It runs the steps **sequentially**, which is the point: concurrent teardown
 // would discard the ordering that is this type's entire reason to exist.
 //
-// A step that exceeds its budget does not stop the sweep — the remaining steps
-// still run. That is deliberate: the alternative leaves a process holding a
-// database handle because an HTTP server was slow to drain, and the step that
-// hung is exactly the one whose resource the OS will reclaim at exit anyway.
+// A step that exceeds its budget does not stop the sweep — otherwise a process
+// holds its database handle because an HTTP server was slow to drain, and the
+// step that hung is the one whose resource the OS reclaims at exit anyway.
 //
 // Shutdown is idempotent: a second call does nothing and returns nil.
 func (s *Stack) Shutdown(ctx context.Context, each time.Duration) error {

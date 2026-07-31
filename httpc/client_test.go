@@ -114,10 +114,9 @@ func TestDoJSON_RefreshesAndRetriesOnce_On401(t *testing.T) {
 	}
 }
 
-// bearerGet is the request/decode half a caller writes for itself now that the
-// BearerGet convenience is gone. It is kept here so these tests still pin
-// [DoWithTokenRetry]'s contract: refresh exactly once on a 401, and pass any
-// other status straight back untouched.
+// bearerGet is the request/decode half a caller supplies to [DoWithTokenRetry],
+// written out here so these tests pin its contract: refresh exactly once on a
+// 401, and pass any other status straight back untouched.
 func bearerGet(ctx context.Context, hc *http.Client, ts TokenSource, url string) (int, []byte, error) {
 	return DoWithTokenRetry(ctx, ts, func(token string) (int, []byte, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

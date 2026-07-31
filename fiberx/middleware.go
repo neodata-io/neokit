@@ -58,10 +58,9 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 		}
 
 		// Deferred, not paired inline: a panic in a downstream handler unwinds
-		// straight past a plain Dec(), so the gauge was permanently corrupted by
-		// exactly one per panicking request. Whether that happens depends on where
-		// the recover middleware is registered relative to this one, which is not
-		// something a library should require a caller to get right.
+		// straight past a plain Dec(), permanently corrupting the gauge by one per
+		// panicking request — and whether that happens depends on where the recover
+		// middleware sits relative to this one.
 		httpRequestsInFlight.Inc()
 		defer httpRequestsInFlight.Dec()
 
@@ -69,11 +68,8 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 
 		// The route template (e.g. /api/invites/:id) — and it can only be read
 		// HERE, after c.Next(). Read before the chain runs, the router hasn't
-		// matched yet and c.Route() still reports *this middleware's own* catch-all
-		// Use route, whose path is "/". That is what it used to do, and it quietly
-		// collapsed every series into path="/": the latency histogram could not
-		// tell a 25s long-poll from a 3ms tile read, and skipLog's QuietPath case
-		// never once matched, so a caller's health probes were logged forever.
+		// matched yet and c.Route() reports *this middleware's own* catch-all Use
+		// route, whose path is "/", collapsing every series into one.
 		//
 		// Why a *template* and not the raw URL: the raw path is attacker-controlled,
 		// and a Prometheus label is never evicted — one port scan would mint a

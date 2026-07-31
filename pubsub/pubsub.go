@@ -62,11 +62,9 @@ func (b *Bus[T]) Publish(topic string, v T) {
 // usual `defer unsubscribe()` — or the subscription leaks for the life of the
 // process and the bus keeps filling a channel nobody reads.
 //
-// Unsubscribing twice is safe. That is not a theoretical nicety: the shape this
-// replaced closed the channel directly, so the ordinary combination of a
-// `defer unsubscribe()` and an explicit early unsubscribe on a client disconnect
-// closed it twice and panicked — inside an SSE handler, taking the connection's
-// goroutine with it.
+// Unsubscribing twice is safe, which matters because the ordinary combination of
+// a `defer unsubscribe()` and an explicit early unsubscribe on client disconnect
+// would otherwise close the channel twice and panic inside the SSE handler.
 func (b *Bus[T]) Subscribe(topic string) (<-chan T, func()) {
 	ch := make(chan T, b.buffer)
 

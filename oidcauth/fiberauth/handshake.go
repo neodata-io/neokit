@@ -36,9 +36,8 @@ const (
 	// always a code already spent or expired. Nothing to configure; retry.
 	ReasonCode Reason = "code"
 	// ReasonSecret: the token endpoint refused the client credentials themselves.
-	// Split from ReasonCode deliberately: the two share a moment in the handshake
-	// and nothing else, and telling someone whose code merely went stale to
-	// re-copy their client secret sends them to fix a working setting.
+	// Kept distinct from ReasonCode: telling someone whose code merely went stale
+	// to re-copy their client secret sends them to fix a working setting.
 	ReasonSecret Reason = "secret"
 	// ReasonToken: the id_token was absent or failed verification. A drifted
 	// server clock is the most common benign cause.
@@ -94,9 +93,8 @@ func (g *Gate) Register(app *fiber.App) {
 // defaultFailureHandler renders a failed sign-in when the caller supplied none.
 //
 // With a path it redirects there, which is what a browser mid-navigation needs.
-// Without one it answers JSON — correct for an API-only deployment, and wrong
-// enough to notice for a real product, which is the nudge toward
-// [Options.OnLoginFailure].
+// Without one it answers JSON — correct for an API-only deployment, and a nudge
+// toward [Options.OnLoginFailure] for anything user-facing.
 func defaultFailureHandler(path, param string) func(fiber.Ctx, Reason, error) error {
 	if strings.TrimSpace(path) == "" {
 		return func(c fiber.Ctx, reason Reason, _ error) error {

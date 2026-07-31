@@ -1,26 +1,19 @@
 // Package jobs runs periodic background work correctly.
 //
-// The loop it replaces is four lines long and every project writes it by hand:
+// The hand-written ticker loop it replaces is four lines, and each copy is a
+// chance to omit one of the three things that make it safe:
 //
-//	ticker := time.NewTicker(interval)
-//	defer ticker.Stop()
-//	for { select { case <-ctx.Done(): return; case <-ticker.C: s.tick(ctx) } }
+//   - a **per-tick timeout**. A scheduler's ctx lives for the whole process, so
+//     a call that never returns does not lose one sample — the tick never
+//     completes, the loop never fires again, and the job is silently dead for
+//     the rest of the process's life. No crash, no log line.
+//   - **panic containment**. A panic on a bare `go` ends that goroutine forever,
+//     or unrecovered takes the process with it.
+//   - **a run at start**. A restart is when the work is most overdue, and a plain
+//     ticker waits out a full interval first.
 //
-// Written out fifteen times, as it was in the project this was extracted from,
-// it also acquires fifteen chances to omit one of the three things that make it
-// safe:
-//
-//   - a **per-tick timeout**. The ctx handed to a scheduler lives for the whole
-//     process, so a call that never returns does not lose one sample — the tick
-//     never completes, the loop never reaches the next fire, and that job is
-//     silently dead for the rest of the process's life. No crash, no log line.
-//   - **panic containment**. A panic on a bare `go` ends that goroutine forever
-//     (or, unrecovered, takes the process with it).
-//   - **a run at start**. A restart is precisely when the work is most overdue,
-//     and a plain ticker waits out a full interval first.
-//
-// [Job] is a plain struct: every knob is a field you can read at the call site,
-// and there is no scheduler object owning your goroutines.
+// [Job] is a plain struct: every knob is a field readable at the call site, and
+// no scheduler object owns your goroutines.
 package jobs
 
 import (
@@ -67,11 +60,9 @@ type Job struct {
 
 // Run drives the job until ctx is cancelled, then returns. It blocks.
 //
-// It panics if Every is not positive, matching [time.NewTicker]'s own contract:
-// a non-positive interval is a programming error that no runtime behaviour can
-// paper over — treating it as "run once" would turn a periodic job into a
-// one-shot with nothing to notice it, which is the exact class of silent failure
-// this package exists to remove.
+// It panics if Every is not positive, matching [time.NewTicker]'s contract:
+// treating it as "run once" would turn a periodic job into a one-shot with
+// nothing to notice, the silent failure this package exists to remove.
 func (j Job) Run(ctx context.Context) {
 	if j.Every <= 0 {
 		panic("jobs: Job.Every must be positive (job " + j.Name + ")")

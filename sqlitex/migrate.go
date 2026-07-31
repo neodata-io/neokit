@@ -64,11 +64,10 @@ func MigrateContext(ctx context.Context, db *sql.DB, migrations []Migration) err
 		return fmt.Errorf("read user_version: %w", err)
 	}
 
-	// A database ahead of this build is refused rather than ignored. The loop
-	// below simply does not execute when version > len(migrations), so rolling a
-	// release back used to leave the older binary running happily against a
-	// schema it does not understand — and then writing to it. Refusing to start
-	// is recoverable; silently operating on a future schema is not.
+	// A database ahead of this build is refused rather than ignored: the loop
+	// below simply does not execute when version > len(migrations), which would
+	// leave a rolled-back binary writing to a schema it does not understand.
+	// Refusing to start is recoverable; operating on a future schema is not.
 	if version > len(migrations) {
 		return fmt.Errorf("%w: database is at version %d, this build knows %d migrations",
 			ErrSchemaFromTheFuture, version, len(migrations))

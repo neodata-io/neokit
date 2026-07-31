@@ -11,13 +11,8 @@ import (
 // Usage reports free and total bytes on the volume holding the file at path.
 // Returns (0, 0) when path is empty or the volume cannot be interrogated.
 //
-// Windows previously fell to the no-op stub and always answered (0, 0), which a
-// caller could not tell apart from a genuinely full disk — the exact condition
-// this function exists to report.
-//
-// GetDiskFreeSpaceEx is the right call rather than GetDiskFreeSpace: it is the
-// one that reports the caller's quota-adjusted free space, and it does not
-// overflow on volumes larger than 2 TB.
+// GetDiskFreeSpaceEx rather than GetDiskFreeSpace: it reports the caller's
+// quota-adjusted free space and does not overflow on volumes larger than 2 TB.
 func Usage(path string) (free, total int64) {
 	if !isMeasurable(path) {
 		return 0, 0

@@ -268,19 +268,15 @@ func stringsClaim(claims map[string]any, key string) []string {
 // EndSessionURL is where the browser goes to sign out *at the provider*, or ""
 // when the provider advertises no end-session endpoint.
 //
-// Without it, signing out drops only the local session: the provider's stays, so
-// the next sign-in completes silently with no prompt and the "sign out" button
-// is, on a shared device, a lie.
+// Without it, signing out drops only the local session; the provider's stays, so
+// the next sign-in completes silently with no prompt.
 //
-// It sends client_id rather than id_token_hint. Both are permitted by OpenID
-// Connect RP-Initiated Logout 1.0 §2, and the alternative means keeping the raw
-// id_token at rest for the lifetime of every session purely to hand it back — a
-// credential stored for nothing, since client_id already tells the provider
-// which relying party is asking.
+// It sends client_id rather than id_token_hint — both are permitted by OIDC
+// RP-Initiated Logout 1.0 §2, and id_token_hint would mean keeping the raw
+// id_token at rest for every session's lifetime purely to hand it back.
 //
-// An absent endpoint is ("", nil), not an error: plenty of providers simply do
-// not implement RP-initiated logout, and the caller's local sign-out is complete
-// on its own.
+// An absent endpoint is ("", nil), not an error: many providers do not implement
+// RP-initiated logout, and local sign-out is complete on its own.
 func (p *Provider) EndSessionURL(ctx context.Context) (string, error) {
 	prov, err := p.discover(ctx)
 	if err != nil {
@@ -324,15 +320,13 @@ func (p *Provider) CheckHealth(ctx context.Context) error {
 // verifyClientCredentials asks the token endpoint to reject a deliberately bogus
 // authorization code, and reads *which* rejection comes back.
 //
-// The trick is that a token request carrying a wrong client secret fails
-// differently from one carrying a bad code: RFC 6749 §5.2 defines
+// A wrong client secret fails differently from a bad code: RFC 6749 §5.2 defines
 // `invalid_client` for the former (also surfaced as a 401) and `invalid_grant`
-// for the latter. So a request we already know will be rejected still reports
-// whether the *credentials* were accepted, without ever completing a real login.
+// for the latter, so a request known to be rejected still reports whether the
+// *credentials* were accepted.
 //
-// It fails only on a definite credential rejection. Anything else — including a
-// provider that answers in some non-standard way — is treated as "not disproven",
-// so this can never block a legitimate setup, only catch an unambiguous typo.
+// It fails only on a definite credential rejection; anything else is "not
+// disproven", so it can never block a legitimate setup, only catch a clear typo.
 func (p *Provider) verifyClientCredentials(ctx context.Context, prov *gooidc.Provider) error {
 	cfg := p.oauthConfig(prov)
 	_, err := cfg.Exchange(p.clientCtx(ctx), "oidcauth-credential-probe-not-a-real-code")

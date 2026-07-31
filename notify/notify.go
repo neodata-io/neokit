@@ -2,19 +2,14 @@
 // self-hosted deployment already has: a generic JSON webhook, an ntfy topic, or
 // an Apprise API server.
 //
-// It exists because these three are always written by hand, always the same way,
-// and always with the same two omissions. The version extracted into this
-// package had both:
+// Hand-written versions of these three tend to share two omissions: a bare
+// `&http.Client{Timeout: …}`, so no retry on a transient 502 and no SSRF guard
+// on a URL an admin pastes in; and a payload built from the caller's own domain
+// types, so the transport cannot be reused for a second kind of event.
 //
-//   - a bare `&http.Client{Timeout: …}`, so no retry on a transient 502, no
-//     otel span, and no SSRF guard on a URL an admin pastes in;
-//   - a payload built from the caller's own domain types, so the transport could
-//     not be reused for a second kind of event without touching all three files.
-//
-// [Notification] is the seam that fixes the second: it is the small, transport-
-// agnostic shape all three renderers accept, so an application maps its own
-// event to it once. [Sender] is the interface to hold. Every constructor here
-// builds its client through httpc, which fixes the first.
+// [Notification] is the transport-agnostic shape all three renderers accept, so
+// an application maps its own event to it once. [Sender] is the interface to
+// hold. Every constructor here builds its client through httpc.
 package notify
 
 import (
@@ -114,9 +109,9 @@ func (o Options) client() *http.Client {
 // post sends body to url and consumes the response, which is the identical tail
 // of all three senders.
 //
-// Draining the body before closing it is not decoration: an undrained response
-// cannot be returned to the connection pool, so a service notified on every
-// event would open a fresh TCP connection each time.
+// Drain the body before closing: an undrained response cannot return to the
+// connection pool, so a service notified on every event would open a fresh TCP
+// connection each time.
 func post(ctx context.Context, client *http.Client, service, url string, body io.Reader, header http.Header) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {

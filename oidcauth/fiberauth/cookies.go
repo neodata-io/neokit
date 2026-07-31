@@ -48,15 +48,14 @@ func (g *Gate) stateCookieName(secure bool) string {
 
 // sessionCookieNames lists every name a session cookie may have gone out under.
 //
-// Only ever used to *clear* cookies. Deleting one is always safe, whereas
-// **reading** a second name is the attack the prefix exists to remove: accepting
-// the unprefixed name as a fallback on an HTTPS deployment hands the attacker
+// Use it only to *clear* cookies, never to read them. Deleting is always safe,
+// but accepting a second name on read is the attack the `__Host-` prefix exists
+// to remove: an unprefixed fallback on an HTTPS deployment hands the attacker
 // back exactly the cookie they were going to plant.
 //
-// Logout needs this because the scheme, and therefore the name, can change under
-// a live browser — switching the login off flips `secure` to false while a
-// `__Host-` cookie is still on the client, and a logout that could not clear it
-// would be a lie.
+// Logout needs it because the scheme, and so the name, can change under a live
+// browser: switching the login off flips `secure` to false while a `__Host-`
+// cookie is still on the client.
 func (g *Gate) sessionCookieNames() [2]string {
 	return [2]string{hostPrefix + g.sessionCookie, g.sessionCookie}
 }

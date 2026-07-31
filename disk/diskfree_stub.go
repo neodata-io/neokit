@@ -6,14 +6,13 @@ package disk
 // this package implements: OpenBSD, NetBSD, Solaris, illumos, js/wasm, wasip1
 // and plan9.
 //
-// The tag is the exact negation of the implemented set rather than `!unix`.
-// Those two are not complements: OpenBSD, NetBSD, Solaris and illumos are all
-// `unix`, so under the old pair of tags they matched the statfs file — which
-// does not compile there — and matched no stub at all.
+// The tag must be the exact negation of the implemented set, not `!unix`: those
+// are not complements, since OpenBSD, NetBSD, Solaris and illumos are all `unix`
+// and would match the statfs file, which does not compile there, while matching
+// no stub at all.
 //
-// The BSD and Solaris members of this list are stubbed rather than unsupported
-// in principle: golang.org/x/sys/unix exposes statfs (spelled F_bsize on
-// OpenBSD) and statvfs (Solaris/illumos) for all of them. They are left out
-// until there is a consumer on one, because a per-platform syscall wrapper that
-// no CI job exercises on real hardware is a liability, not a feature.
+// Those platforms are stubbed rather than unsupported in principle —
+// golang.org/x/sys/unix exposes statfs and statvfs for all of them — and are
+// left out until there is a consumer, since a per-platform syscall wrapper no CI
+// job exercises on real hardware is a liability.
 func Usage(_ string) (free, total int64) { return 0, 0 }

@@ -95,16 +95,11 @@ type Policy struct {
 
 	// MaxLifetime caps a session's total age no matter how active it is.
 	//
-	// Without it the sliding renewal has no ceiling, so a browser that checks in
-	// once a month stays signed in forever. That matters because Owner and Groups
-	// are the snapshot taken at login and are never re-derived — revoking someone
-	// at the provider, or disabling their account outright, would not end their
-	// access here. This is the backstop that eventually forces a fresh handshake
-	// and a fresh authorization decision, and therefore the *real* bound on how
-	// long a revoked identity keeps access.
-	//
-	// Raising it is the knob for longer sessions; the cost of raising it is
-	// exactly that staleness window.
+	// Without it the sliding renewal has no ceiling, so a browser checking in
+	// once a month stays signed in forever. Owner and Groups are the snapshot
+	// taken at login and are never re-derived, so this is what eventually forces
+	// a fresh handshake — the real bound on how long a revoked identity keeps
+	// access, and the cost of raising it.
 	MaxLifetime time.Duration
 
 	// TouchInterval is the minimum gap between last-seen writes. Without it every
@@ -115,10 +110,9 @@ type Policy struct {
 // DefaultPolicy is a 30-day idle expiry under a 30-day absolute cap, with
 // activity recorded at most hourly.
 //
-// The two 30s are intentional and not an oversight: idle expiry can only ever
-// end a session *sooner*, so the cap is what actually governs, and the sliding
-// renewal is bounded to the point of rarely mattering. Thirty days of possibly
-// stale authorization is the trade being made — see [Policy.MaxLifetime].
+// The two 30s are intentional: idle expiry can only end a session sooner, so the
+// cap is what governs. Thirty days of possibly stale authorization is the trade
+// — see [Policy.MaxLifetime].
 func DefaultPolicy() Policy {
 	return Policy{
 		TTL:           30 * 24 * time.Hour,

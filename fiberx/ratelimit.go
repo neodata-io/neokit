@@ -45,26 +45,16 @@ func limitReached(c fiber.Ctx) error {
 // RateLimiterByPeer builds a per-minute rate limit keyed on the *transport peer*
 // — the address the connection actually came from — ignoring X-Forwarded-For.
 //
-// It exists because [RateLimiter]'s trade does not hold everywhere. Reading XFF
-// buys per-device fairness behind a reverse proxy, and pays for it by keying on a
-// value the caller writes; for shielding a downstream API from an eager caller
-// that is the right way round, since the worst case is a client declining to
-// limit itself.
+// Use it for any route that makes its own outbound call to a third party on
+// every hit — an OIDC callback exchanging a code at the provider's token
+// endpoint is the canonical case. There the limit is what stops an
+// unauthenticated caller turning this service into an amplifier, and a budget
+// that renews whenever the caller edits a header is a formality, not a limit.
 //
-// It is the wrong way round for a route that makes its own outbound call to a
-// third party on every hit — an OIDC callback that exchanges a code with the
-// identity provider's token endpoint is the canonical case. There the limit is
-// what stops an unauthenticated caller turning this service into an amplifier
-// aimed at that third party, and a budget that renews whenever the caller edits
-// a header is not a limit, it is a formality. Keying on the peer costs every
-// caller behind a shared proxy a shared counter, and cannot be forged from
-// outside the connection.
-//
-// The alternative — Fiber's TrustedProxies, so XFF is honoured only from the
-// proxy — was not taken: it needs the deployment to declare the proxy's address,
-// which varies per environment, and getting it wrong silently degrades to either
-// this behaviour or none at all. A control nobody has to configure correctly is
-// the one that is still working in a year.
+// The cost is that every caller behind a shared proxy shares one counter. The
+// alternative, Fiber's TrustedProxies, needs the deployment to declare the
+// proxy's address — which varies per environment and degrades silently when
+// wrong.
 func RateLimiterByPeer(maxPerMinute int) fiber.Handler {
 	return limiter.New(limiter.Config{
 		Max:          maxPerMinute,

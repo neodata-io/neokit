@@ -38,10 +38,9 @@
 //	admin := app.Group("/api/v1/admin", gate.RequireOwner())
 //
 // Apply [Gate.RequireOwner] to your own route groups rather than expecting this
-// package to hold a list of admin paths. Which routes are administrative is
-// knowledge the route definitions already carry; a central path list is a second
-// source of truth that drifts, and — being prefix-matched — tends to catch a
-// public route that merely shares a prefix.
+// package to hold a list of admin paths: the route definitions already carry
+// that knowledge, and a central prefix-matched list both drifts and tends to
+// catch public routes that merely share a prefix.
 package fiberauth
 
 import (
@@ -60,13 +59,10 @@ const (
 	DefaultAPIBase = "/api/v1"
 
 	// DefaultHandshakeBase is where the three browser-facing handshake routes
-	// live, and it is deliberately **unversioned**.
-	//
-	// Login, callback and logout are redirect targets a browser is sent to, not
-	// endpoints an API consumer calls, so they are not part of the contract an API
-	// version freezes. Versioning them would also cost something real: the
-	// callback URI is registered *at the identity provider*, so moving it breaks
-	// every sign-in until someone edits the provider to match.
+	// live, and it is deliberately **unversioned**: they are redirect targets a
+	// browser is sent to, not endpoints an API consumer calls. The callback URI is
+	// also registered *at the identity provider*, so moving it breaks every
+	// sign-in until someone edits the provider to match.
 	DefaultHandshakeBase = "/api/auth"
 )
 
@@ -117,11 +113,10 @@ type Options struct {
 	// [Options.LoginFailurePath] when one is set, and otherwise answers a JSON
 	// 401.
 	//
-	// This is the seam for a real product: the callback is reached by a *browser
-	// navigation*, not by fetch, so its failures have to land on a page. Returning
-	// JSON renders raw at someone who is by definition locked out and has nowhere
-	// to click. Supply this (or LoginFailurePath) and give them a page that
-	// explains the [Reason] and offers a retry.
+	// The callback is reached by a *browser navigation*, not by fetch, so its
+	// failures have to land on a page — JSON renders raw at someone who is by
+	// definition locked out. Supply this (or LoginFailurePath) to give them a page
+	// that explains the [Reason] and offers a retry.
 	OnLoginFailure func(c fiber.Ctx, reason Reason, cause error) error
 
 	// LoginFailurePath is a convenience for the common case: the browser is sent
@@ -211,14 +206,9 @@ func (g *Gate) Provider() *oidcauth.Provider {
 // Enabled reports whether a login is configured.
 func (g *Gate) Enabled() bool { return g.Provider() != nil }
 
-// LoginPath is where a browser starts the handshake.
-//
-// It is worth having as a method rather than a literal because it is one of the
-// few route strings the server *returns to a client*: [Gate.Whoami] hands it
-// back so a signed-out visitor's sign-in button has somewhere to point. Written
-// twice, the two copies part company the first time the base path moves — and
-// the symptom is a button that 404s only for signed-out visitors, the one
-// audience that cannot report it.
+// LoginPath is where a browser starts the handshake. [Gate.Whoami] returns it to
+// the client, so it is a method rather than a literal: a second copy would part
+// company the first time the base path moves.
 func (g *Gate) LoginPath() string { return g.handshakeBase + "/login" }
 
 // CallbackPath is the OIDC redirect URI's path. It must agree with the

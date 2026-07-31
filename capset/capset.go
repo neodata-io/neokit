@@ -10,14 +10,12 @@
 // The trap is that discovery gets written by hand. Each capability grows a field
 // on a registry struct, a line in its constructor, an `if c, ok := p.(Cap); ok`
 // in a scan loop, and an accessor — four edits to shared code, per capability,
-// forever, which flatly contradicts the promise that a component touches only
-// its own package. The project this came from had reached 48 fields and a
-// 190-line constructor saying the same thing 46 times.
+// forever, contradicting the promise that a component touches only its own
+// package.
 //
-// [Set] says it once. Callers still write named accessors — those are what make
-// the capability list greppable and stop type assertions leaking into handlers —
-// but each is a one-line delegation, and adding a capability touches no
-// constructor at all:
+// [Set] says it once. Callers still write named accessors — those keep the
+// capability list greppable and stop type assertions leaking into handlers — but
+// each is a one-line delegation, and adding a capability touches no constructor:
 //
 //	func (r *Registry) Chargers() []Charger { return capset.All[Charger](r.set) }
 //
