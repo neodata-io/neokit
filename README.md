@@ -16,6 +16,7 @@ Pre-1.0: the API may change between `v0.x` releases.
 | `cache` | stale-while-revalidate `GetOrFetch` |
 | `sqlitex` | `PRAGMA user_version` append-only migration runner, `VACUUM INTO` snapshot backup |
 | `tracing` `metrics` | OpenTelemetry and Prometheus wiring |
+| `debugserver` | `/metrics` and opt-in pprof on a listener of their own, off the application's port |
 | `safe` `ids` `clock` | goroutine recovery, id/token generation, injectable clock |
 | `netx` | `AddrInUseHint` — a readable message for a listener already bound |
 | `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
