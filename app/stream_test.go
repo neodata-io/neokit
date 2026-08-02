@@ -26,7 +26,7 @@ func serveStream(t *testing.T, a *app.App) (url string, exit <-chan string) {
 
 	reason := make(chan string, 1)
 
-	a.Fiber.Get("/events", func(c fiber.Ctx) error {
+	a.HTTP.Get("/events", func(c fiber.Ctx) error {
 		ctx, cancel := a.StreamContext(c)
 		c.Set("Content-Type", "text/event-stream")
 		c.RequestCtx().SetBodyStreamWriter(func(w *bufio.Writer) {
@@ -49,7 +49,7 @@ func serveStream(t *testing.T, a *app.App) (url string, exit <-chan string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = a.Fiber.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true}) }()
+	go func() { _ = a.HTTP.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true}) }()
 
 	return "http://" + ln.Addr().String() + "/events", reason
 }
@@ -117,7 +117,7 @@ func TestStreamContextCancelIsIdempotent(t *testing.T) {
 	defer a.Close()
 
 	result := make(chan error, 1)
-	a.Fiber.Get("/once", func(c fiber.Ctx) error {
+	a.HTTP.Get("/once", func(c fiber.Ctx) error {
 		ctx, cancel := a.StreamContext(c)
 		cancel()
 		cancel()
@@ -131,7 +131,7 @@ func TestStreamContextCancelIsIdempotent(t *testing.T) {
 		return c.SendString("ok")
 	})
 
-	resp, err := a.Fiber.Test(httptest.NewRequest(http.MethodGet, "/once", nil),
+	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, "/once", nil),
 		fiber.TestConfig{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)

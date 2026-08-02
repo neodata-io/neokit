@@ -35,15 +35,13 @@ type Subsystem struct {
 // Declare records a subsystem for the boot report and, when it is on and has a
 // check, for readiness.
 //
-// Call it during boot, from the goroutine that called [New], before [App.Run] —
-// the report is rendered at the top of Run and a subsystem declared after that
-// would be missing from it anyway. Declaring concurrently is not supported; the
-// readiness registry behind it is, so a check that fires later is fine.
+// Call it during boot, before [App.Run], from one goroutine: the report renders
+// at the top of Run, so a later declaration would miss it anyway.
 func (a *App) Declare(s Subsystem) {
 	a.subsystems = append(a.subsystems, s)
 
 	if s.On && s.Ready != nil {
-		a.Health.Register(s.Name, s.Ready)
+		a.health.Register(s.Name, s.Ready)
 	}
 }
 

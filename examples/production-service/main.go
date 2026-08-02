@@ -58,7 +58,7 @@ func run() error {
 		Ready:  db.PingContext,
 	})
 
-	service.Fiber.Get("/", func(c fiber.Ctx) error {
+	service.HTTP.Get("/", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"service": service.Name})
 	})
 

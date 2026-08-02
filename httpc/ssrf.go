@@ -78,15 +78,15 @@ func SSRFGuardedTransport() *http.Transport {
 	}
 }
 
-// SafeAbsoluteArtURL reports whether raw is an absolute artwork URL worth
-// handing to an SSRF-guarded client: http or https, with a host, and no
+// SafeAbsoluteURL reports whether raw is an absolute URL worth handing to an
+// SSRF-guarded client: http or https, with a host, and no embedded
 // credentials. It is a shape check only — it says nothing about where the host
 // resolves, which is [SSRFGuardedTransport]'s job and cannot be answered here
 // without reintroducing the rebinding gap this package is careful to avoid.
 //
 // Reject-by-shape first anyway: it costs nothing and it keeps schemes like
 // file:, gopher: and ftp: from ever reaching a dialer.
-func SafeAbsoluteArtURL(raw string) bool {
+func SafeAbsoluteURL(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return false

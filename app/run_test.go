@@ -47,7 +47,7 @@ func TestRunReturnsAFatalListenerError(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 
 	a, err := app.New(app.Options{
-		Name: "testapp", Log: quiet(), Banner: boolPtr(false),
+		Name: "testapp", Log: quiet(),
 		Base: config.Base{Port: port, BindAddr: "127.0.0.1", MetricsPort: 0,
 			LogLevel: "error", LogFormat: "json"},
 	})
@@ -72,8 +72,6 @@ func TestRunReturnsAFatalListenerError(t *testing.T) {
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
-
 // The report is what the process says it is. It must name every declared
 // subsystem and mark each on or off.
 func TestReportNamesEverySubsystem(t *testing.T) {
@@ -81,7 +79,7 @@ func TestReportNamesEverySubsystem(t *testing.T) {
 	a.Declare(app.Subsystem{Name: "database", On: true, Detail: "./data/app.db"})
 	a.Declare(app.Subsystem{Name: "login", On: false, Detail: "not configured"})
 
-	got := a.Report(":8080")
+	got := a.Report()
 	for _, want := range []string{"database", "./data/app.db", "login", "not configured", "testapp"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report missing %q:\n%s", want, got)
@@ -108,18 +106,18 @@ func TestCloseSurfacesAStepError(t *testing.T) {
 // the number that matters. Compare against BenchmarkBareFiber.
 func BenchmarkStandardChain(b *testing.B) {
 	a, err := app.New(app.Options{
-		Name: "bench", Log: quiet(), Banner: boolPtr(false),
+		Name: "bench", Log: quiet(),
 		Base: config.Base{LogLevel: "error", LogFormat: "json"},
 	})
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer a.Close()
-	a.Fiber.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
+	a.HTTP.Get("/", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	b.ReportAllocs()
 	for b.Loop() {
-		resp, err := a.Fiber.Test(httptest.NewRequest(http.MethodGet, "/", nil),
+		resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, "/", nil),
 			fiber.TestConfig{Timeout: 5 * time.Second})
 		if err != nil {
 			b.Fatal(err)

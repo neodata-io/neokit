@@ -85,8 +85,8 @@ func TestSafeAbsoluteArtURL(t *testing.T) {
 		{"//evil.example.com/a.jpg", false},          // scheme-relative
 	}
 	for _, c := range cases {
-		if got := httpc.SafeAbsoluteArtURL(c.raw); got != c.want {
-			t.Errorf("SafeAbsoluteArtURL(%q) = %v, want %v", c.raw, got, c.want)
+		if got := httpc.SafeAbsoluteURL(c.raw); got != c.want {
+			t.Errorf("SafeAbsoluteURL(%q) = %v, want %v", c.raw, got, c.want)
 		}
 	}
 }

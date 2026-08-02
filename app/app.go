@@ -1,14 +1,17 @@
 // Package app is neokit's application builder: the boot sequence every service
 // would otherwise retype, performed once in a documented order.
 //
-// It is deliberately *not* a container. Every dependency it constructs is an
-// exported field on [App], and a handler still receives what it needs through
-// its own constructor. There is no lookup, no reflection, and no bespoke handler
+// It is deliberately *not* a container. What it constructs is an exported field
+// on [App], and a handler still receives what it needs through its own
+// constructor. There is no lookup, no reflection, and no bespoke handler
 // signature — you write ordinary Fiber handlers against ordinary types.
 //
-// The trade it makes is that neokit chooses the boot *order*. An application
-// that needs a different one ignores [New] and wires from the same packages by
-// hand; that escape hatch is what lets this be opinionated.
+// What it fixes is narrow: where its own four teardown steps sit. Streams and
+// the HTTP drain run before yours, the OpenTelemetry flush after them, because
+// those positions are what make a SIGTERM exit clean — each is pinned by a test.
+// Your own steps, and their order among themselves, are yours: push them onto
+// [App.Shutdown] and they unwind in reverse. So are routes, Fiber config, error
+// mapping and the logger.
 //
 //	a, err := app.New(app.Options{Name: "okstables", Version: version, Base: cfg.Base})
 //	if err != nil { return err }
@@ -65,56 +68,42 @@ type Options struct {
 	// Base is the parsed generic configuration. See [config.Base].
 	Base config.Base
 
-	// ErrorMapper maps the application's own error sentinels to an HTTP status,
-	// public message and code. Nil means only the generic vocabulary applies.
-	ErrorMapper fiberx.DomainMapper
-
-	// QuietPaths silences the request log for routes that are pure noise — a
-	// health check or a status sweep something polls on a timer.
-	QuietPaths func(path string) bool
-
-	// Fiber overrides the default configuration. Only the fields set here are
-	// applied over the defaults.
-	Fiber *fiber.Config
+	// Fiber adjusts the HTTP config after neokit fills in its defaults. A
+	// function, not a *fiber.Config to merge: a zero field is indistinguishable
+	// from one set to false, so any merge silently drops most of its input.
+	//
+	//	Fiber: func(c *fiber.Config) { c.TrustProxy = true },
+	Fiber func(*fiber.Config)
 
 	// Log replaces the logger. Nil configures one from Base via logx.
 	Log *slog.Logger
-
-	// Banner prints the boot report at the top of Run. Nil means true.
-	Banner *bool
 }
 
-// App is a constructed application. Every dependency is an exported field.
+// App is a constructed application. Everything a caller wires against is an
+// exported field; the boot machinery behind [App.Declare] is not.
 type App struct {
 	Name    string
 	Version string
 	Cfg     config.Base
 
 	Log      *slog.Logger
-	Fiber    *fiber.App
+	HTTP     *fiber.App
 	Errors   *fiberx.Errors
 	Shutdown *lifecycle.Stack
-	Health   *health.Registry
 
-	// Ctx is cancelled once the HTTP server has drained, not when shutdown
-	// begins — so a request accepted during the drain can still start background
-	// work the drain then waits for. Start background work from it; a long-lived
-	// response wants [App.StreamContext], which fires earlier.
-	Ctx context.Context
-
-	banner     bool
-	cancel     context.CancelFunc
-	drain      *drainSignal
+	ctx    context.Context
+	cancel context.CancelFunc
+	drain  *drainSignal
+	// Unexported so it can only be fed by Declare, which also writes the boot
+	// report — a check registered around it would be invisible there.
+	health     *health.Registry
 	subsystems []Subsystem
 }
 
-// drainSignal is the one-shot broadcast that shutdown has started, fired before
-// the HTTP server drains. See [App.StreamContext] for what listens to it.
+// drainSignal broadcasts that shutdown has started, before the HTTP drain.
 //
-// A context rather than a channel this package closes: Run's teardown step and a
-// caller's deferred Close can both release it, and a second close panics where a
-// second cancel is a no-op — at shutdown, of all moments. It also lets
-// StreamContext hang a per-stream cancel off it with [context.AfterFunc].
+// A context, not a channel: Run's teardown and a deferred Close can both release
+// it, and a second cancel is a no-op where a second close panics.
 type drainSignal struct {
 	ctx     context.Context
 	release context.CancelFunc
@@ -144,27 +133,17 @@ func New(o Options) (*App, error) {
 		log = slog.Default()
 	}
 
-	banner := true
-	if o.Banner != nil {
-		banner = *o.Banner
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 
 	a := &App{
 		Name: o.Name, Version: o.Version, Cfg: o.Base,
 		Log:      log,
-		Errors:   fiberx.NewErrors(o.ErrorMapper),
+		Errors:   &fiberx.Errors{Log: log},
 		Shutdown: &lifecycle.Stack{Log: log},
-		Health:   health.New(),
-		Ctx:      ctx,
-		banner:   banner,
+		health:   health.New(),
+		ctx:      ctx,
 		cancel:   cancel,
 		drain:    newDrainSignal(),
-	}
-	a.Errors.Log = log
-	if o.QuietPaths != nil {
-		a.Errors.QuietPath = o.QuietPaths
 	}
 
 	// Tracing and metrics export are both opt-in on the standard OTEL env vars
@@ -187,7 +166,7 @@ func New(o Options) (*App, error) {
 	a.Declare(otelSubsystem("metrics export"))
 	a.Declare(diagnosticsSubsystem(a.diagnosticsAddr(), o.Base.EnablePprof))
 
-	a.Fiber = a.newFiber(o)
+	a.HTTP = a.newFiber(o)
 	return a, nil
 }
 
@@ -230,7 +209,7 @@ func (a *App) newFiber(o Options) *fiber.App {
 		ErrorHandler: a.Errors.Render,
 	}
 	if o.Fiber != nil {
-		cfg = mergeFiberConfig(cfg, *o.Fiber)
+		o.Fiber(&cfg)
 	}
 	f := fiber.New(cfg)
 
@@ -269,76 +248,43 @@ func (a *App) newFiber(o Options) *fiber.App {
 	return f
 }
 
-// mergeFiberConfig applies the caller's non-zero overrides over the defaults.
-func mergeFiberConfig(base, over fiber.Config) fiber.Config {
-	if over.AppName != "" {
-		base.AppName = over.AppName
-	}
-	if over.BodyLimit != 0 {
-		base.BodyLimit = over.BodyLimit
-	}
-	if over.ReadTimeout != 0 {
-		base.ReadTimeout = over.ReadTimeout
-	}
-	if over.WriteTimeout != 0 {
-		base.WriteTimeout = over.WriteTimeout
-	}
-	if over.IdleTimeout != 0 {
-		base.IdleTimeout = over.IdleTimeout
-	}
-	if over.ErrorHandler != nil {
-		base.ErrorHandler = over.ErrorHandler
-	}
-	return base
-}
+// Context is the application's lifetime. Start background work from it: it is
+// cancelled once the HTTP server has drained, not when shutdown begins, so a
+// request accepted during the drain can still start work the drain waits for.
+//
+// A method rather than a field, per the standard library's own shape for a
+// stored context (http.Request.Context).
+func (a *App) Context() context.Context { return a.ctx }
 
 // StreamContext returns the context a long-lived response should select on —
-// Server-Sent Events, a WebSocket, an NDJSON feed. It is cancelled *before* the
-// HTTP server drains, so the stream ends at the start of shutdown instead of
-// holding the drain open for its full timeout — which would turn a clean SIGTERM
-// into a deadline error and a non-zero exit.
+// SSE, a WebSocket, an NDJSON feed — cancelled before the HTTP server drains so
+// the stream ends rather than holding the drain open for its full timeout.
+// [App.Context] cannot serve here: it is cancelled after the drain.
 //
-// Fiber drains by waiting for every connection to go idle, and a stream that is
-// still streaming never does. Nothing inside the drain can end such a handler; it
-// has to be told out of band, first. That is also why [App.Ctx] cannot serve as
-// this signal — Ctx is cancelled after the drain, so that a request accepted
-// during it can still start background work.
+// Derives from the request context, so the request's trace span carries into the
+// stream. Fiber does not cancel that context on client disconnect — a failed
+// write is still how you learn that.
 //
-// It derives from the request context, so the trace span opened for the request
-// carries into the stream. Note that Fiber's request context is not cancelled
-// when the client disconnects — a failed write is still how you learn that.
+// Call cancel from inside the stream body, not the handler: with
+// SetBodyStreamWriter the handler returns first, so a cancel deferred there
+// would sever the stream immediately. Skipping it leaks a drain registration.
 //
-// Call cancel when the stream ends, from inside the stream body rather than the
-// handler: with SetBodyStreamWriter the handler returns before the stream
-// begins, so a cancel deferred in the handler would sever it immediately. Not
-// calling it retains a registration on the drain signal until the process exits.
-//
-//	func (h *Handler) Events(c fiber.Ctx) error {
-//		ctx, cancel := h.app.StreamContext(c)
-//		c.RequestCtx().SetBodyStreamWriter(func(w *bufio.Writer) {
-//			defer cancel()
-//			for {
-//				select {
-//				case ev := <-events:
-//					// ... write and flush; a write error means the client is gone
-//				case <-ctx.Done():
-//					return
-//				}
+//	ctx, cancel := h.app.StreamContext(c)
+//	c.RequestCtx().SetBodyStreamWriter(func(w *bufio.Writer) {
+//		defer cancel()
+//		for {
+//			select {
+//			case ev := <-events:
+//				// ...
+//			case <-ctx.Done():
+//				return
 //			}
-//		})
-//		return nil
-//	}
-//
-// The drain signal itself is deliberately unexported. A handler selects on an
-// ordinary context and never sees a neokit type, and background work started
-// from [App.Ctx] wants the later signal anyway — so there is nothing left for a
-// raw channel to serve.
+//		}
+//	})
 func (a *App) StreamContext(c fiber.Ctx) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(c.Context())
-	// AfterFunc rather than a goroutine per stream, and stop() rather than
-	// leaving it registered: nothing cancels a Fiber request context on its own,
-	// so without releasing this a busy service accumulates one registration on
-	// the drain signal per stream it has ever served.
+	// stop() matters: nothing cancels a Fiber request context, so an unreleased
+	// registration accumulates once per stream ever served.
 	stop := context.AfterFunc(a.drain.ctx, cancel)
 	return ctx, func() {
 		stop()
@@ -346,6 +292,4 @@ func (a *App) StreamContext(c fiber.Ctx) (context.Context, context.CancelFunc) {
 	}
 }
 
-// closeDraining releases the drain signal. Run's teardown step and a caller's
-// deferred Close can both reach it; a second release is a no-op.
 func (a *App) closeDraining() { a.drain.release() }

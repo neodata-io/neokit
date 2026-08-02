@@ -28,9 +28,12 @@ const (
 	httpDrainTimeout     = 10 * time.Second
 )
 
-// Report renders the boot block for addr. Run prints it; it is exported so a
-// caller can log it somewhere else instead.
-func (a *App) Report(addr string) string { return a.report(addr) }
+// Report renders the boot block: what this process actually is. Run prints it to
+// stdout; it is exported so a caller can send it somewhere else instead.
+func (a *App) Report() string {
+	addr, _ := listenAddress(a.Cfg.BindAddr, a.Cfg.Port)
+	return a.report(addr)
+}
 
 // Run starts the listeners, waits for a termination signal or a fatal listener
 // error, and unwinds the teardown stack. It blocks until the process is done.
@@ -42,18 +45,16 @@ func (a *App) Report(addr string) string { return a.report(addr) }
 func (a *App) Run() error {
 	addr, network := listenAddress(a.Cfg.BindAddr, a.Cfg.Port)
 
-	if a.banner {
-		// Printed here rather than in New: the report is only complete once the
-		// caller has finished declaring its subsystems.
-		fmt.Println(a.Report(addr))
-	}
+	// Here rather than in New: the report is only complete once the caller has
+	// finished declaring its subsystems.
+	fmt.Println(a.Report())
 
 	// Buffered to the number of senders, so neither listener can leak a
 	// goroutine when the select below consumes only the first error.
 	serverErr := make(chan error, 2)
 
 	go func() {
-		if err := a.Fiber.Listen(addr, fiber.ListenConfig{
+		if err := a.HTTP.Listen(addr, fiber.ListenConfig{
 			DisableStartupMessage: true, // the boot report replaces it
 			ListenerNetwork:       network,
 		}); err != nil {
@@ -63,7 +64,7 @@ func (a *App) Run() error {
 
 	debugAddr := a.diagnosticsAddr()
 	debug := debugserver.New(debugserver.Config{
-		Addr: debugAddr, Pprof: a.Cfg.EnablePprof, Health: a.Health, ErrorLog: a.Log,
+		Addr: debugAddr, Pprof: a.Cfg.EnablePprof, Health: a.health, ErrorLog: a.Log,
 	})
 	go func() {
 		// Serve returns nil on our own Shutdown, so anything here is a listener
@@ -116,7 +117,7 @@ func (a *App) pushRunSteps(debug interface{ Shutdown(context.Context) error }) {
 	// Its own timeout rather than the stack's per-step bound, because the drain
 	// means how long a slow client may take to finish.
 	a.Shutdown.Push("api", func(context.Context) error {
-		return a.Fiber.ShutdownWithTimeout(httpDrainTimeout)
+		return a.HTTP.ShutdownWithTimeout(httpDrainTimeout)
 	})
 
 	// Released first of all, so the drain does not wait its full timeout on a

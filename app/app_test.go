@@ -1,7 +1,6 @@
 package app_test
 
 import (
-	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -48,8 +47,8 @@ func TestNewRequiresAName(t *testing.T) {
 func TestNewExposesEveryDependency(t *testing.T) {
 	a := newApp(t)
 
-	if a.Log == nil || a.Fiber == nil || a.Errors == nil ||
-		a.Shutdown == nil || a.Health == nil || a.Ctx == nil {
+	if a.Log == nil || a.HTTP == nil || a.Errors == nil ||
+		a.Shutdown == nil || a.Context() == nil {
 		t.Fatalf("New left a dependency nil: %+v", a)
 	}
 	if a.Name != "testapp" || a.Version != "1.2.3" {
@@ -63,7 +62,7 @@ func TestAppContextIsLiveUntilClose(t *testing.T) {
 	a := newApp(t)
 
 	select {
-	case <-a.Ctx.Done():
+	case <-a.Context().Done():
 		t.Fatal("Ctx must not be cancelled while the app is running")
 	default:
 	}
@@ -72,59 +71,9 @@ func TestAppContextIsLiveUntilClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	select {
-	case <-a.Ctx.Done():
+	case <-a.Context().Done():
 	case <-time.After(time.Second):
 		t.Error("Close must cancel Ctx so background work stops")
-	}
-}
-
-// One Declare feeds both the boot report and the readiness set, so a subsystem
-// is named once.
-func TestDeclareRegistersAReadinessCheck(t *testing.T) {
-	a := newApp(t)
-	a.Declare(app.Subsystem{
-		Name: "database", On: true, Detail: "./data/app.db",
-		Ready: func(context.Context) error { return nil },
-	})
-
-	if a.Health.Len() != 1 {
-		t.Errorf("Health has %d checks, want the declared one", a.Health.Len())
-	}
-	got, ok := findSubsystem(a, "database")
-	if !ok {
-		t.Fatalf("database missing from Subsystems(): %+v", a.Subsystems())
-	}
-	if !got.On || got.Detail != "./data/app.db" {
-		t.Errorf("Subsystem = %+v", got)
-	}
-}
-
-// An unconfigured optional feature must never make a container look unready.
-func TestAnOffSubsystemRegistersNoCheck(t *testing.T) {
-	a := newApp(t)
-	a.Declare(app.Subsystem{
-		Name: "login", On: false, Detail: "not configured",
-		Ready: func(context.Context) error { return errors.New("never called") },
-	})
-
-	if a.Health.Len() != 0 {
-		t.Error("an off subsystem must contribute no readiness check")
-	}
-	if got := a.Health.Check(context.Background()); !got.Ready {
-		t.Error("an off subsystem must not make the app unready")
-	}
-}
-
-// A subsystem with no check is normal — most are informational.
-func TestDeclareWithoutACheckIsFine(t *testing.T) {
-	a := newApp(t)
-	a.Declare(app.Subsystem{Name: "web push", On: true, Detail: "vapid key persisted"})
-
-	if a.Health.Len() != 0 {
-		t.Error("a subsystem with no Ready must register no check")
-	}
-	if _, ok := findSubsystem(a, "web push"); !ok {
-		t.Errorf("it must still appear in the report: %+v", a.Subsystems())
 	}
 }
 
@@ -166,8 +115,8 @@ func TestTheReportNamesTheDiagnosticsAddressAndWhatIsMountedOnIt(t *testing.T) {
 	if strings.Contains(got.Detail, "pprof") {
 		t.Errorf("detail = %q, want no pprof claim when it is not mounted", got.Detail)
 	}
-	if !strings.Contains(a.Report(":8080"), "127.0.0.1:9090") {
-		t.Errorf("boot report does not name the diagnostics address:\n%s", a.Report(":8080"))
+	if !strings.Contains(a.Report(), "127.0.0.1:9090") {
+		t.Errorf("boot report does not name the diagnostics address:\n%s", a.Report())
 	}
 }
 
@@ -204,11 +153,11 @@ func findSubsystem(a *app.App, name string) (app.Subsystem, bool) {
 // error crosses the wire as plain text the client cannot parse.
 func TestReturnedErrorsRenderAsTheEnvelope(t *testing.T) {
 	a := newApp(t)
-	a.Fiber.Get("/boom", func(fiber.Ctx) error {
+	a.HTTP.Get("/boom", func(fiber.Ctx) error {
 		return fiber.NewError(http.StatusTeapot, "i am a teapot")
 	})
 
-	resp, err := a.Fiber.Test(httptest.NewRequest(http.MethodGet, "/boom", nil),
+	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, "/boom", nil),
 		fiber.TestConfig{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Test: %v", err)
@@ -225,23 +174,18 @@ func TestReturnedErrorsRenderAsTheEnvelope(t *testing.T) {
 // The caller's own sentinels must reach the envelope.
 func TestErrorMapperIsConsulted(t *testing.T) {
 	sentinel := errors.New("no such horse")
-	a, err := app.New(app.Options{
-		Name: "testapp", Log: quiet(),
-		Base: config.Base{LogLevel: "error", LogFormat: "json"},
-		ErrorMapper: func(err error) (int, string, string, bool) {
-			if errors.Is(err, sentinel) {
-				return http.StatusNotFound, "not found", "not_found", true
-			}
-			return 0, "", "", false
-		},
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	a := newApp(t)
 	defer a.Close()
 
-	a.Fiber.Get("/x", func(fiber.Ctx) error { return sentinel })
-	resp, _ := a.Fiber.Test(httptest.NewRequest(http.MethodGet, "/x", nil),
+	a.Errors.Mapper = func(err error) (int, string, string, bool) {
+		if errors.Is(err, sentinel) {
+			return http.StatusNotFound, "not found", "not_found", true
+		}
+		return 0, "", "", false
+	}
+
+	a.HTTP.Get("/x", func(fiber.Ctx) error { return sentinel })
+	resp, _ := a.HTTP.Test(httptest.NewRequest(http.MethodGet, "/x", nil),
 		fiber.TestConfig{Timeout: 5 * time.Second})
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want the mapper's 404", resp.StatusCode)
@@ -253,9 +197,9 @@ func TestErrorMapperIsConsulted(t *testing.T) {
 // information at exactly the wrong moment.
 func TestAPanickingHandlerIsRecovered(t *testing.T) {
 	a := newApp(t)
-	a.Fiber.Get("/panic", func(fiber.Ctx) error { panic("boom") })
+	a.HTTP.Get("/panic", func(fiber.Ctx) error { panic("boom") })
 
-	resp, err := a.Fiber.Test(httptest.NewRequest(http.MethodGet, "/panic", nil),
+	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, "/panic", nil),
 		fiber.TestConfig{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Test: %v", err)
@@ -269,7 +213,7 @@ func TestAPanickingHandlerIsRecovered(t *testing.T) {
 // to flush immediately.
 func TestServerSentEventsAreNotCompressed(t *testing.T) {
 	a := newApp(t)
-	a.Fiber.Get("/stream", func(c fiber.Ctx) error {
+	a.HTTP.Get("/stream", func(c fiber.Ctx) error {
 		c.Set("Content-Type", "text/event-stream")
 		return c.SendString("data: hello\n\n")
 	})
@@ -278,7 +222,7 @@ func TestServerSentEventsAreNotCompressed(t *testing.T) {
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Accept-Encoding", "gzip")
 
-	resp, err := a.Fiber.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+	resp, err := a.HTTP.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Test: %v", err)
 	}

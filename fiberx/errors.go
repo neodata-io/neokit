@@ -24,7 +24,12 @@ type DomainMapper func(err error) (status int, message, code string, ok bool)
 // falling back to the generic vocabulary below. A nil mapper is fine — it
 // simply means every error falls straight through to the generic path.
 type Errors struct {
-	mapper DomainMapper
+	// Mapper translates a caller's own error sentinels first; nil means every
+	// error falls straight through to the generic vocabulary. Exported for the
+	// same reason QuietPath below is: both are things only the caller can know,
+	// and configuring one of them at construction and the other by assignment
+	// would be an arbitrary split.
+	Mapper DomainMapper
 
 	// Log receives request failures and summary records. Nil means
 	// slog.Default(), preserving the standalone package's usual behavior.
@@ -43,8 +48,11 @@ type Errors struct {
 
 // NewErrors builds an Errors bound to m. m may be nil for a caller with no
 // domain sentinels of its own (yet).
+//
+// Equivalent to &Errors{Mapper: m}, and kept because it reads better at a call
+// site that sets nothing else.
 func NewErrors(m DomainMapper) *Errors {
-	return &Errors{mapper: m}
+	return &Errors{Mapper: m}
 }
 
 // FieldError is one field-level validation failure, machine-readable so a client
@@ -214,8 +222,8 @@ func (e *Errors) mapError(err error) (status int, msg, code string) {
 	if errors.As(err, &fe) {
 		return fe.Code, fe.Message, CodeForStatus(fe.Code)
 	}
-	if e.mapper != nil {
-		if status, msg, code, ok := e.mapper(err); ok {
+	if e.Mapper != nil {
+		if status, msg, code, ok := e.Mapper(err); ok {
 			return status, msg, code
 		}
 	}

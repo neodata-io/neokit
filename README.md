@@ -68,7 +68,7 @@ cfg, err := config.Load[Config]()
 a, err := app.New(app.Options{Name: "okstables", Version: version, Base: cfg.Base})
 defer a.Close()
 
-a.Fiber.Get("/api/v1/hello", func(c fiber.Ctx) error {
+a.HTTP.Get("/api/v1/hello", func(c fiber.Ctx) error {
     return c.JSON(fiber.Map{"hello": "okstables"})
 })
 return a.Run()

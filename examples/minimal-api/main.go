@@ -40,7 +40,7 @@ func run() error {
 	}
 	defer service.Close()
 
-	service.Fiber.Get("/hello", func(c fiber.Ctx) error {
+	service.HTTP.Get("/hello", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"message": "hello"})
 	})
 
