@@ -10,8 +10,10 @@
 // **Readiness** ("should traffic be sent here") runs the registered checks. A
 // failing dependency takes this instance out of rotation without restarting it.
 //
-// Serve both on a diagnostics listener rather than the application port, so they
-// inherit its binding and never widen the public surface.
+// A readiness body names each check and its error, which is what makes it worth
+// reading and also the reason to think about where you serve it: on the
+// application port — where neokit's app builder mounts it — that detail is
+// public, and the listener's bind address is the only thing narrowing it.
 package health
 
 import (

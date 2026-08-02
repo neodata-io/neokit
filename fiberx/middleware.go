@@ -1,53 +1,113 @@
 package fiberx
 
 import (
-	"context"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	"go.opentelemetry.io/otel/semconv/v1.41.0/httpconv"
 
 	"github.com/neodata-io/neokit/logx"
 )
 
-// ── Prometheus metrics ──────────────────────────────────────────────────────
+// ── HTTP server metrics ─────────────────────────────────────────────────────
 
-var (
-	httpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "http_requests_total",
-		Help: "Total HTTP requests by method, path, and status.",
-	}, []string{"method", "path", "status"})
+// meterName scopes the instruments below. It is the instrumentation scope on
+// the exported metrics, which is how a collector tells neokit's HTTP metrics
+// apart from an application's own.
+const meterName = "github.com/neodata-io/neokit/fiberx"
 
-	httpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "http_request_duration_seconds",
-		Help:    "HTTP request duration in seconds.",
-		Buckets: prometheus.DefBuckets,
-	}, []string{"method", "path"})
+// httpMetrics is the instrument pair MetricsAndLogger records into.
+//
+// Both come from httpconv rather than being declared by hand, so their names,
+// units and — for the histogram — bucket boundaries are the ones a collector
+// already has dashboards for. The boundaries matter more than they look: the
+// SDK's default set tops out at 10 000, which is right for a millisecond-valued
+// instrument and useless for one measured in seconds, where every real request
+// lands in the first bucket.
+type httpMetrics struct {
+	duration httpconv.ServerRequestDuration
+	active   httpconv.ServerActiveRequests
+}
 
-	httpRequestsInFlight = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "http_requests_in_flight",
-		Help: "Number of HTTP requests currently being handled.",
-	})
-)
+// newHTTPMetrics builds the instruments from the global MeterProvider.
+//
+// Here, and not in a package var: metrics.Init installs the provider, and an
+// instrument built before that binds to the global delegating one instead. That
+// does back-fill correctly in production — but only for the first provider ever
+// installed, so a package var would silently pin every test in this package to
+// whichever provider the first one happened to set. Building at middleware
+// construction ties them to a moment that is already after Init in app.New.
+//
+// An error here means a malformed instrument name, which is this file's bug and
+// not an operator's; httpconv hands back a working no-op either way, so the
+// process keeps serving without metrics rather than failing to boot.
+func (e *Errors) newHTTPMetrics() httpMetrics {
+	meter := otel.Meter(meterName)
 
-// MetricsAndLogger is a single middleware that records Prometheus metrics
-// and logs every request through slog. One middleware, one pass, no
-// duplication. It is a method on *Errors — not a bare function — because a
+	duration, err := httpconv.NewServerRequestDuration(meter)
+	if err != nil {
+		e.logger().Warn("http duration metric unavailable", logx.Err(err))
+	}
+	active, err := httpconv.NewServerActiveRequests(meter)
+	if err != nil {
+		e.logger().Warn("http in-flight metric unavailable", logx.Err(err))
+	}
+	return httpMetrics{duration: duration, active: active}
+}
+
+// requestMethod maps a method onto its semantic-convention attribute, folding
+// anything unrecognised onto _OTHER.
+//
+// Same reason the route attribute is a template: a client may put any token in
+// the method line, and an unbounded attribute value on a time series that is
+// never evicted is a memory leak with a one-line trigger.
+func requestMethod(method string) httpconv.RequestMethodAttr {
+	switch method {
+	case fiber.MethodGet:
+		return httpconv.RequestMethodGet
+	case fiber.MethodHead:
+		return httpconv.RequestMethodHead
+	case fiber.MethodPost:
+		return httpconv.RequestMethodPost
+	case fiber.MethodPut:
+		return httpconv.RequestMethodPut
+	case fiber.MethodPatch:
+		return httpconv.RequestMethodPatch
+	case fiber.MethodDelete:
+		return httpconv.RequestMethodDelete
+	case fiber.MethodConnect:
+		return httpconv.RequestMethodConnect
+	case fiber.MethodOptions:
+		return httpconv.RequestMethodOptions
+	case fiber.MethodTrace:
+		return httpconv.RequestMethodTrace
+	default:
+		return httpconv.RequestMethodOther
+	}
+}
+
+// MetricsAndLogger is a single middleware that records the OpenTelemetry HTTP
+// server metrics and logs every request through slog. One middleware, one pass,
+// no duplication. It is a method on *Errors — not a bare function — because a
 // returned error's status must be derived the same way Render/WriteError
 // derive it: a handler that returns a bare caller sentinel directly (rather
 // than calling e.WriteError itself) relies on the app's ErrorHandler and the
 // same DomainMapper to render it, and this middleware runs *before* that
 // happens (see the status derivation below). A version with no mapper would
 // silently record every such request as a 500.
+//
+// The instruments are built once, when this returns — see [Errors.newHTTPMetrics].
 func (e *Errors) MetricsAndLogger() fiber.Handler {
+	m := e.newHTTPMetrics()
+
 	return func(c fiber.Ctx) error {
 		start := time.Now()
 		method := c.Method()
+		reqMethod, scheme := requestMethod(method), c.Scheme()
 
 		// Lift the ID that the requestid middleware (registered just before this
 		// one) already generated into the Go context, so every context-aware log
@@ -58,11 +118,12 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 		}
 
 		// Deferred, not paired inline: a panic in a downstream handler unwinds
-		// straight past a plain Dec(), permanently corrupting the gauge by one per
-		// panicking request — and whether that happens depends on where the recover
-		// middleware sits relative to this one.
-		httpRequestsInFlight.Inc()
-		defer httpRequestsInFlight.Dec()
+		// straight past a plain decrement, permanently corrupting the counter by
+		// one per panicking request — and whether that happens depends on where the
+		// recover middleware sits relative to this one. Deferred arguments are
+		// evaluated now, so the -1 also carries exactly the attributes the +1 did.
+		m.active.Add(c.Context(), 1, reqMethod, scheme)
+		defer m.active.Add(c.Context(), -1, reqMethod, scheme)
 
 		err := c.Next()
 
@@ -72,13 +133,13 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 		// route, whose path is "/", collapsing every series into one.
 		//
 		// Why a *template* and not the raw URL: the raw path is attacker-controlled,
-		// and a Prometheus label is never evicted — one port scan would mint a
-		// permanent series per probed URL. A request that matches no route at all
-		// falls back to this middleware's own "/" route (a Use route always
-		// matches), so unrouted junk lands on a single bounded series rather than
-		// minting one each. If this middleware ever stops being registered with
-		// Use, re-check that: c.Route() falls back to the *raw* path when nothing
-		// matched at all, which is exactly the unbounded case.
+		// and a time series is never evicted — one port scan would mint a permanent
+		// series per probed URL. A request that matches no route at all falls back
+		// to this middleware's own "/" route (a Use route always matches), so
+		// unrouted junk lands on a single bounded series rather than minting one
+		// each. If this middleware ever stops being registered with Use, re-check
+		// that: c.Route() falls back to the *raw* path when nothing matched at all,
+		// which is exactly the unbounded case.
 		path := c.Route().Path
 
 		// A returned error hasn't been rendered yet — the global ErrorHandler runs
@@ -91,17 +152,19 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 			status = e.StatusForError(err)
 		}
 		duration := time.Since(start)
-		statusStr := strconv.Itoa(status)
 
-		// Prometheus — record everything, including scrapes and health checks. The
-		// duration histogram carries a trace exemplar when this request was sampled,
-		// so a slow bucket in Grafana links straight to the span in Tempo.
-		httpRequestsTotal.WithLabelValues(method, path, statusStr).Inc()
-		observeDuration(c.Context(), method, path, duration.Seconds())
+		// Record everything, including health probes. The SDK attaches a trace
+		// exemplar by itself when this request carried a sampled span — its default
+		// exemplar filter is trace-based — so a slow bucket in Grafana still links
+		// straight to the span in Tempo, with no exemplar plumbing here.
+		m.duration.Record(c.Context(), duration.Seconds(), reqMethod, scheme,
+			semconv.HTTPRoute(path),
+			semconv.HTTPResponseStatusCode(status),
+		)
 
 		// Logging is for humans, so it is noisier to be quieter: skip the traffic
-		// that carries no signal (metric scrapes, health probes, 304s) and only
-		// escalate the level for real problems.
+		// that carries no signal (health probes, 304s) and only escalate the level
+		// for real problems.
 		if e.skipLog(path, status) {
 			return err
 		}
@@ -118,7 +181,7 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 		// context set above — no need to add it here.
 		e.logger().Log(c.Context(), level, "http",
 			"method", method,
-			"path", path, // template path, matches the Prometheus label
+			"path", path, // template path, matches the http.route attribute
 			"status", status,
 			// Milliseconds as a float so LogQL can `unwrap duration_ms` directly for
 			// latency dashboards without dividing raw nanoseconds in every query.
@@ -127,26 +190,6 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 
 		return err
 	}
-}
-
-// observeDuration records the request duration, attaching a trace_id exemplar when
-// the request carried a sampled span. Exemplars are the seam that turns "this p99
-// bucket is slow" into a click through to the exact trace: Grafana maps the
-// histogram's exemplar trace_id to Tempo (the span context is on the request ctx
-// because tracing.Middleware runs before this one). Only sampled spans get one —
-// exemplars are meant to be sparse pointers at recorded traces — and only when the
-// concrete observer supports them, which the classic Prometheus histogram does. A
-// disabled tracer means an empty span context, so this silently falls back to a
-// plain Observe.
-func observeDuration(ctx context.Context, method, path string, secs float64) {
-	obs := httpRequestDuration.WithLabelValues(method, path)
-	if sc := trace.SpanContextFromContext(ctx); sc.IsSampled() {
-		if eo, ok := obs.(prometheus.ExemplarObserver); ok {
-			eo.ObserveWithExemplar(secs, prometheus.Labels{"trace_id": sc.TraceID().String()})
-			return
-		}
-	}
-	obs.Observe(secs)
 }
 
 // skipLog reports whether a request is pure noise that would drown the useful

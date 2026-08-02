@@ -1,6 +1,8 @@
 package app_test
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -22,7 +24,7 @@ func newApp(t *testing.T) *app.App {
 	t.Helper()
 	a, err := app.New(app.Options{
 		Name: "testapp", Version: "1.2.3",
-		Base: config.Base{Port: 0, MetricsPort: 0, LogLevel: "error", LogFormat: "json"},
+		Base: config.Base{Port: 0, LogLevel: "error", LogFormat: "json"},
 		Log:  quiet(),
 	})
 	if err != nil {
@@ -83,59 +85,110 @@ func TestAppContextIsLiveUntilClose(t *testing.T) {
 // report about what this process is.
 func TestSubsystemsIncludesTheBuildersOwn(t *testing.T) {
 	a := newApp(t)
-	for _, name := range []string{"tracing", "metrics export", "diagnostics"} {
+	for _, name := range []string{"tracing", "metrics export", "health"} {
 		if _, ok := findSubsystem(a, name); !ok {
 			t.Errorf("%q missing from Subsystems(): %+v", name, a.Subsystems())
 		}
 	}
 }
 
-// The diagnostics listener binds loopback and leaves pprof off, and both of
-// those are silent: a scrape from another container just stops arriving, with
-// nothing wrong on this side to find. The report is where an operator gets to
-// read the address that was actually used, so it has to be the real one.
-func TestTheReportNamesTheDiagnosticsAddressAndWhatIsMountedOnIt(t *testing.T) {
-	a, err := app.New(app.Options{
-		Name: "testapp",
-		Base: config.Base{MetricsPort: 9090},
-		Log:  quiet(),
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	t.Cleanup(func() { _ = a.Close() })
+// The probes now sit on the application listener, so where they are is the one
+// thing about them an operator cannot infer from anywhere else — and it decides
+// whether they are reachable by anyone who can reach the API. The report has to
+// name them.
+func TestTheReportNamesTheProbeEndpoints(t *testing.T) {
+	a := newApp(t)
 
-	got, ok := findSubsystem(a, "diagnostics")
+	got, ok := findSubsystem(a, "health")
 	if !ok {
-		t.Fatalf("no diagnostics line: %+v", a.Subsystems())
+		t.Fatalf("no health line: %+v", a.Subsystems())
 	}
-	if !strings.Contains(got.Detail, "127.0.0.1:9090") {
-		t.Errorf("detail = %q, want the loopback default spelled out", got.Detail)
-	}
-	if strings.Contains(got.Detail, "pprof") {
-		t.Errorf("detail = %q, want no pprof claim when it is not mounted", got.Detail)
-	}
-	if !strings.Contains(a.Report(), "127.0.0.1:9090") {
-		t.Errorf("boot report does not name the diagnostics address:\n%s", a.Report())
+	for _, path := range []string{app.LivePath, app.ReadyPath} {
+		if !strings.Contains(got.Detail, path) {
+			t.Errorf("detail = %q, want it to name %q", got.Detail, path)
+		}
+		if !strings.Contains(a.Report(), path) {
+			t.Errorf("boot report does not name %q:\n%s", path, a.Report())
+		}
 	}
 }
 
-// Enabling pprof publishes heap dumps on that port. The report must say so —
-// it is the only place the decision is visible at runtime.
-func TestTheReportSaysWhenPprofIsMounted(t *testing.T) {
+// Liveness must answer without touching a dependency: a probe that consults the
+// database gets a healthy container killed during a database blip.
+func TestLivenessAnswersWithoutAnyCheck(t *testing.T) {
+	a := newApp(t)
+	a.Declare(app.Subsystem{
+		Name: "database", On: true, Detail: "down",
+		Ready: func(context.Context) error { return errors.New("unreachable") },
+	})
+
+	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, app.LivePath, nil),
+		fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 — liveness must not consult a check", resp.StatusCode)
+	}
+}
+
+// Readiness does run them, so a failing dependency takes this instance out of
+// rotation without restarting it.
+func TestReadinessReflectsADeclaredCheck(t *testing.T) {
+	a := newApp(t)
+	a.Declare(app.Subsystem{
+		Name: "database", On: true, Detail: "down",
+		Ready: func(context.Context) error { return errors.New("unreachable") },
+	})
+
+	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, app.ReadyPath, nil),
+		fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Error("status = 200, want a failing check to make the app unready")
+	}
+}
+
+// The probes are registered above the middleware chain on purpose: probe traffic
+// is the highest-volume, lowest-information a service sees, and counting it in
+// the request histogram drags every latency percentile toward the cost of
+// answering {"status":"ok"}. Registration order is what keeps it out.
+func TestProbesBypassTheRequestLog(t *testing.T) {
+	var logged bytes.Buffer
 	a, err := app.New(app.Options{
 		Name: "testapp",
-		Base: config.Base{MetricsPort: 9090, MetricsBindAddr: "0.0.0.0", EnablePprof: true},
-		Log:  quiet(),
+		Base: config.Base{LogLevel: "debug", LogFormat: "json"},
+		Log:  slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Close() })
 
-	got, _ := findSubsystem(a, "diagnostics")
-	if !strings.Contains(got.Detail, "0.0.0.0:9090") || !strings.Contains(got.Detail, "pprof") {
-		t.Errorf("detail = %q, want the configured address and pprof named", got.Detail)
+	a.HTTP.Get("/ordinary", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+	for _, path := range []string{app.LivePath, app.ReadyPath, "/ordinary"} {
+		resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, path, nil),
+			fiber.TestConfig{Timeout: 5 * time.Second})
+		if err != nil {
+			t.Fatalf("Test %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	for _, path := range []string{app.LivePath, app.ReadyPath} {
+		if strings.Contains(logged.String(), path) {
+			t.Errorf("the %s probe reached the request log:\n%s", path, logged.String())
+		}
+	}
+	// The control: without it this passes just as well when the logger is broken,
+	// which is the failure mode that would hide a real regression here.
+	if !strings.Contains(logged.String(), "/ordinary") {
+		t.Errorf("ordinary traffic was not logged, so the assertions above prove nothing:\n%s", logged.String())
 	}
 }
 

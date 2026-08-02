@@ -10,15 +10,9 @@ import (
 	"github.com/neodata-io/neokit/config"
 )
 
-// stubDebug stands in for the diagnostics server, which pushRunSteps needs only
-// a Shutdown from.
-type stubDebug struct{}
-
-func (stubDebug) Shutdown(context.Context) error { return nil }
-
 // The teardown order is a correctness property produced by the order
 // pushRunSteps pushes — not by anything a test can restate. This exercises the
-// real method, so reordering those four pushes fails here rather than in
+// real method, so reordering those three pushes fails here rather than in
 // production, where the symptom is a socket closed under a live caller.
 func TestPushRunStepsProducesTheDocumentedOrder(t *testing.T) {
 	a, err := New(Options{
@@ -33,13 +27,13 @@ func TestPushRunStepsProducesTheDocumentedOrder(t *testing.T) {
 	// An application's own step, pushed between New's and Run's, as a real
 	// caller does.
 	a.Shutdown.Push("database", func(context.Context) error { return nil })
-	a.pushRunSteps(stubDebug{})
+	a.pushRunSteps()
 
 	teardown := slices.Clone(a.Shutdown.Names())
 	slices.Reverse(teardown) // Shutdown unwinds in reverse of push order
 
 	want := []string{
-		"streams", "api", "background-context", "metrics-server",
+		"streams", "api", "background-context",
 		"database", "metrics-export", "tracing",
 	}
 	if !slices.Equal(teardown, want) {

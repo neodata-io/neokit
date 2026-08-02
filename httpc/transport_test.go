@@ -3,6 +3,7 @@ package httpc
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -258,4 +259,101 @@ func TestRetryable(t *testing.T) {
 	if retryable(&http.Response{StatusCode: 200}, nil) {
 		t.Error("200 should not be retryable")
 	}
+}
+
+// A server can send any Retry-After it likes. Sleeping one out unbounded burns
+// the caller's whole timeout and surfaces a context error instead of the 429 the
+// server sent — and with Timeout: NoTimeout it parks the goroutine indefinitely.
+// Past MaxDelay the retries must stop and the response come back intact.
+func TestRetryTransport_DoesNotSleepOutAnOversizedRetryAfter(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "86400") // a day
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	// No client timeout at all: nothing but the clamp can bound this.
+	client := &http.Client{Transport: NewRetryTransport(nil, fastRetry())}
+
+	done := make(chan *http.Response, 1)
+	go func() {
+		resp, err := client.Get(srv.URL)
+		if err != nil {
+			t.Errorf("Get: %v", err)
+			done <- nil
+			return
+		}
+		done <- resp
+	}()
+
+	select {
+	case resp := <-done:
+		if resp == nil {
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("status = %d, want the 429 handed back", resp.StatusCode)
+		}
+		if got := resp.Header.Get("Retry-After"); got != "86400" {
+			t.Errorf("Retry-After = %q, want it preserved for the caller", got)
+		}
+		if calls != 1 {
+			t.Errorf("server calls = %d, want 1 — an oversized Retry-After must not be waited out", calls)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a Retry-After beyond MaxDelay was slept out; the goroutine is parked")
+	}
+}
+
+// A retryable response whose request body cannot be replayed used to be drained
+// by the retry path and then returned anyway, handing the caller a response with
+// a closed body. Such a request must be passed straight through instead.
+func TestRetryTransport_ReturnsAReadableBodyWhenTheRequestCannotBeReplayed(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("upstream detail the caller needs"))
+	}))
+	defer srv.Close()
+
+	// A GET carrying a body from a reader net/http cannot rewind: GetBody is nil,
+	// so no attempt after the first could reissue it.
+	req, err := http.NewRequest(http.MethodGet, srv.URL, &unrewindableReader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.GetBody = nil
+
+	resp, err := newRetryClient(fastRetry()).Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading the returned body: %v", err)
+	}
+	if string(body) != "upstream detail the caller needs" {
+		t.Errorf("body = %q, want the upstream's — a drained body means the retry path consumed it", body)
+	}
+	if calls != 1 {
+		t.Errorf("server calls = %d, want 1 — an unreplayable request must not be retried", calls)
+	}
+}
+
+// unrewindableReader is a request body net/http cannot produce a GetBody for.
+type unrewindableReader struct{ done bool }
+
+func (r *unrewindableReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	r.done = true
+	p[0] = 'x'
+	return 1, nil
 }

@@ -43,30 +43,9 @@ type Base struct {
 	// this default is not a security boundary, it is a convenience.
 	CorsOrigins []string `env:"CORS_ORIGINS" envDefault:"http://localhost:3000" envSeparator:","`
 
-	// MetricsPort is the diagnostics listener (metrics and health).
-	MetricsPort int `env:"METRICS_PORT" envDefault:"9090"`
-
-	// MetricsBindAddr is the interface for the diagnostics listener. It defaults
-	// to [DefaultMetricsBindAddr] because readiness responses and metrics are
-	// operational detail, not a public API. A scrape from another container
-	// needs "0.0.0.0" here.
-	MetricsBindAddr string `env:"METRICS_BIND_ADDR" envDefault:"127.0.0.1"`
-
-	// EnablePprof mounts profiling endpoints on the diagnostics listener. It is
-	// disabled by default because profiles can contain sensitive process data.
-	EnablePprof bool `env:"ENABLE_PPROF" envDefault:"false"`
-
 	// DatabasePath is passed through to whatever store the application opens.
 	DatabasePath string `env:"DATABASE_PATH"`
 }
-
-// DefaultMetricsBindAddr is where the diagnostics listener binds when
-// METRICS_BIND_ADDR is unset. It is exported so a caller that builds a [Base] in
-// code rather than from the environment resolves the empty value the same way,
-// instead of falling back to every interface. A struct tag cannot reference a
-// constant, so the tag above repeats the literal; the config tests hold the two
-// together.
-const DefaultMetricsBindAddr = "127.0.0.1"
 
 // Load reads a .env file if one is present, then parses T from the environment.
 //

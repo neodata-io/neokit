@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/gofiber/fiber/v3/middleware/compress"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 	recovermw "github.com/gofiber/fiber/v3/middleware/recover"
@@ -54,6 +55,22 @@ const (
 	defaultBodyLimit   = 1 << 20 // 1 MiB
 	defaultReadTimeout = 15 * time.Second
 	defaultIdleTimeout = 120 * time.Second
+)
+
+// The probe endpoints, on the application listener.
+//
+// Exported because their reachability is the deployment's problem rather than a
+// second listener's: a container health check and a reverse-proxy deny rule both
+// have to name them, and the same literal typed into a compose file, an ingress
+// and a test is how one of the three ends up stale.
+//
+// A readiness body names each dependency and its error — see [health.Registry].
+// That is diagnostic detail on a public port, so put the API behind
+// authentication or narrow [config.Base.BindAddr] if it matters to you; there is
+// no separate binding left to hide behind.
+const (
+	LivePath  = "/healthz"
+	ReadyPath = "/readyz"
 )
 
 // Options configures [New]. Only Name is required.
@@ -117,8 +134,8 @@ func newDrainSignal() *drainSignal {
 // New performs the boot sequence and returns the constructed application.
 //
 // The order is fixed: logging, the shutdown stack, tracing, metrics export, the
-// application context, the HTTP server and its middleware, then health. It is
-// documented here rather than re-derived per project.
+// application context, then the HTTP server with its probe routes and
+// middleware. It is documented here rather than re-derived per project.
 //
 // New starts no listener. Register routes, declare subsystems, push your own
 // teardown steps, then call [App.Run].
@@ -164,7 +181,7 @@ func New(o Options) (*App, error) {
 	}
 	a.Shutdown.Push("metrics-export", metricShutdown)
 	a.Declare(otelSubsystem("metrics export"))
-	a.Declare(diagnosticsSubsystem(a.diagnosticsAddr(), o.Base.EnablePprof))
+	a.Declare(healthSubsystem())
 
 	a.HTTP = a.newFiber(o)
 	return a, nil
@@ -180,19 +197,14 @@ func otelSubsystem(name string) Subsystem {
 	return Subsystem{Name: name, On: true, Detail: endpoint}
 }
 
-// diagnosticsSubsystem is the report line for the diagnostics listener.
+// healthSubsystem is the report line for the probe endpoints.
 //
-// The two facts worth stating are the two that are otherwise invisible. That
-// port binds loopback by default, so a scrape from another container fails with
-// nothing wrong on this side to find; and whether pprof — which will hand over a
-// heap dump — is mounted is recorded nowhere else the operator can see. Neither
-// should have to be inferred from a default.
-func diagnosticsSubsystem(addr string, pprof bool) Subsystem {
-	mounted := "metrics, health"
-	if pprof {
-		mounted += ", pprof"
-	}
-	return Subsystem{Name: "diagnostics", On: true, Detail: addr + " · " + mounted}
+// Worth a line because their location is the one thing about them an operator
+// cannot guess and cannot see anywhere else: they are on the application
+// listener, which means they are reachable by anyone who can reach the API, and
+// [config.Base.BindAddr] is the only thing that narrows that.
+func healthSubsystem() Subsystem {
+	return Subsystem{Name: "health", On: true, Detail: LivePath + ", " + ReadyPath}
 }
 
 // newFiber builds the HTTP server and the standard middleware chain.
@@ -226,6 +238,18 @@ func (a *App) newFiber(o Options) *fiber.App {
 			)
 		},
 	}))
+	// Before the rest of the chain, and that placement is the whole point: Fiber
+	// walks its stack in registration order, so a probe matches here and returns
+	// without ever reaching the middleware below. Probe traffic is the highest
+	// volume and lowest information a service sees — a 10-second liveness interval
+	// is 8 640 log lines a day, and counting it in http.server.request.duration
+	// drags every latency percentile toward the cost of answering `{"status":"ok"}`.
+	//
+	// Recover is above this line, so a readiness check that panics is still a 500
+	// rather than a dead process. TestProbesBypassTheRequestLog pins the ordering.
+	f.Get(LivePath, adaptor.HTTPHandler(health.LiveHandler()))
+	f.Get(ReadyPath, adaptor.HTTPHandler(a.health.ReadyHandler()))
+
 	f.Use(requestid.New())
 	// After requestid so both ids exist, before the logger so its summary line
 	// carries the trace id.

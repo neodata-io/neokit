@@ -20,7 +20,7 @@ func newInternalApp(t *testing.T) *App {
 
 	a, err := New(Options{
 		Name: "testapp", Version: "1.2.3",
-		Base: config.Base{Port: 0, MetricsPort: 0, LogLevel: "error", LogFormat: "json"},
+		Base: config.Base{Port: 0, LogLevel: "error", LogFormat: "json"},
 		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {

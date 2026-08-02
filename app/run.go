@@ -1,7 +1,6 @@
 package app
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net"
@@ -10,8 +9,6 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
-	"github.com/neodata-io/neokit/config"
-	"github.com/neodata-io/neokit/debugserver"
 	"github.com/neodata-io/neokit/lifecycle"
 	"github.com/neodata-io/neokit/logx"
 	"github.com/neodata-io/neokit/netx"
@@ -35,12 +32,12 @@ func (a *App) Report() string {
 	return a.report(addr)
 }
 
-// Run starts the listeners, waits for a termination signal or a fatal listener
+// Run starts the listener, waits for a termination signal or a fatal listener
 // error, and unwinds the teardown stack. It blocks until the process is done.
 //
-// The four steps it pushes complete the order described on [App]:
+// The three steps it pushes complete the order described on [App]:
 //
-//	streams → api → background-context → metrics-server
+//	streams → api → background-context
 //	        → [the application's steps, reversed] → metrics-export → tracing
 func (a *App) Run() error {
 	addr, network := listenAddress(a.Cfg.BindAddr, a.Cfg.Port)
@@ -49,9 +46,9 @@ func (a *App) Run() error {
 	// finished declaring its subsystems.
 	fmt.Println(a.Report())
 
-	// Buffered to the number of senders, so neither listener can leak a
-	// goroutine when the select below consumes only the first error.
-	serverErr := make(chan error, 2)
+	// Buffered, so the listener goroutine cannot leak when Run returns on a
+	// signal without ever reading from it.
+	serverErr := make(chan error, 1)
 
 	go func() {
 		if err := a.HTTP.Listen(addr, fiber.ListenConfig{
@@ -62,19 +59,7 @@ func (a *App) Run() error {
 		}
 	}()
 
-	debugAddr := a.diagnosticsAddr()
-	debug := debugserver.New(debugserver.Config{
-		Addr: debugAddr, Pprof: a.Cfg.EnablePprof, Health: a.health, ErrorLog: a.Log,
-	})
-	go func() {
-		// Serve returns nil on our own Shutdown, so anything here is a listener
-		// that never came up — the same fatal class as the API's.
-		if err := debugserver.Serve(debug); err != nil {
-			serverErr <- fmt.Errorf("debug server: %w", netx.AddrInUseHint(err, a.Cfg.MetricsPort, "METRICS_PORT"))
-		}
-	}()
-
-	a.pushRunSteps(debug)
+	a.pushRunSteps()
 
 	// SIGINT and SIGTERM — the two a terminal and a container runtime send.
 	quit, stop := lifecycle.Signals(context.Background())
@@ -104,9 +89,7 @@ func (a *App) Run() error {
 
 // pushRunSteps registers the teardown Run owns. Order matters: the stack unwinds
 // in reverse, so the last pushed runs first.
-func (a *App) pushRunSteps(debug interface{ Shutdown(context.Context) error }) {
-	a.Shutdown.Push("metrics-server", debug.Shutdown)
-
+func (a *App) pushRunSteps() {
 	// After the API drain, not before: reversing the two lets a late request
 	// start background work concurrently with the drain that waits for it.
 	a.Shutdown.Push("background-context", func(context.Context) error {
@@ -142,15 +125,6 @@ func (a *App) Close() error {
 	a.cancel()
 	a.closeDraining()
 	return err
-}
-
-// diagnosticsAddr is where the diagnostics listener binds. An empty
-// MetricsBindAddr means loopback, not every interface: [config.Base] carries the
-// same default for configuration parsed from the environment, and this covers a
-// Base assembled in code.
-func (a *App) diagnosticsAddr() string {
-	host := cmp.Or(strings.TrimSpace(a.Cfg.MetricsBindAddr), config.DefaultMetricsBindAddr)
-	return net.JoinHostPort(host, fmt.Sprint(a.Cfg.MetricsPort))
 }
 
 // listenAddress returns a host:port net.Listen accepts and the Fiber network for

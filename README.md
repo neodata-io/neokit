@@ -27,8 +27,8 @@ Pre-1.0: the API may change between `v0.x` releases.
 | `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters |
 | `cache` | stale-while-revalidate `GetOrFetch` |
 | `sqlitex` | `PRAGMA user_version` append-only migration runner, `VACUUM INTO` snapshot backup |
-| `tracing` `metrics` | OpenTelemetry and Prometheus wiring |
-| `debugserver` | `/metrics` and opt-in pprof on a listener of their own, off the application's port |
+| `tracing` `metrics` | OpenTelemetry traces and metrics, exported over OTLP |
+| `health` | liveness/readiness registry — bounded sweep, a body that names the failing check |
 | `safe` `ids` `clock` | goroutine recovery, id/token generation, injectable clock |
 | `netx` | `AddrInUseHint` — a readable message for a listener already bound |
 | `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
@@ -77,22 +77,28 @@ return a.Run()
 That is the whole boot. A scaffolding command would only write this out for you
 and then need a template set kept in step with the API forever.
 
-## The diagnostics port
+## Metrics and probes
 
-`app` serves Prometheus metrics, `/healthz` and `/readyz` on a second listener,
-bound to `127.0.0.1:9090`. Loopback is the default because a readiness body
-names your dependencies and their errors — operational detail, not public API.
-**A scrape from another container needs `METRICS_BIND_ADDR=0.0.0.0`.** pprof is
-off unless `ENABLE_PPROF=true`, because a heap profile carries whatever secrets
-are live in the process.
+Metrics are **push-only**: `app` records the OpenTelemetry HTTP server
+instruments and ships them over OTLP, along with Go runtime metrics and traces,
+to whatever `OTEL_EXPORTER_OTLP_ENDPOINT` names. There is no `/metrics`
+endpoint, no scrape target and no second listener to bind — set the endpoint or
+get nothing, which the boot report says out loud.
 
-Neither fact is one you should have to infer from a default, so the boot report
-states both before the listeners come up:
+`/healthz` and `/readyz` are on the application listener. They are registered
+above the middleware chain, so probe traffic is neither logged nor counted in
+the request histogram — a ten-second liveness interval is 8 640 log lines a day,
+and metering it drags every latency percentile toward the cost of answering
+`{"status":"ok"}`. **A readiness body names your dependencies and their errors,
+and the application port is public**: put the API behind authentication, or
+narrow `BIND_ADDR`, if that detail matters to you.
+
+The report states all of it before the listener comes up:
 
 ```text
 production-service 1.4.0 · :8080
   ✓ database        ./data/app.db
-  ✓ diagnostics     127.0.0.1:9090 · metrics, health
+  ✓ health          /healthz, /readyz
   ✗ metrics export  OTEL_EXPORTER_OTLP_ENDPOINT unset
   ✗ tracing         OTEL_EXPORTER_OTLP_ENDPOINT unset
 ```

@@ -303,14 +303,17 @@ func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response
 	start := time.Now()
 	resp, err := c.HTTPClient.Do(req)
 	duration := time.Since(start)
+	// The ring is read by an admin UI, so it gets the same redaction a logged
+	// error gets: a client whose auth rides in an api_key query parameter would
+	// otherwise publish that token through the debug endpoint.
 	if err != nil {
 		if c.Debug != nil {
 			c.Debug.Push(DebugEntry{
 				Time:       start,
 				Method:     method,
-				URL:        url,
+				URL:        RedactURL(url),
 				DurationMs: duration.Milliseconds(),
-				Error:      err.Error(),
+				Error:      Redact(err).Error(),
 			})
 		}
 		return nil, fmt.Errorf("%s API request failed: %w", c.Service, err)
@@ -319,7 +322,7 @@ func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response
 		c.Debug.Push(DebugEntry{
 			Time:       start,
 			Method:     method,
-			URL:        url,
+			URL:        RedactURL(url),
 			StatusCode: resp.StatusCode,
 			DurationMs: duration.Milliseconds(),
 		})
@@ -334,7 +337,14 @@ func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response
 	return resp, nil
 }
 
-// URL builds a full URL from the base and a path suffix with optional formatting.
+// URL builds a full URL from the base and a path suffix with optional
+// formatting.
+//
+// Escape every caller-supplied segment with [url.PathEscape] before passing it
+// as an arg. Go transmits dot-segments verbatim, so an id taken from a request
+// path and interpolated raw sends "/Items/../../Users/…" upstream, which the
+// upstream normalises into an arbitrary authenticated request made with this
+// client's credentials — whose body is handed straight back to the caller.
 func (c *BaseClient) URL(path string, args ...any) string {
 	if len(args) > 0 {
 		path = fmt.Sprintf(path, args...)

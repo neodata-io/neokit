@@ -148,14 +148,24 @@ func Redact(err error) error {
 		return err
 	}
 	safe := *urlErr
-	if u, perr := url.Parse(urlErr.URL); perr == nil {
-		u.RawQuery = ""
-		u.Fragment = ""
-		u.User = nil
-		safe.URL = u.String()
-	} else {
-		// Unparseable: drop it entirely rather than risk emitting a token.
-		safe.URL = ""
-	}
+	safe.URL = RedactURL(urlErr.URL)
 	return &safe
+}
+
+// RedactURL strips the credential-bearing parts of a URL — query string,
+// fragment and userinfo — keeping scheme://host/path.
+//
+// Apply it anywhere a request URL is stored or surfaced rather than dialled: a
+// debug ring read by an admin UI leaks an api_key query parameter exactly as
+// readily as a log line does.
+func RedactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		// Unparseable: drop it entirely rather than risk emitting a token.
+		return ""
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.User = nil
+	return u.String()
 }

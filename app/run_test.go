@@ -48,7 +48,7 @@ func TestRunReturnsAFatalListenerError(t *testing.T) {
 
 	a, err := app.New(app.Options{
 		Name: "testapp", Log: quiet(),
-		Base: config.Base{Port: port, BindAddr: "127.0.0.1", MetricsPort: 0,
+		Base: config.Base{Port: port, BindAddr: "127.0.0.1",
 			LogLevel: "error", LogFormat: "json"},
 	})
 	if err != nil {
