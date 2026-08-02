@@ -9,12 +9,16 @@
 // instrumentation (goroutines, GC pauses, heap) so a long-running plugin host is
 // observable without hand-instrumenting a thing.
 //
-// Division of labour with the existing Prometheus endpoint: request-level metrics
-// stay on the /metrics pull endpoint (see fiberx.MetricsAndLogger), where the HTTP
-// duration histogram now carries trace exemplars so a slow bucket in Grafana links
-// straight to its span in Tempo. This package adds the *push* pillar and the
-// runtime signals. When no endpoint is configured the global MeterProvider stays
-// the SDK's no-op, so nothing here costs anything.
+// This is the only way metrics leave the process — there is no pull endpoint and
+// nothing to scrape. Init installs the global MeterProvider, which is what the
+// instruments elsewhere record into: the HTTP server histogram in
+// fiberx.MetricsAndLogger, the runtime signals here, and whatever the application
+// declares for itself. Its exemplar filter is trace-based by default, so a
+// histogram observation made inside a sampled span carries the trace id and a slow
+// bucket in Grafana links straight to its span in Tempo.
+//
+// With no endpoint configured the provider stays the SDK's no-op, so every one of
+// those instruments becomes a cheap discard rather than an error.
 package metrics
 
 import (
