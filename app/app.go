@@ -26,8 +26,10 @@ package app
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
+	"net/http"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -64,14 +66,20 @@ const (
 // have to name them, and the same literal typed into a compose file, an ingress
 // and a test is how one of the three ends up stale.
 //
-// A readiness body names each dependency and its error — see [health.Registry].
-// That is diagnostic detail on a public port, so put the API behind
-// authentication or narrow [config.Base.BindAddr] if it matters to you; there is
-// no separate binding left to hide behind.
+// Both answer with a verdict and no more — [App.ReadyDetail] is where the
+// per-check detail lives, for a route you have put behind your own
+// authentication. The split is deliberate: an orchestrator reads only the status
+// code, so naming your dependencies and their errors here would give away a map
+// of the infrastructure to buy nothing.
 const (
 	LivePath  = "/healthz"
 	ReadyPath = "/readyz"
 )
+
+// MetricsPath is where the Prometheus endpoint is served. Always mounted, at the
+// conventional path, so a scrape config that assumes it works without being told
+// — see [config.Base.MetricsToken] for the part you may want to set.
+const MetricsPath = "/metrics"
 
 // Options configures [New]. Only Name is required.
 type Options struct {
@@ -113,7 +121,11 @@ type App struct {
 	drain  *drainSignal
 	// Unexported so it can only be fed by Declare, which also writes the boot
 	// report — a check registered around it would be invisible there.
-	health     *health.Registry
+	health *health.Registry
+	// metrics serves the Prometheus endpoint, or is nil when it is switched off.
+	// Unexported because where it is mounted is the builder's decision:
+	// above the middleware chain, so a scrape is not itself logged and metered.
+	metrics    http.Handler
 	subsystems []Subsystem
 }
 
@@ -157,7 +169,7 @@ func New(o Options) (*App, error) {
 		Log:      log,
 		Errors:   &fiberx.Errors{Log: log},
 		Shutdown: &lifecycle.Stack{Log: log},
-		health:   health.New(),
+		health:   health.New(log),
 		ctx:      ctx,
 		cancel:   cancel,
 		drain:    newDrainSignal(),
@@ -174,13 +186,17 @@ func New(o Options) (*App, error) {
 	a.Shutdown.Push("tracing", traceShutdown)
 	a.Declare(otelSubsystem("tracing"))
 
-	metricShutdown, err := metrics.Init(ctx, metrics.Config{ServiceName: o.Name, Version: o.Version})
+	pipeline, err := metrics.Init(ctx, metrics.Config{
+		ServiceName: o.Name, Version: o.Version, Pull: true,
+	})
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	a.Shutdown.Push("metrics-export", metricShutdown)
+	a.metrics = pipeline.Handler
+	a.Shutdown.Push("metrics-export", pipeline.Shutdown)
 	a.Declare(otelSubsystem("metrics export"))
+	a.Declare(metricsSubsystem(a.metrics != nil, o.Base.MetricsToken))
 	a.Declare(healthSubsystem())
 
 	a.HTTP = a.newFiber(o)
@@ -195,6 +211,52 @@ func otelSubsystem(name string) Subsystem {
 		return Subsystem{Name: name, On: false, Detail: "OTEL_EXPORTER_OTLP_ENDPOINT unset"}
 	}
 	return Subsystem{Name: name, On: true, Detail: endpoint}
+}
+
+// metricsSubsystem is the report line for the Prometheus endpoint.
+//
+// Whether it is authenticated is the fact worth stating: unauthenticated is the
+// default and the right answer on a private network, but it is also the one
+// setting whose absence is completely silent — the endpoint answers either way,
+// and nothing else in the process will ever mention it again.
+func metricsSubsystem(mounted bool, token string) Subsystem {
+	if !mounted {
+		// Only reachable when the Prometheus reader failed to build, which
+		// metrics.Init has already logged. Reported rather than hidden: the
+		// endpoint answering 404 is otherwise indistinguishable from a typo in
+		// whatever is trying to scrape it.
+		return Subsystem{Name: "metrics endpoint", On: false, Detail: "reader unavailable — see the log above"}
+	}
+	guard := "unauthenticated · set METRICS_TOKEN to require a bearer token"
+	if token != "" {
+		guard = "bearer token required"
+	}
+	return Subsystem{Name: "metrics endpoint", On: true, Detail: MetricsPath + " · " + guard}
+}
+
+// bearerGuard requires `Authorization: Bearer <token>`, or passes everything
+// through when token is empty.
+//
+// The comparison is constant-time. A token check that returns as soon as it
+// finds a wrong byte leaks the correct prefix through its own timing, and
+// recovering a secret one byte at a time from a remote endpoint is a published
+// technique rather than a theoretical one.
+func bearerGuard(token string) fiber.Handler {
+	if token == "" {
+		return func(c fiber.Ctx) error { return c.Next() }
+	}
+	want := []byte("Bearer " + token)
+	return func(c fiber.Ctx) error {
+		got := []byte(c.Get(fiber.HeaderAuthorization))
+		// ConstantTimeCompare is documented to return 0 on a length mismatch
+		// without comparing, so the length itself is not protected. That is fine —
+		// the length of a token is not the secret — but it does mean the check
+		// cannot be skipped for equal-length-only inputs.
+		if subtle.ConstantTimeCompare(got, want) != 1 {
+			return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+		}
+		return c.Next()
+	}
 }
 
 // healthSubsystem is the report line for the probe endpoints.
@@ -250,6 +312,14 @@ func (a *App) newFiber(o Options) *fiber.App {
 	f.Get(LivePath, adaptor.HTTPHandler(health.LiveHandler()))
 	f.Get(ReadyPath, adaptor.HTTPHandler(a.health.ReadyHandler()))
 
+	// The scrape belongs up here for the same reasons and one more: measured by
+	// the middleware below, every scrape would add a data point about the act of
+	// collecting data points, and at a 15-second interval that self-observation
+	// is a visible fraction of the traffic on an otherwise idle service.
+	if a.metrics != nil {
+		f.Get(MetricsPath, bearerGuard(o.Base.MetricsToken), adaptor.HTTPHandler(a.metrics))
+	}
+
 	f.Use(requestid.New())
 	// After requestid so both ids exist, before the logger so its summary line
 	// carries the trace id.
@@ -271,6 +341,20 @@ func (a *App) newFiber(o Options) *fiber.App {
 	}))
 	return f
 }
+
+// ReadyDetail is the readiness sweep with its detail intact: every declared
+// check, whether it passed, its error and how long it took. [App.ReadyPath]
+// answers with a bare verdict instead, because it sits on the public listener.
+//
+// Mount this behind your own authentication — it is the same data, and the point
+// is that you choose who reads it:
+//
+//	admin.Get("/readyz", adaptor.HTTPHandler(a.ReadyDetail()))
+//
+// Returning the handler rather than the [health.Registry] is deliberate: the
+// registry can also register checks, and those must go through [App.Declare] so
+// the boot report and the sweep cannot disagree about what this process is.
+func (a *App) ReadyDetail() http.Handler { return a.health.DetailHandler() }
 
 // Context is the application's lifetime. Start background work from it: it is
 // cancelled once the HTTP server has drained, not when shutdown begins, so a

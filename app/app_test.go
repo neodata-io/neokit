@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 
 	"github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/config"
@@ -153,6 +154,33 @@ func TestReadinessReflectsADeclaredCheck(t *testing.T) {
 	}
 }
 
+// The two ends of the split, asserted together so neither can drift: the public
+// probe gives away nothing about what this process depends on, and ReadyDetail
+// gives an authenticated caller all of it.
+func TestReadinessDetailIsSeparateFromThePublicProbe(t *testing.T) {
+	a := newApp(t)
+	a.Declare(app.Subsystem{
+		Name: "database", On: true, Detail: "down",
+		Ready: func(context.Context) error { return errors.New("connection refused") },
+	})
+
+	_, public := get(t, a, app.ReadyPath, "")
+	if strings.Contains(public, "database") || strings.Contains(public, "connection refused") {
+		t.Errorf("the public probe leaks a dependency and its error: %s", public)
+	}
+
+	// Mounted the way a caller would, except that the guard is what they add.
+	a.HTTP.Get("/admin/readyz", adaptor.HTTPHandler(a.ReadyDetail()))
+
+	status, detail := get(t, a, "/admin/readyz", "")
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 — the two must not disagree about the verdict", status)
+	}
+	if !strings.Contains(detail, "database") || !strings.Contains(detail, "connection refused") {
+		t.Errorf("the detailed handler is missing the failing check: %s", detail)
+	}
+}
+
 // The probes are registered above the middleware chain on purpose: probe traffic
 // is the highest-volume, lowest-information a service sees, and counting it in
 // the request histogram drags every latency percentile toward the cost of
@@ -189,6 +217,133 @@ func TestProbesBypassTheRequestLog(t *testing.T) {
 	// which is the failure mode that would hide a real regression here.
 	if !strings.Contains(logged.String(), "/ordinary") {
 		t.Errorf("ordinary traffic was not logged, so the assertions above prove nothing:\n%s", logged.String())
+	}
+}
+
+// get issues a GET against the app, optionally with an Authorization header.
+func get(t *testing.T, a *app.App, path, authorization string) (int, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := a.HTTP.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+// The endpoint is on by default, and it has to carry the instruments this
+// process actually declared — a page that answers 200 with nothing on it looks
+// exactly like a working one until someone tries to graph it.
+func TestMetricsEndpointServesTheProcessInstruments(t *testing.T) {
+	a := newApp(t)
+	a.HTTP.Get("/ordinary", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+	if status, _ := get(t, a, "/ordinary", ""); status != http.StatusOK {
+		t.Fatalf("warm-up request: status = %d, want 200", status)
+	}
+
+	status, body := get(t, a, app.MetricsPath, "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the endpoint is on unless MetricsDisabled", status)
+	}
+	// OTel's name translation is what makes the OTLP-native instrument readable
+	// to a scraper: http.server.request.duration + unit "s" becomes this.
+	if !strings.Contains(body, "http_server_request_duration_seconds") {
+		t.Errorf("no HTTP histogram in the exposition:\n%s", body)
+	}
+	if !strings.Contains(body, "/ordinary") {
+		t.Errorf("the route just served is missing from the exposition:\n%s", body)
+	}
+}
+
+// A token turns the endpoint from public to bearer-only. The wrong token and the
+// missing header must both fail, or the guard is decorative.
+func TestMetricsTokenIsEnforced(t *testing.T) {
+	const token = "s3cr3t"
+	a, err := app.New(app.Options{
+		Name: "testapp",
+		Base: config.Base{Port: 0, MetricsToken: token, LogLevel: "error", LogFormat: "json"},
+		Log:  quiet(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	for _, tc := range []struct {
+		name, authorization string
+		want                int
+	}{
+		{"no header", "", http.StatusUnauthorized},
+		{"wrong token", "Bearer wrong", http.StatusUnauthorized},
+		{"right token, wrong scheme", "Basic " + token, http.StatusUnauthorized},
+		// A prefix of the real token: the case a byte-at-a-time comparison would
+		// leak the length of through timing, and must simply be rejected.
+		{"prefix of the token", "Bearer s3c", http.StatusUnauthorized},
+		{"correct", "Bearer " + token, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if status, _ := get(t, a, app.MetricsPath, tc.authorization); status != tc.want {
+				t.Errorf("status = %d, want %d", status, tc.want)
+			}
+		})
+	}
+
+	got, _ := findSubsystem(a, "metrics endpoint")
+	if !strings.Contains(got.Detail, "bearer token required") {
+		t.Errorf("report detail = %q, want it to say the endpoint is authenticated", got.Detail)
+	}
+}
+
+// The report must say when the endpoint is public, because nothing else will.
+// An unset METRICS_TOKEN is silent everywhere else: the endpoint answers either
+// way, and the difference only shows up when someone else reads it.
+func TestTheReportSaysWhenMetricsAreUnauthenticated(t *testing.T) {
+	a := newApp(t)
+
+	got, ok := findSubsystem(a, "metrics endpoint")
+	if !ok {
+		t.Fatalf("no metrics endpoint line: %+v", a.Subsystems())
+	}
+	if !strings.Contains(got.Detail, "unauthenticated") || !strings.Contains(got.Detail, "METRICS_TOKEN") {
+		t.Errorf("detail = %q, want it to name the exposure and the setting that closes it", got.Detail)
+	}
+}
+
+// A scrape must not measure itself. At a 15-second interval, an endpoint that
+// records a data point about being read is a visible fraction of the traffic on
+// an idle service, and it inflates its own request count forever.
+func TestScrapesAreNotThemselvesMeasuredOrLogged(t *testing.T) {
+	var logged bytes.Buffer
+	a, err := app.New(app.Options{
+		Name: "testapp",
+		Base: config.Base{Port: 0, LogLevel: "debug", LogFormat: "json"},
+		Log:  slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	for range 2 {
+		if status, _ := get(t, a, app.MetricsPath, ""); status != http.StatusOK {
+			t.Fatalf("scrape: status = %d, want 200", status)
+		}
+	}
+
+	// The second scrape would report the first if the endpoint were behind the
+	// middleware, so its own path must not appear in its own output.
+	_, body := get(t, a, app.MetricsPath, "")
+	if strings.Contains(body, app.MetricsPath) {
+		t.Errorf("the endpoint measured its own scrapes:\n%s", body)
+	}
+	if strings.Contains(logged.String(), app.MetricsPath) {
+		t.Errorf("a scrape reached the request log:\n%s", logged.String())
 	}
 }
 

@@ -43,6 +43,23 @@ type Base struct {
 	// this default is not a security boundary, it is a convenience.
 	CorsOrigins []string `env:"CORS_ORIGINS" envDefault:"http://localhost:3000" envSeparator:","`
 
+	// MetricsToken requires `Authorization: Bearer <token>` on the Prometheus
+	// endpoint, which the app builder always serves at /metrics.
+	//
+	// There is deliberately no switch to turn that endpoint off. A service that
+	// cannot be scraped by the Prometheus already running next to it is one nobody
+	// graphs, and the exposure a switch would be protecting you from is what this
+	// token closes properly. What the endpoint publishes is route templates,
+	// counts, latencies and Go runtime stats — no request contents, no
+	// configuration.
+	//
+	// Empty serves it unauthenticated, which is what Grafana, Traefik and most
+	// self-hosted software do and is fine on a private network. Set it when the
+	// application port is reachable from anywhere you would not hand a traffic
+	// profile to; Prometheus sends it with `authorization:` in the scrape config.
+	// The boot report says which of the two you are running.
+	MetricsToken string `env:"METRICS_TOKEN"`
+
 	// DatabasePath is passed through to whatever store the application opens.
 	DatabasePath string `env:"DATABASE_PATH"`
 }

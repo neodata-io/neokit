@@ -10,15 +10,18 @@
 // **Readiness** ("should traffic be sent here") runs the registered checks. A
 // failing dependency takes this instance out of rotation without restarting it.
 //
-// A readiness body names each check and its error, which is what makes it worth
-// reading and also the reason to think about where you serve it: on the
-// application port — where neokit's app builder mounts it — that detail is
-// public, and the listener's bind address is the only thing narrowing it.
+// The detail — which check failed, with what error — is what makes readiness
+// worth reading and also what you should not hand to strangers, so it is split
+// from the verdict rather than traded against it. [Registry.ReadyHandler]
+// answers the public probe with the verdict alone; the detail goes to
+// [Registry.Log] on every transition, and to [Registry.DetailHandler] for a
+// route you put behind your own authentication.
 package health
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,17 +43,35 @@ type check struct {
 	running atomic.Bool
 }
 
-// Registry holds the readiness checks. The zero value is not usable; construct
-// with [New]. Safe for concurrent use.
+// Registry holds the readiness checks. The zero value is ready to use and safe
+// for concurrent use; [New] only saves you naming the field.
 type Registry struct {
 	// Timeout bounds one full Check. Zero means [DefaultTimeout].
 	Timeout time.Duration
 
+	// Log receives the readiness transition lines — which check failed and with
+	// what error — that [Registry.ReadyHandler] deliberately keeps out of its
+	// body. Nil means [slog.Default].
+	//
+	// It is where a failure becomes diagnosable now that the endpoint answers
+	// with a bare verdict, so a registry with a discarding logger and no
+	// [Registry.DetailHandler] mounted anywhere can report "not ready" with no way
+	// left to find out why.
+	Log *slog.Logger
+
 	mu     sync.RWMutex
 	checks []*check
+
+	// state is the last readiness observed, for the transition log. Atomic rather
+	// than under mu: it is written from every probe and must not contend with
+	// Register, and its Swap is what makes "log only on change" race-free when
+	// two probes overlap.
+	state atomic.Int32
 }
 
-func New() *Registry { return &Registry{} }
+// New returns a registry that logs its readiness transitions to log. A nil log
+// means [slog.Default].
+func New(log *slog.Logger) *Registry { return &Registry{Log: log} }
 
 // Register adds a readiness check.
 //

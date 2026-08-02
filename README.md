@@ -27,7 +27,7 @@ Pre-1.0: the API may change between `v0.x` releases.
 | `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters |
 | `cache` | stale-while-revalidate `GetOrFetch` |
 | `sqlitex` | `PRAGMA user_version` append-only migration runner, `VACUUM INTO` snapshot backup |
-| `tracing` `metrics` | OpenTelemetry traces and metrics, exported over OTLP |
+| `tracing` `metrics` | OpenTelemetry traces and metrics — `/metrics` to scrape, OTLP to push, one set of instruments |
 | `health` | liveness/readiness registry — bounded sweep, a body that names the failing check |
 | `safe` `ids` `clock` | goroutine recovery, id/token generation, injectable clock |
 | `netx` | `AddrInUseHint` — a readable message for a listener already bound |
@@ -79,28 +79,56 @@ and then need a template set kept in step with the API forever.
 
 ## Metrics and probes
 
-Metrics are **push-only**: `app` records the OpenTelemetry HTTP server
-instruments and ships them over OTLP, along with Go runtime metrics and traces,
-to whatever `OTEL_EXPORTER_OTLP_ENDPOINT` names. There is no `/metrics`
-endpoint, no scrape target and no second listener to bind — set the endpoint or
-get nothing, which the boot report says out loud.
+One set of instruments, two ways out, no wiring. Every instrument in the process
+— the HTTP server histogram, Go runtime stats, whatever you declare yourself —
+is OpenTelemetry-native and leaves by both exits at once:
 
-`/healthz` and `/readyz` are on the application listener. They are registered
-above the middleware chain, so probe traffic is neither logged nor counted in
-the request histogram — a ten-second liveness interval is 8 640 log lines a day,
-and metering it drags every latency percentile toward the cost of answering
-`{"status":"ok"}`. **A readiness body names your dependencies and their errors,
-and the application port is public**: put the API behind authentication, or
-narrow `BIND_ADDR`, if that detail matters to you.
+- **`GET /metrics`**, Prometheus text format, on the application listener.
+  Always mounted, nothing to configure. `http.server.request.duration` arrives as
+  `http_server_request_duration_seconds` with your route templates intact.
+- **OTLP push** to `OTEL_EXPORTER_OTLP_ENDPOINT`, when you set one. Traces and
+  metrics share the gate; the histogram carries trace exemplars, so a slow bucket
+  in Grafana links straight to its span in Tempo.
+
+Nothing is declared or recorded twice — the two are readers on one MeterProvider,
+so a metric you add anywhere shows up on both without being touched again.
+
+**The endpoint is unauthenticated by default**, which is what Grafana and Traefik
+do and is fine on a private network. Set `METRICS_TOKEN` and it requires
+`Authorization: Bearer …` — the same header Prometheus sends from `authorization:`
+in a scrape config. The boot report says which of the two you are running, because
+nothing else will.
+
+`/healthz` and `/readyz` are on the same listener. Probes and scrapes are all
+registered above the middleware chain, so none of them are logged or counted: a
+ten-second liveness interval is 8 640 log lines a day, and metering a scrape means
+recording a data point about the act of collecting data points.
+
+Readiness answers with the verdict and nothing else — `{"ready":false}` — because
+the audience on a public port is an orchestrator that reads only the status code,
+and naming your dependencies there would give away a map of your infrastructure
+to buy nothing. The detail is not lost:
+
+- it goes to the **log**, once per transition rather than once per probe:
+  `WARN not ready failing="database: connection refused"`, then `INFO ready`;
+- `app.ReadyDetail()` is the same sweep in full, for a route you mount behind
+  your own authentication:
+
+```go
+admin.Get("/readyz", adaptor.HTTPHandler(a.ReadyDetail()))
+// {"ready":false,"checks":[{"name":"database","ok":false,
+//                           "error":"connection refused","tookMs":3}]}
+```
 
 The report states all of it before the listener comes up:
 
 ```text
 production-service 1.4.0 · :8080
-  ✓ database        ./data/app.db
-  ✓ health          /healthz, /readyz
-  ✗ metrics export  OTEL_EXPORTER_OTLP_ENDPOINT unset
-  ✗ tracing         OTEL_EXPORTER_OTLP_ENDPOINT unset
+  ✓ database          ./data/app.db
+  ✓ health            /healthz, /readyz
+  ✓ metrics endpoint  /metrics · unauthenticated · set METRICS_TOKEN to require a bearer token
+  ✗ metrics export    OTEL_EXPORTER_OTLP_ENDPOINT unset
+  ✗ tracing           OTEL_EXPORTER_OTLP_ENDPOINT unset
 ```
 
 That block is generated from the same `app.Subsystem` declarations that register
