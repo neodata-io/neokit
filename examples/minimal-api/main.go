@@ -11,10 +11,6 @@ import (
 	"github.com/neodata-io/neokit/config"
 )
 
-type Config struct {
-	config.Base
-}
-
 // main does nothing but choose the exit code. The work is in run, because
 // log.Fatal calls os.Exit, and os.Exit does not run deferred functions: a
 // `defer service.Close()` in main would be skipped on exactly the error paths
@@ -26,14 +22,20 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load[Config]()
+	// config.Base directly, with no struct of its own: a service with no settings
+	// beyond the generic ones does not need to declare a type to hold none. Add
+	// one the moment you have a field of your own — see production-service.
+	cfg, err := config.Load[config.Base]()
 	if err != nil {
 		return err
 	}
 
+	// No Version: an unset one fills itself in from the VCS metadata Go embeds,
+	// so this binary still reports its commit in the boot report and every log
+	// line.
 	service, err := app.New(app.Options{
 		Name: "minimal-api",
-		Base: cfg.Base,
+		Base: cfg,
 	})
 	if err != nil {
 		return err

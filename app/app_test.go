@@ -44,6 +44,46 @@ func TestNewRequiresAName(t *testing.T) {
 	}
 }
 
+// Version is the opposite call: it defaults rather than demanding, because Go
+// already knows the answer. An empty one must never reach the boot report, the
+// logs or the metrics resource as a blank field.
+func TestVersionDefaultsRatherThanBeingBlank(t *testing.T) {
+	a, err := app.New(app.Options{Name: "testapp", Base: config.Base{Port: 0}, Log: quiet()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	if a.Version == "" {
+		t.Error("Version is blank — an unset one must fall back to the embedded build identity")
+	}
+	// "dev" is buildinfo's marker for an unstamped build. Asserting the marker
+	// rather than a commit keeps this passing under `go run`, which embeds no VCS
+	// metadata at all.
+	if !strings.Contains(a.Version, "dev") {
+		t.Errorf("Version = %q, want the dev marker for an unstamped build", a.Version)
+	}
+	if !strings.Contains(a.Report(), a.Version) {
+		t.Errorf("the boot report does not carry the version:\n%s", a.Report())
+	}
+}
+
+// A version the caller supplied is theirs — the fallback fills a blank, it never
+// edits what it was given.
+func TestASuppliedVersionIsUsedVerbatim(t *testing.T) {
+	a, err := app.New(app.Options{
+		Name: "testapp", Version: "1.4.0", Base: config.Base{Port: 0}, Log: quiet(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	if a.Version != "1.4.0" {
+		t.Errorf("Version = %q, want the caller's 1.4.0 untouched", a.Version)
+	}
+}
+
 // Every dependency is an exported field. That is the whole design: there is no
 // container and no lookup, so a handler receives what it needs through its own
 // constructor.

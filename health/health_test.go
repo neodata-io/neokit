@@ -27,7 +27,7 @@ func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, ni
 // cannot possibly fix the database.
 func TestLiveHandlerTouchesNoDependency(t *testing.T) {
 	var called atomic.Bool
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Register("database", func(context.Context) error {
 		called.Store(true)
 		return errors.New("down")
@@ -48,7 +48,7 @@ func TestLiveHandlerTouchesNoDependency(t *testing.T) {
 // application listener, so a body naming each dependency and its error would be
 // a map of the infrastructure served to anyone who can reach the port.
 func TestReadyHandlerBodyCarriesOnlyTheVerdict(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Register("database", func(context.Context) error { return nil })
 	r.Register("cache", func(context.Context) error { return errors.New("connection refused") })
 
@@ -78,7 +78,7 @@ func TestReadyHandlerBodyCarriesOnlyTheVerdict(t *testing.T) {
 // DetailHandler is the same sweep with everything in it, for a route the caller
 // has put behind its own authentication.
 func TestDetailHandlerNamesTheFailingCheck(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Register("database", func(context.Context) error { return nil })
 	r.Register("cache", func(context.Context) error { return errors.New("connection refused") })
 
@@ -102,7 +102,7 @@ func TestDetailHandlerNamesTheFailingCheck(t *testing.T) {
 // down is the shape of noise that gets a log ignored.
 func TestReadinessTransitionsAreLoggedOnceEach(t *testing.T) {
 	var logged bytes.Buffer
-	r := health.New(slog.New(slog.NewTextHandler(&logged, nil)))
+	r := &health.Registry{Log: slog.New(slog.NewTextHandler(&logged, nil))}
 
 	var fail atomic.Bool
 	r.Register("cache", func(context.Context) error {
@@ -140,7 +140,7 @@ func TestReadinessTransitionsAreLoggedOnceEach(t *testing.T) {
 }
 
 func TestReadyHandlerIs200WhenEverythingPasses(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Register("database", func(context.Context) error { return nil })
 
 	rec := httptest.NewRecorder()
@@ -154,7 +154,9 @@ func TestReadyHandlerIs200WhenEverythingPasses(t *testing.T) {
 // An empty registry is ready. A service with no dependencies must not be
 // permanently unready just because nobody registered anything.
 func TestEmptyRegistryIsReady(t *testing.T) {
-	if got := health.New(discard()).Check(context.Background()); !got.Ready {
+	// health.New is the same thing without the literal; exercised here so the
+	// convenience constructor is covered by something.
+	if got := health.New().Check(context.Background()); !got.Ready {
 		t.Error("a registry with no checks must report ready")
 	}
 }
@@ -162,7 +164,7 @@ func TestEmptyRegistryIsReady(t *testing.T) {
 // Checks run concurrently: a readiness probe has a deadline, and three
 // sequential 2-second checks would blow it while three parallel ones would not.
 func TestChecksRunConcurrently(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	const n = 4
 	for i := range n {
 		_ = i
@@ -191,7 +193,7 @@ func TestChecksRunConcurrently(t *testing.T) {
 // A check that hangs must not hang the endpoint. An unbounded readiness probe is
 // how a rolling deploy stalls.
 func TestASlowCheckIsBounded(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Timeout = 30 * time.Millisecond
 	r.Register("wedged", func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
 
@@ -209,7 +211,7 @@ func TestASlowCheckIsBounded(t *testing.T) {
 // dangerous case: a third-party callback that never observes its context must
 // not leave readiness blocked forever.
 func TestANonCooperativeCheckIsBounded(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Timeout = 30 * time.Millisecond
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
@@ -234,7 +236,7 @@ func TestANonCooperativeCheckIsBounded(t *testing.T) {
 // the process died of it. Counting entries is the direct statement of the
 // invariant: N sweeps against a wedged check enter it once.
 func TestAWedgedCheckIsEnteredOnceNoMatterHowOftenReadinessIsPolled(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Timeout = 20 * time.Millisecond
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
@@ -267,7 +269,7 @@ func TestAWedgedCheckIsEnteredOnceNoMatterHowOftenReadinessIsPolled(t *testing.T
 // down — an unrecovered panic in an HTTP handler is a 500 with no body, at
 // exactly the moment an operator is asking what is wrong.
 func TestAPanickingCheckIsReportedNotPropagated(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Register("bad", func(context.Context) error { panic("boom") })
 
 	got := r.Check(context.Background())
@@ -282,7 +284,7 @@ func TestAPanickingCheckIsReportedNotPropagated(t *testing.T) {
 // Registering the same name twice is a wiring mistake; the later one must not
 // silently replace the earlier and halve the coverage.
 func TestDuplicateNamesAreBothReported(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Register("db", func(context.Context) error { return nil })
 	r.Register("db", func(context.Context) error { return errors.New("nope") })
 
@@ -299,7 +301,7 @@ func TestDuplicateNamesAreBothReported(t *testing.T) {
 // nanosecond count is wrong by six orders of magnitude — and reads correctly
 // while being wrong, which is why it needs a test rather than a careful reader.
 func TestReadyBodyReportsMilliseconds(t *testing.T) {
-	r := health.New(discard())
+	r := &health.Registry{Log: discard()}
 	r.Register("slow", func(context.Context) error {
 		time.Sleep(30 * time.Millisecond)
 		return nil

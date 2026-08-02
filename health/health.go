@@ -69,9 +69,10 @@ type Registry struct {
 	state atomic.Int32
 }
 
-// New returns a registry that logs its readiness transitions to log. A nil log
-// means [slog.Default].
-func New(log *slog.Logger) *Registry { return &Registry{Log: log} }
+// New returns an empty registry. It is a convenience for `&Registry{}` — set
+// [Registry.Log] and [Registry.Timeout] on the result, or write the struct
+// literal, whichever reads better where you are.
+func New() *Registry { return &Registry{} }
 
 // Register adds a readiness check.
 //

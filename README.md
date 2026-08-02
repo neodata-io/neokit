@@ -18,54 +18,13 @@ pass your own through `Options.Log`.
 
 Pre-1.0: the API may change between `v0.x` releases.
 
-## Packages
-
-| Package | What |
-| --- | --- |
-| `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
-| `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify`, SSRF guard |
-| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters |
-| `cache` | stale-while-revalidate `GetOrFetch` |
-| `sqlitex` | `PRAGMA user_version` append-only migration runner, `VACUUM INTO` snapshot backup |
-| `tracing` `metrics` | OpenTelemetry traces and metrics — `/metrics` to scrape, OTLP to push, one set of instruments |
-| `health` | liveness/readiness registry — bounded sweep, a body that names the failing check |
-| `safe` `ids` `clock` | goroutine recovery, id/token generation, injectable clock |
-| `netx` | `AddrInUseHint` — a readable message for a listener already bound |
-| `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
-| `oidcauth` | provider-agnostic OpenID Connect relying party: PKCE, nonce, typed error sentinels |
-| `oidcauth/fiberauth` | the browser half — handshake routes, `__Host-` cookies, session middleware, guards |
-| `jobs` | `Job{Every, Timeout, RunAtStart, Do}` — periodic work that is bounded and panic-guarded |
-| `lifecycle` | `Signals` context + a LIFO named shutdown `Stack` |
-| `pubsub` | `Bus[T]` — keyed fan-out for SSE/WebSocket, drop-on-slow |
-| `capset` | generic capability resolution by type assertion, memoised |
-| `notify` | `Sender` — webhook, ntfy, Apprise, and a `Multi` fan-out |
-| `webpush` | VAPID keypair generation and `sub` normalisation (no dependencies) |
-| `buildinfo` | version/commit/date with Go's embedded VCS metadata as the fallback |
-
-Every package is independent: importing one never drags in another's dependencies.
-A binary that does not import `oidcauth` links neither `go-oidc` nor `oauth2`.
-
-## Start here
-
-| Need | Example |
-| --- | --- |
-| A small HTTP service | [`examples/minimal-api`](examples/minimal-api) |
-| HTTP, health, metrics, shutdown, and SQLite | [`examples/production-service`](examples/production-service) |
-| A bounded, retrying external API client | [`examples/external-client`](examples/external-client) |
-
-Run one from the repository root with `go run ./examples/minimal-api`. They are
-ordinary Go types and constructors: copy the pieces your service needs rather
-than adopting the whole thing.
-
 ## A new project
 
-There is no generator. A service starts as one file — copy the shape from
-`app`'s package documentation, embed `config.Base` in your own config struct,
-and add what you need:
+There is no generator. A service starts as one file:
 
 ```go
-cfg, err := config.Load[Config]()
-a, err := app.New(app.Options{Name: "okstables", Version: version, Base: cfg.Base})
+cfg, err := config.Load[config.Base]()
+a, err := app.New(app.Options{Name: "okstables", Base: cfg})
 defer a.Close()
 
 a.HTTP.Get("/api/v1/hello", func(c fiber.Ctx) error {
@@ -74,8 +33,34 @@ a.HTTP.Get("/api/v1/hello", func(c fiber.Ctx) error {
 return a.Run()
 ```
 
-That is the whole boot. A scaffolding command would only write this out for you
-and then need a template set kept in step with the API forever.
+That is the whole boot, and it is already a production shape. `Load`, `New`,
+`Close`, `Run` — four calls — get you structured logging, a request log with
+trace ids, the `{"error": …}` envelope, panic recovery, CORS, compression,
+request/idle timeouts, `/healthz`, `/readyz`, `/metrics`, OTLP export when you
+point it somewhere, an ordered SIGTERM drain, and a boot report describing all of
+it. You did not configure any of it and you can override all of it.
+
+Even the version fills itself in — `go build` embeds the commit, so the report
+and every log line say `okstables dev (a1b2c3d, dirty)` without a Makefile.
+
+Add your own settings by embedding `config.Base` in a struct of your own, and
+your own version once you have release builds to stamp:
+
+```go
+type Config struct {
+    config.Base
+    Issuer string `env:"OIDC_ISSUER"`
+}
+
+a, err := app.New(app.Options{
+    Name:    "okstables",
+    Version: buildinfo.Get(version, commit, date).String(),
+    Base:    cfg.Base,
+})
+```
+
+A scaffolding command would only write this out for you and then need a template
+set kept in step with the API forever.
 
 ## Metrics and probes
 
@@ -154,5 +139,48 @@ admin := app.Group("/api/v1/admin", gate.RequireOwner())
 `ok == false` (no credentials configured) means the gate is off: the middleware
 returns immediately, the guards pass through, and the handshake routes 404 — so
 an app can ship open and close later without a second feature flag.
+
+## Runnable examples
+
+| Need | Example |
+| --- | --- |
+| A small HTTP service | [`examples/minimal-api`](examples/minimal-api) |
+| HTTP, health, metrics, shutdown, and SQLite | [`examples/production-service`](examples/production-service) |
+| A bounded, retrying external API client | [`examples/external-client`](examples/external-client) |
+
+Run one from the repository root with `go run ./examples/minimal-api`. They are
+ordinary Go types and constructors: copy the pieces your service needs rather
+than adopting the whole thing.
+
+## Packages
+
+`app` is one way in, not the only one. Every package below stands alone, so a
+service that wants a retrying HTTP client and nothing else imports `httpc` and
+gets exactly that.
+
+| Package | What |
+| --- | --- |
+| `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
+| `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify`, SSRF guard |
+| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters |
+| `cache` | stale-while-revalidate `GetOrFetch` |
+| `sqlitex` | `PRAGMA user_version` append-only migration runner, `VACUUM INTO` snapshot backup |
+| `tracing` `metrics` | OpenTelemetry traces and metrics — `/metrics` to scrape, OTLP to push, one set of instruments |
+| `health` | liveness/readiness registry — bounded sweep, terse public verdict, detail behind your own auth |
+| `safe` `ids` `clock` | goroutine recovery, id/token generation, injectable clock |
+| `netx` | `AddrInUseHint` — a readable message for a listener already bound |
+| `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
+| `oidcauth` | provider-agnostic OpenID Connect relying party: PKCE, nonce, typed error sentinels |
+| `oidcauth/fiberauth` | the browser half — handshake routes, `__Host-` cookies, session middleware, guards |
+| `jobs` | `Job{Every, Timeout, RunAtStart, Do}` — periodic work that is bounded and panic-guarded |
+| `lifecycle` | `Signals` context + a LIFO named shutdown `Stack` |
+| `pubsub` | `Bus[T]` — keyed fan-out for SSE/WebSocket, drop-on-slow |
+| `capset` | generic capability resolution by type assertion, memoised |
+| `notify` | `Sender` — webhook, ntfy, Apprise, and a `Multi` fan-out |
+| `webpush` | VAPID keypair generation and `sub` normalisation (no dependencies) |
+| `buildinfo` | version/commit/date with Go's embedded VCS metadata as the fallback |
+
+Every package is independent: importing one never drags in another's dependencies.
+A binary that does not import `oidcauth` links neither `go-oidc` nor `oauth2`.
 
 MIT.

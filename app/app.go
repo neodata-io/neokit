@@ -41,6 +41,7 @@ import (
 	recovermw "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 
+	"github.com/neodata-io/neokit/buildinfo"
 	"github.com/neodata-io/neokit/config"
 	"github.com/neodata-io/neokit/fiberx"
 	"github.com/neodata-io/neokit/health"
@@ -87,7 +88,20 @@ type Options struct {
 	// anonymous process is anonymous in three systems at once.
 	Name string
 
-	// Version is stamped alongside Name. Usually buildinfo.Get().Version.
+	// Version is stamped alongside Name in the boot report, every log line,
+	// every span and the metrics resource.
+	//
+	// Leave it empty and it fills itself in. `go build` embeds VCS metadata in any
+	// binary built from a work tree, so an unset version becomes
+	// "dev (a1b2c3d, dirty)" — more than most services manage with a Makefile.
+	// (`go run` stamps nothing, so it reports a bare "dev"; that is the toolchain's
+	// behaviour, not a fallback of ours.) Pass your own once you have release
+	// builds to stamp:
+	//
+	//	Version: buildinfo.Get(version, commit, date).String(),
+	//
+	// where the three are your own package's ldflags variables. See [buildinfo]
+	// for why they have to live in your package rather than in neokit's.
 	Version string
 
 	// Base is the parsed generic configuration. See [config.Base].
@@ -156,6 +170,15 @@ func New(o Options) (*App, error) {
 		return nil, errors.New("app: Options.Name is required")
 	}
 
+	// Fill the version rather than leave it blank. Go embeds the commit, the build
+	// time and whether the tree was dirty into any binary built from a work tree,
+	// so this costs the caller nothing and is the difference between a log line
+	// that says which build produced it and one that does not. A version the
+	// caller did supply is used exactly as given — this fills, it never overrides.
+	if strings.TrimSpace(o.Version) == "" {
+		o.Version = buildinfo.Get("", "", "").String()
+	}
+
 	log := o.Log
 	if log == nil {
 		logx.Setup(o.Name, o.Base.LogLevel, o.Base.LogFormat, o.Version)
@@ -169,7 +192,7 @@ func New(o Options) (*App, error) {
 		Log:      log,
 		Errors:   &fiberx.Errors{Log: log},
 		Shutdown: &lifecycle.Stack{Log: log},
-		health:   health.New(log),
+		health:   &health.Registry{Log: log},
 		ctx:      ctx,
 		cancel:   cancel,
 		drain:    newDrainSignal(),
