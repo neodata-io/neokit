@@ -33,9 +33,9 @@ import (
 // whether or not Init installed a real provider (no-op provider otherwise).
 const scopeName = "github.com/neodata-io/neokit/tracing"
 
-// Config is the host-supplied identity for the traced service. Everything else
-// — endpoint, sampler, headers, protocol — comes from the standard OTEL_* env
-// vars read by the SDK, so there are no NeoGate-specific tracing knobs.
+// Config is the application-supplied identity for the traced service. Everything
+// else — endpoint, sampler, headers, protocol — comes from the standard OTEL_*
+// env vars read by the SDK, so this package adds no tracing knobs of its own.
 type Config struct {
 	ServiceName string
 	Version     string
@@ -77,8 +77,8 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 	// Include the standard detectors so the resource carries what Tempo/Grafana
 	// expect: WithFromEnv honors OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES (the
 	// env-driven ethos this package otherwise relies on), WithTelemetrySDK stamps
-	// telemetry.sdk.*. WithAttributes is last so the host-supplied service name
-	// wins over any env value.
+	// telemetry.sdk.*. WithAttributes is last so the application-supplied service
+	// name wins over any env value.
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(),
 		resource.WithTelemetrySDK(),

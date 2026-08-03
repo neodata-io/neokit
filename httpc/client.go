@@ -102,7 +102,7 @@ const tokenRefreshMargin = time.Minute
 // NewCachingTokenSource adapts a [LoginFunc] into a [TokenSource] that caches
 // the token and re-runs login only when it is missing, near expiry, or after a
 // forced refresh (the post-401 retry). It serializes callers so login runs at
-// most once per refresh, and owns all token state — a plugin supplies just its
+// most once per refresh, and owns all token state — a caller supplies just its
 // auth call. Use it instead of hand-rolling the mutex + expiry bookkeeping.
 //
 //	bc.Tokens = httpc.NewCachingTokenSource(func(ctx context.Context) (string, time.Duration, error) {
@@ -303,9 +303,9 @@ func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response
 	start := time.Now()
 	resp, err := c.HTTPClient.Do(req)
 	duration := time.Since(start)
-	// The ring is read by an admin UI, so it gets the same redaction a logged
-	// error gets: a client whose auth rides in an api_key query parameter would
-	// otherwise publish that token through the debug endpoint.
+	// The ring is surfaced to whoever reads the diagnostics, so it gets the same
+	// redaction a logged error gets: a client whose auth rides in an api_key query
+	// parameter would otherwise publish that token through the debug endpoint.
 	if err != nil {
 		if c.Debug != nil {
 			c.Debug.Push(DebugEntry{
@@ -359,9 +359,9 @@ const MaxResponseBytes = 8 << 20 // 8 MiB
 // ReadAllLimited reads from r up to max bytes (MaxResponseBytes when max <= 0),
 // returning an error if the source has more — so a truncated read is never
 // silently treated as complete. Use it in place of io.ReadAll on a response body
-// whose size the plugin doesn't control, so a compromised or runaway upstream
-// can't stream unbounded bytes into memory. Pass a larger max for binary payloads
-// like poster art.
+// whose size the caller doesn't control, so a compromised or runaway upstream
+// can't stream unbounded bytes into memory. Pass a larger max for binary
+// payloads such as images or archives.
 func ReadAllLimited(r io.Reader, max int64) ([]byte, error) {
 	if max <= 0 {
 		max = MaxResponseBytes

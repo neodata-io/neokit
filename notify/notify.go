@@ -363,7 +363,7 @@ func (m Multi) Send(ctx context.Context, n Notification) error {
 }
 
 // reportDetail is the safe half of a notification URL: ntfy topics and hook
-// paths are capability secrets, so only the host reaches the boot report.
+// paths are capability secrets, so only the hostname reaches the boot report.
 func reportDetail(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {

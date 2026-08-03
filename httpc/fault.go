@@ -73,16 +73,16 @@ func (f Fault) AdminActionable() bool {
 // Classify derives a Fault from an error by walking the chain: the shared sentinels
 // first, then an [APIError]'s status, then the network/context error kinds.
 //
-// It works on any plugin that returns a well-formed error — which is exactly why
+// It works on any client that returns a well-formed error — which is exactly why
 // [BaseClient] and [CheckStatus] both produce an *APIError instead of a formatted
 // string. A client that stringifies its status ("myservice: HTTP 401") lands here
-// as FaultUnknown, and its admin gets "unhealthy" instead of "check your API key".
+// as FaultUnknown, and its operator gets "unhealthy" instead of "check your API key".
 func Classify(err error) Fault {
 	if err == nil {
 		return FaultNone
 	}
 
-	// Sentinels first: a plugin that means "no such account" says so explicitly, and
+	// Sentinels first: a client that means "no such resource" says so explicitly, and
 	// that is more precise than any status code it happened to arrive on.
 	switch {
 	case errors.Is(err, ErrNotFound):

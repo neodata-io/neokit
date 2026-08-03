@@ -2,10 +2,10 @@
 // components by type assertion, and memoises the answer.
 //
 // It is the machinery behind the "one required method, everything else
-// optional" plugin shape: a component satisfies a small base interface, and any
-// extra interface it happens to implement is a capability the host discovers at
-// runtime. The appeal is that adding a capability touches only the component
-// that offers it and the caller that wants it — nothing in between.
+// optional" component shape: a component satisfies a small base interface, and
+// any extra interface it happens to implement is a capability the caller
+// discovers at runtime. The appeal is that adding a capability touches only the
+// component that offers it and the caller that wants it — nothing in between.
 //
 // The trap is that discovery gets written by hand. Each capability grows a field
 // on a registry struct, a line in its constructor, an `if c, ok := p.(Cap); ok`

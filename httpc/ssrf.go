@@ -13,7 +13,8 @@ import (
 // This file owns the guard needed when fetching a URL a *caller* influenced.
 // Such fetches leave the process carrying its network position and hand the
 // response back to a browser — the whole of SSRF: an unauthenticated caller
-// borrowing the host's LAN access to read what it could not reach itself.
+// borrowing this process's network position to read what it could not reach
+// itself.
 //
 // A caller-side allowlist is the strict answer and the right default; use it
 // whenever it fits. This file is for when it does not — some upstreams do hand
@@ -25,7 +26,7 @@ import (
 // includes 169.254.169.254, the cloud metadata endpoint), the unspecified
 // address, and multicast. A public CDN never resolves to one of these.
 //
-// It is exported because the decision is a policy a plugin may need to apply
+// It is exported because the decision is a policy a caller may need to apply
 // itself — at dial time, prefer [SSRFGuardedTransport], which applies it for you
 // without the TOCTOU gap.
 func IsPrivateAddr(ip netip.Addr) bool {

@@ -156,8 +156,8 @@ func Redact(err error) error {
 // fragment and userinfo — keeping scheme://host/path.
 //
 // Apply it anywhere a request URL is stored or surfaced rather than dialled: a
-// debug ring read by an admin UI leaks an api_key query parameter exactly as
-// readily as a log line does.
+// [DebugRing] served from a diagnostics endpoint leaks an api_key query
+// parameter exactly as readily as a log line does.
 func RedactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {

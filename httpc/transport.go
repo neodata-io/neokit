@@ -13,8 +13,8 @@ import (
 )
 
 // RetryConfig tunes RetryTransport's backoff. Use DefaultRetryConfig for the
-// host's standard policy; a zero MaxRetries disables retries (the request is
-// issued exactly once).
+// standard policy; a zero MaxRetries disables retries (the request is issued
+// exactly once).
 type RetryConfig struct {
 	// MaxRetries is the number of additional attempts after the first. 0 means
 	// no retry.
@@ -27,8 +27,8 @@ type RetryConfig struct {
 	MaxDelay time.Duration
 }
 
-// DefaultRetryConfig is the host's standard policy: two retries (three attempts
-// total) with exponential backoff — ~200ms then ~400ms, capped at 2s, plus
+// DefaultRetryConfig is this package's standard policy: two retries (three
+// attempts total) with exponential backoff — ~200ms then ~400ms, capped at 2s, plus
 // jitter. Enough to ride out a brief blip without hammering a struggling
 // upstream, and a 2s ceiling on how long a Retry-After is honoured.
 func DefaultRetryConfig() RetryConfig {

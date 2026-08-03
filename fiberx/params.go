@@ -13,13 +13,13 @@ import (
 // %2F into a path separator and so change how every route matches. The cost is
 // that c.Params returns the raw, still-escaped segment — so an id that carries a
 // reserved character never reaches the handler intact. A browser sending
-// encodeURIComponent("app:netflix") produces "app%3Anetflix", and a plugin
+// encodeURIComponent("app:netflix") produces "app%3Anetflix", and a handler
 // comparing it against its own "app:netflix" would never match.
 //
-// Use this for any parameter whose value is opaque and plugin-produced (an action
-// id, a favorite id, a cover id). A value with no escapes is returned unchanged,
-// and a malformed escape sequence falls back to the raw segment rather than
-// erroring — the plugin rejects it as an unknown id, which is the right answer.
+// Use this for any parameter whose value is an opaque id rather than something
+// the route shape guarantees. A value with no escapes is returned unchanged, and
+// a malformed escape sequence falls back to the raw segment rather than erroring
+// — the handler rejects it as an unknown id, which is the right answer.
 func PathParam(c fiber.Ctx, key string) string {
 	raw := c.Params(key)
 	decoded, err := url.PathUnescape(raw)

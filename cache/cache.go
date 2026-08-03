@@ -22,11 +22,10 @@ import (
 // Eviction is FIFO by insertion; the TTL still governs freshness of what's kept.
 const defaultMaxEntries = 4096
 
-// fetchTimeout is a backstop on any single fetch, not a latency budget: every
-// upstream already bounds itself (the monitor gives each health check 5s, the
-// plugin HTTP clients carry their own deadlines). It exists so a fetch that hangs
-// on a socket nothing will ever answer cannot pin a background goroutine — or a
-// request — forever.
+// fetchTimeout is a backstop on any single fetch, not a latency budget: a
+// well-built upstream client already bounds itself. It exists so a fetch that
+// hangs on a socket nothing will ever answer cannot pin a background goroutine —
+// or a request — forever.
 const fetchTimeout = 20 * time.Second
 
 // retryBackoff is how long a *failed* revalidation keeps serving the stale value

@@ -49,8 +49,9 @@ import (
 	"github.com/neodata-io/neokit/logx"
 )
 
-// Config is the host-supplied identity for the metered service — the same shape as
-// tracing.Config so the composition root passes one identity to both pillars.
+// Config is the application-supplied identity for the metered service — the same
+// shape as tracing.Config so the composition root passes one identity to both
+// pillars.
 type Config struct {
 	ServiceName string
 	Version     string
@@ -138,8 +139,8 @@ func Init(ctx context.Context, cfg Config) (Pipeline, error) {
 		return disabled, nil
 	}
 
-	// Same resource construction as tracing.Init, so a span and its host's metrics
-	// carry an identical service.name/version and line up in Grafana.
+	// Same resource construction as tracing.Init, so a span and the same service's
+	// metrics carry an identical service.name/version and line up in Grafana.
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(),
 		resource.WithTelemetrySDK(),

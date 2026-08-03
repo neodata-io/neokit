@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// DebugEntry records a single outbound HTTP call from a plugin client.
+// DebugEntry records a single outbound HTTP call.
 type DebugEntry struct {
 	Time       time.Time `json:"time"`
 	Method     string    `json:"method"`
@@ -15,9 +15,10 @@ type DebugEntry struct {
 	Error      string    `json:"error,omitempty"`
 }
 
-// DebugRing is a bounded, thread-safe ring buffer that captures the last N
-// outbound HTTP requests for a plugin. It is designed for debugging visibility
-// in the admin UI and is intentionally in-memory only (lost on restart).
+// DebugRing is a bounded, thread-safe ring buffer that captures a client's last
+// N outbound HTTP requests. It is for debugging visibility — a diagnostics
+// endpoint, a support dump — and is intentionally in-memory only (lost on
+// restart). Set it as [BaseClient.Debug] to start capturing.
 type DebugRing struct {
 	mu      sync.Mutex
 	entries []DebugEntry
