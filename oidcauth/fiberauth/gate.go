@@ -5,8 +5,9 @@
 // It is deliberately separate from oidcauth so the protocol half carries no web
 // framework, and it is deliberately small: [Gate] mounts five routes, resolves an
 // identity per request, and guards the ones you point at it. It stores nothing
-// itself — you supply an [oidcauth.SessionStore] over whatever database you
-// already have.
+// itself — pass the store neokit ships,
+// [github.com/neodata-io/neokit/session.NewSQLite], or your own
+// [oidcauth.SessionStore] over whatever database you already have.
 //
 // # Optional by construction
 //
@@ -27,9 +28,10 @@
 //
 // # Usage
 //
+//	sessions, err := session.NewSQLite(db)
 //	gate := fiberauth.New(a, fiberauth.Options{
 //	    Provider:     func() *oidcauth.Provider { return authn }, // nil ⇒ open
-//	    Sessions:     store,
+//	    Sessions:     sessions,
 //	    CookiePrefix: "myapp",
 //	})
 //
@@ -90,7 +92,8 @@ type Options struct {
 	Provider func() *oidcauth.Provider
 
 	// Sessions persists signed-in browsers. Required when Provider can return
-	// non-nil.
+	// non-nil. [github.com/neodata-io/neokit/session.NewSQLite] is the store
+	// neokit ships; any [oidcauth.SessionStore] does.
 	Sessions oidcauth.SessionStore
 
 	// CookiePrefix namespaces the two cookies: "{prefix}_session" and

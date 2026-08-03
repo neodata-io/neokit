@@ -2,9 +2,9 @@
 // persists it.
 //
 // It imports only the standard library so that an application authenticating by
-// password can use it without linking an OpenID Connect relying party. [oidcauth]
-// aliases every name here, so the two are the same types rather than two sets
-// that must be kept in step.
+// password can use it without linking an OpenID Connect relying party.
+// [github.com/neodata-io/neokit/oidcauth] aliases every name here, so the two are
+// the same types rather than two sets that must be kept in step.
 package session
 
 import (

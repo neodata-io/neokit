@@ -1106,9 +1106,19 @@ git commit -m "feat(session): sweep expired rows, so the gate schedules it"
 
 ---
 
-### Task 6: A `Clock` interface
+### Task 6: A `Clock` interface — DROPPED, do not implement
 
-Both consuming applications declared their own `interface{ Now() time.Time }` because `clock` exports only concrete types. ok-stables' code says so in a comment.
+**Dropped during execution.** `clock`'s package doc already refuses this
+explicitly: *"There is deliberately no Clock interface here. The consumer
+declares it — one method, on its own side, naming only what it uses. What
+repeats across projects is not the interface but the fake."*
+
+Both applications declaring their own one-method interface is that design
+working, not a gap — and it is the Go convention besides. ok-stables' comment
+about it is a factual note, not a complaint. The steps below are left in place so
+the reversal is legible; **do not carry them out.**
+
+~~Both consuming applications declared their own `interface{ Now() time.Time }` because `clock` exports only concrete types. ok-stables' code says so in a comment.~~
 
 **Files:**
 - Modify: `clock/clock.go`
