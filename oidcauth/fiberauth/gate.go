@@ -61,18 +61,12 @@ import (
 	"github.com/neodata-io/neokit/oidcauth"
 )
 
-// Defaults for the two mount points.
-const (
-	// DefaultAPIBase is where the API-shaped auth routes (whoami, sessions) hang.
-	DefaultAPIBase = "/api/v1"
-
-	// DefaultHandshakeBase is where the three browser-facing handshake routes
-	// live, and it is deliberately **unversioned**: they are redirect targets a
-	// browser is sent to, not endpoints an API consumer calls. The callback URI is
-	// also registered *at the identity provider*, so moving it breaks every
-	// sign-in until someone edits the provider to match.
-	DefaultHandshakeBase = "/api/auth"
-)
+// The two mount points come from the app: [app.App.APIBase] for the API-shaped
+// auth routes (whoami, sessions) and [app.App.AuthBase] for the three
+// browser-facing handshake routes. They used to be this package's own Options
+// fields with their own defaults, which meant a service that moved its API base
+// had to remember to move the gate's too. See [app.DefaultAPIBase] and
+// [app.DefaultAuthBase].
 
 // DefaultRateLimit caps handshake attempts per minute per peer.
 //
@@ -108,11 +102,6 @@ type Options struct {
 	// Policy is the session lifetime rule. The zero value means
 	// [oidcauth.DefaultPolicy].
 	Policy oidcauth.Policy
-
-	// APIBase and HandshakeBase override the two mount points. See
-	// [DefaultAPIBase] and [DefaultHandshakeBase].
-	APIBase       string
-	HandshakeBase string
 
 	// RateLimit caps handshake requests per minute per peer. Zero means
 	// [DefaultRateLimit]; negative disables it.
@@ -192,8 +181,8 @@ func New(a *app.App, o Options) *Gate {
 		sessions:      o.Sessions,
 		policy:        o.Policy,
 		log:           o.Log,
-		apiBase:       orDefault(o.APIBase, DefaultAPIBase),
-		handshakeBase: orDefault(o.HandshakeBase, DefaultHandshakeBase),
+		apiBase:       a.APIBase,
+		handshakeBase: a.AuthBase,
 		rateLimit:     o.RateLimit,
 		sessionCookie: prefix + "_session",
 		stateCookie:   prefix + "_auth_state",

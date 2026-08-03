@@ -196,6 +196,49 @@ func TestRunIsANoopWhenTheStoreCannotSweep(t *testing.T) {
 	}
 }
 
+// The gate must mount where the app says, not where a private copy of the
+// defaults said. Two sources that agree by convention drift the first time one
+// of them moves, and the symptom is a sign-in that 404s for signed-out visitors
+// only — the one audience that cannot report it.
+func TestGatePathsFollowTheAppBases(t *testing.T) {
+	a, err := neoapp.New(neoapp.Options{
+		Name: "testapp", APIBase: "/api/v2", AuthBase: "/oauth",
+		Base: config.Base{Port: 0, LogLevel: "error", LogFormat: "json"},
+		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	g := newGate(t, a, nil, nil)
+
+	for _, tc := range []struct{ name, got, want string }{
+		{"LoginPath", g.LoginPath(), "/oauth/login"},
+		{"CallbackPath", g.CallbackPath(), "/oauth/callback"},
+		{"LogoutPath", g.LogoutPath(), "/oauth/logout"},
+		{"WhoamiPath", g.WhoamiPath(), "/api/v2/auth/whoami"},
+		{"SessionsPath", g.SessionsPath(), "/api/v2/auth/sessions"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// And with nothing overridden, the gate lands on neokit's defaults — which now
+// live in the app package, not here.
+func TestGatePathsDefaultToTheAppDefaults(t *testing.T) {
+	g := newGate(t, newTestApp(t), nil, nil)
+
+	if got, want := g.LoginPath(), neoapp.DefaultAuthBase+"/login"; got != want {
+		t.Errorf("LoginPath = %q, want %q", got, want)
+	}
+	if got, want := g.WhoamiPath(), neoapp.DefaultAPIBase+"/auth/whoami"; got != want {
+		t.Errorf("WhoamiPath = %q, want %q", got, want)
+	}
+}
+
 // testProvider builds a provider whose only job is to answer CookieSecure and
 // RedirectURI — no network is involved.
 func testProvider(t *testing.T, baseURL string) *oidcauth.Provider {
