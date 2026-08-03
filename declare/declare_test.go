@@ -38,6 +38,45 @@ func TestDeclarerIsSatisfiableWithoutApp(t *testing.T) {
 	}
 }
 
+// Add means on: the common case carries no boolean.
+func TestAddDefaultsToOn(t *testing.T) {
+	var r recorder
+	declare.Add(&r, "backups", declare.Detail("daily, keep 7"))
+	c := r.got[0]
+	if !c.On || c.Name != "backups" || c.Detail != "daily, keep 7" {
+		t.Errorf("Component = %+v", c)
+	}
+	if c.Ready != nil || c.Close != nil {
+		t.Error("options not passed must stay nil")
+	}
+}
+
+// Disabled is the ✗ line, and the reason is the payload.
+func TestDisabledTurnsOffWithReason(t *testing.T) {
+	var r recorder
+	declare.Add(&r, "login", declare.Disabled("not configured"))
+	c := r.got[0]
+	if c.On || c.Detail != "not configured" {
+		t.Errorf("Component = %+v", c)
+	}
+}
+
+// Ready and Close carry through, and errors survive the trip.
+func TestReadyAndCloseCarryThrough(t *testing.T) {
+	var r recorder
+	boom := errors.New("boom")
+	declare.Add(&r, "cache",
+		declare.Ready(func(context.Context) error { return boom }),
+		declare.Close(func(context.Context) error { return nil }))
+	c := r.got[0]
+	if err := c.Ready(context.Background()); !errors.Is(err, boom) {
+		t.Errorf("Ready err = %v", err)
+	}
+	if c.Close == nil || c.Close(context.Background()) != nil {
+		t.Error("Close missing or failing")
+	}
+}
+
 // The zero value must be inert: a caller that fills only Name and On has no
 // Ready and no Close, and neither may be called.
 func TestZeroComponentHasNoFuncs(t *testing.T) {
