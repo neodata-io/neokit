@@ -67,7 +67,7 @@ func (a *App) Declare(s Subsystem) {
 	a.subsystems = append(a.subsystems, s)
 
 	if s.On && s.Ready != nil {
-		a.health.Register(s.Name, s.Ready)
+		a.readiness.Register(s.Name, s.Ready)
 	}
 	// Pushed here rather than at Run, so it unwinds among the caller's own steps
 	// in the order they were declared.

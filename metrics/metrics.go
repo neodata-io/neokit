@@ -56,7 +56,8 @@ type Config struct {
 	Version     string
 
 	// Pull adds the Prometheus reader and populates [Pipeline.Handler]. The app
-	// builder sets it from METRICS_ENABLED, which defaults to true.
+	// builder always sets it: the endpoint is mounted unconditionally, and
+	// METRICS_TOKEN is what guards it.
 	Pull bool
 }
 

@@ -50,8 +50,8 @@ func TestDeclareRegistersAReadinessCheck(t *testing.T) {
 		Ready: func(context.Context) error { return nil },
 	})
 
-	if a.health.Len() != 1 {
-		t.Errorf("readiness has %d checks, want the declared one", a.health.Len())
+	if a.readiness.Len() != 1 {
+		t.Errorf("readiness has %d checks, want the declared one", a.readiness.Len())
 	}
 	got, ok := declared(a, "database")
 	if !ok {
@@ -72,10 +72,10 @@ func TestAnOffSubsystemRegistersNoCheck(t *testing.T) {
 		Ready: func(context.Context) error { return errors.New("never called") },
 	})
 
-	if a.health.Len() != 0 {
+	if a.readiness.Len() != 0 {
 		t.Error("an off subsystem must contribute no readiness check")
 	}
-	if got := a.health.Check(context.Background()); !got.Ready {
+	if got := a.readiness.Check(context.Background()); !got.Ready {
 		t.Error("an off subsystem must not make the app unready")
 	}
 }
@@ -108,7 +108,7 @@ func TestDeclareWithoutACheckIsFine(t *testing.T) {
 	a := newInternalApp(t)
 	a.Declare(Subsystem{Name: "web push", On: true, Detail: "vapid key persisted"})
 
-	if a.health.Len() != 0 {
+	if a.readiness.Len() != 0 {
 		t.Error("a subsystem with no Ready must register no check")
 	}
 	if _, ok := declared(a, "web push"); !ok {
