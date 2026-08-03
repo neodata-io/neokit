@@ -172,3 +172,156 @@ func TestAnExpiredRowIsReturnedAndRejectedByPolicy(t *testing.T) {
 		t.Error("Policy.Live must reject the expired row the store returned")
 	}
 }
+
+// Touch rolls activity and expiry forward and must leave everything else alone —
+// it runs on ordinary requests, where rewriting identity would be a silent
+// privilege change.
+func TestTouchMovesOnlyTheTimestamps(t *testing.T) {
+	store := newStore(t)
+	orig := aSession()
+	if err := store.CreateSession(context.Background(), orig, session.HashToken("t")); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := orig.LastSeenAt.Add(2 * time.Hour)
+	exp := orig.ExpiresAt.Add(2 * time.Hour)
+	if err := store.TouchSession(context.Background(), orig.ID, seen, exp); err != nil {
+		t.Fatalf("TouchSession: %v", err)
+	}
+
+	got, _, err := store.SessionByToken(context.Background(), session.HashToken("t"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastSeenAt.Equal(seen) || !got.ExpiresAt.Equal(exp) {
+		t.Errorf("timestamps = (%v, %v), want (%v, %v)", got.LastSeenAt, got.ExpiresAt, seen, exp)
+	}
+	if got.Subject != orig.Subject || got.Owner != orig.Owner || !got.CreatedAt.Equal(orig.CreatedAt) {
+		t.Errorf("Touch changed identity or creation: %+v", got)
+	}
+}
+
+// Revocation by id is the "sign out this device" path; by token is logout.
+func TestDeleteByIDAndByToken(t *testing.T) {
+	store := newStore(t)
+	first, second := aSession(), aSession()
+	second.ID = "sess-2"
+	if err := store.CreateSession(context.Background(), first, session.HashToken("t1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSession(context.Background(), second, session.HashToken("t2")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteSession(context.Background(), first.ID); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if _, ok, _ := store.SessionByToken(context.Background(), session.HashToken("t1")); ok {
+		t.Error("DeleteSession left the row")
+	}
+	if _, ok, _ := store.SessionByToken(context.Background(), session.HashToken("t2")); !ok {
+		t.Error("DeleteSession removed the wrong row")
+	}
+
+	if err := store.DeleteSessionByToken(context.Background(), session.HashToken("t2")); err != nil {
+		t.Fatalf("DeleteSessionByToken: %v", err)
+	}
+	if _, ok, _ := store.SessionByToken(context.Background(), session.HashToken("t2")); ok {
+		t.Error("DeleteSessionByToken left the row")
+	}
+}
+
+// Deleting a session that is already gone is success: logging out twice, or
+// revoking a device that expired first, is not a failure to report.
+func TestDeletingAnAbsentSessionSucceeds(t *testing.T) {
+	store := newStore(t)
+
+	if err := store.DeleteSession(context.Background(), "no-such-id"); err != nil {
+		t.Errorf("DeleteSession on an absent row = %v, want nil", err)
+	}
+	if err := store.DeleteSessionByToken(context.Background(), session.HashToken("nope")); err != nil {
+		t.Errorf("DeleteSessionByToken on an absent row = %v, want nil", err)
+	}
+}
+
+// List includes expired rows. Its caller is a "your devices" screen, which has
+// to show a session in order to offer revoking it.
+func TestListReturnsEveryRowIncludingExpired(t *testing.T) {
+	store := newStore(t)
+	live := aSession()
+	dead := aSession()
+	dead.ID, dead.ExpiresAt = "sess-dead", live.CreatedAt.Add(-time.Hour)
+	if err := store.CreateSession(context.Background(), live, session.HashToken("t1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSession(context.Background(), dead, session.HashToken("t2")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListSessions returned %d rows, want 2 including the expired one", len(got))
+	}
+}
+
+// An empty table is an empty slice, not a nil one: the caller renders it as
+// JSON, where nil is `null` and an empty slice is `[]`.
+func TestListOfNothingIsAnEmptySlice(t *testing.T) {
+	got, err := newStore(t).ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if got == nil {
+		t.Error("ListSessions returned nil, want an empty slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("ListSessions returned %d rows from an empty table", len(got))
+	}
+}
+
+// The interface is the contract fiberauth is written against, so satisfying it
+// has to be a compile error when it stops being true.
+func TestSQLiteIsAStore(t *testing.T) {
+	var _ session.Store = (*session.SQLite)(nil)
+	var _ session.ExpiredSweeper = (*session.SQLite)(nil)
+}
+
+// The sweep is housekeeping: it keeps the table bounded. It must remove exactly
+// the dead rows and report how many, because the count is what the job logs.
+func TestDeleteExpiredRemovesOnlyDeadRows(t *testing.T) {
+	store := newStore(t)
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+
+	live := aSession()
+	live.ExpiresAt = now.Add(time.Hour)
+	dead := aSession()
+	dead.ID, dead.ExpiresAt = "sess-dead", now.Add(-time.Hour)
+	onTheLine := aSession()
+	onTheLine.ID, onTheLine.ExpiresAt = "sess-edge", now
+
+	for i, s := range []session.Session{live, dead, onTheLine} {
+		if err := store.CreateSession(context.Background(), s, session.HashToken(string(rune('a'+i)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A session expiring exactly now is spent, so it goes with the dead one.
+	n, err := store.DeleteExpiredSessions(context.Background(), now)
+	if err != nil {
+		t.Fatalf("DeleteExpiredSessions: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("swept %d rows, want 2", n)
+	}
+
+	left, err := store.ListSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].ID != live.ID {
+		t.Errorf("remaining = %+v, want only the live session", left)
+	}
+}

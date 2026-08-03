@@ -97,6 +97,81 @@ func (s *SQLite) SessionByToken(ctx context.Context, tokenHash string) (Session,
 	return sess, true, nil
 }
 
+// TouchSession rolls a session's activity and expiry forward. Callers rate-limit
+// this with [Policy.NeedsTouch] so an authenticated request stays a read.
+func (s *SQLite) TouchSession(ctx context.Context, id string, lastSeen, expires time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE auth_session SET last_seen_at = ?, expires_at = ? WHERE id = ?`,
+		stamp(lastSeen), stamp(expires), id)
+	if err != nil {
+		return fmt.Errorf("session: touch: %w", err)
+	}
+	return nil
+}
+
+// DeleteSession revokes one session by its public id — the "sign out this
+// device" path. Deleting a row that is already gone is success: logging out
+// twice is not a failure.
+func (s *SQLite) DeleteSession(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM auth_session WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("session: delete: %w", err)
+	}
+	return nil
+}
+
+// DeleteSessionByToken is logout: the browser presents its cookie and the row
+// behind it goes.
+func (s *SQLite) DeleteSessionByToken(ctx context.Context, tokenHash string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM auth_session WHERE token_hash = ?`, tokenHash)
+	if err != nil {
+		return fmt.Errorf("session: delete by token: %w", err)
+	}
+	return nil
+}
+
+// ListSessions returns every row, expired ones included: the caller is a
+// "your devices" screen, which must show a session in order to revoke it.
+// Newest first, because that is the one the reader is currently using.
+func (s *SQLite) ListSessions(ctx context.Context) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, selectColumns+` ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("session: list: %w", err)
+	}
+	defer rows.Close()
+
+	// Non-nil, so an empty table serialises as [] rather than null.
+	out := []Session{}
+	for rows.Next() {
+		sess, err := scan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("session: list: %w", err)
+		}
+		out = append(out, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("session: list: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteExpiredSessions collects dead rows and reports how many went. A session
+// expiring exactly at now is spent, so `<=` rather than `<`.
+//
+// This method is what makes the store an [ExpiredSweeper], which is what makes a
+// gate schedule the sweep without being asked.
+func (s *SQLite) DeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM auth_session WHERE expires_at <= ?`, stamp(now))
+	if err != nil {
+		return 0, fmt.Errorf("session: sweep: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("session: sweep count: %w", err)
+	}
+	return n, nil
+}
+
 // selectColumns fixes the column order every scan depends on, so the list and
 // the single-row read cannot drift apart.
 const selectColumns = `
