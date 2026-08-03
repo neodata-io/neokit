@@ -24,18 +24,26 @@ Pre-1.0: the API may change between `v0.x` releases.
 
 ## A new project
 
-There is no generator. A service starts as one file:
+There is no generator. A service starts as one file, and each feature is one
+call — calling it is enabling it:
 
 ```go
 cfg, err := config.Load[config.Base]()
-a, err := app.New(app.Options{Name: "okstables", Base: cfg})
+a, err := neokit.New(app.Options{Name: "okstables", Base: cfg})
 defer a.Close()
+
+db, err := a.Database(cfg.DatabasePath, nil)   // ✓ database  + /readyz + shutdown
 
 a.HTTP.Get("/api/v1/hello", func(c fiber.Ctx) error {
     return c.JSON(fiber.Map{"hello": "okstables"})
 })
 return a.Run()
 ```
+
+`neokit.New` is the batteries-included layer — `a.Database`, `a.Login`,
+`a.Backups`, `a.Ntfy` — and importing it compiles every feature it fronts. A
+service that wants less imports `neokit/app` and the feature packages it
+actually uses; they compose identically.
 
 That is the whole boot, and it is already a production shape. `Load`, `New`,
 `Close`, `Run` — four calls — get you structured logging, a request log with
@@ -120,19 +128,18 @@ production-service 1.4.0 · :8080
   ✗ tracing           OTEL_EXPORTER_OTLP_ENDPOINT unset
 ```
 
-That block is generated from the same `app.Component` declarations that register
-the `/readyz` checks, so it cannot drift from what the process actually is.
-
-Give a declaration a `Close` and it is the teardown step too, so a dependency is
-named once rather than once per concern:
+That block, the `/readyz` checks and the shutdown steps all come from one
+registration, so they cannot drift from what the process actually is. neokit's
+own features register themselves — `a.Database` is the database line, the ping
+and the close. For a dependency you built, say what you need by name:
 
 ```go
-a.Declare(app.Component{
-    Name: "database", On: true, Detail: cfg.DatabasePath,
-    Ready: store.Ping,
-    Close: lifecycle.Closer(store),
-})
+a.ClosesOnShutdown("plugins", "3 loaded", manager.Close)   // report line + teardown
+a.ChecksReadiness("cache", addr, client.Ping)              // report line + /readyz
 ```
+
+Named once, so the report, `/readyz` and the shutdown log cannot call one thing
+by two names.
 
 ## Login gate in ten lines
 

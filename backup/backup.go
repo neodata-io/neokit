@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/neodata-io/neokit/declare"
 )
 
 // Snapshotter writes a consistent, standalone copy of the live database to dst,
@@ -68,14 +70,21 @@ type Service struct {
 	now       func() time.Time
 }
 
-// New wires the service. See [Options] for field meaning.
-func New(s Snapshotter, o Options) *Service {
+// New wires the service and declares the "backups" line on d — on with the
+// retention when a directory is configured, off with the reason when not. See
+// [Options] for field meaning.
+func New(d declare.Declarer, s Snapshotter, o Options) *Service {
 	if o.Retention < 1 {
 		o.Retention = 1
 	}
 	prefix := o.Prefix
 	if prefix == "" {
 		prefix = DefaultPrefix
+	}
+	if o.Dir == "" {
+		declare.Add(d, "backups", declare.Disabled("no backup directory configured"))
+	} else {
+		declare.Add(d, "backups", declare.Detail(fmt.Sprintf("daily, keep %d", o.Retention)))
 	}
 	return &Service{snap: s, dir: o.Dir, retention: o.Retention, prefix: prefix, now: time.Now}
 }

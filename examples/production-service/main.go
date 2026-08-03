@@ -1,5 +1,6 @@
-// Production-service wires an application-owned SQLite database into app's
-// readiness and ordered shutdown without introducing a service container.
+// Production-service is the batteries-included layer: neokit.New, then one call
+// per feature. a.Database is the handle, the report line, the /readyz check and
+// the shutdown step — without a service container.
 package main
 
 import (
@@ -7,9 +8,9 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	neokit "github.com/neodata-io/neokit"
 	"github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/config"
-	"github.com/neodata-io/neokit/sqlitex"
 )
 
 type Config struct {
@@ -31,7 +32,7 @@ func run() error {
 		cfg.DatabasePath = "./data/production-service.db"
 	}
 
-	service, err := app.New(app.Options{
+	service, err := neokit.New(app.Options{
 		Name: "production-service",
 		Base: cfg.Base,
 	})
@@ -41,15 +42,15 @@ func run() error {
 	defer service.Close()
 
 	// One call, four outputs: the handle, a line in the boot report, a /readyz
-	// check, and a place in the shutdown order — declared before Run adds its own
-	// steps, so the database closes after the HTTP drain rather than out from
-	// under requests still in flight.
-	db, err := sqlitex.Open(service, "database", cfg.DatabasePath, nil)
+	// check, and a place in the shutdown order — before Run adds its own steps,
+	// so the database closes after the HTTP drain rather than out from under
+	// requests still in flight.
+	db, err := service.Database(cfg.DatabasePath, nil)
 	if err != nil {
 		return err
 	}
 
-	// db is an ordinary *sql.DB. Open registered it, but it handed it back rather
+	// db is an ordinary *sql.DB. Database registered it, but it handed it back rather
 	// than hiding it — so a handler reaches it through its own constructor, and
 	// forgetting to wire one is a compile error rather than a runtime surprise.
 	service.HTTP.Get("/", func(c fiber.Ctx) error {

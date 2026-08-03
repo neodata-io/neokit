@@ -21,13 +21,14 @@
 //	if err != nil { return err }
 //	defer a.Close()
 //
-//	store, err := sqlitex.Open(cfg.DatabasePath, migrate)
-//	a.Declare(app.Component{
-//		Name: "database", On: true, Detail: cfg.DatabasePath,
-//		Ready: store.PingContext, Close: lifecycle.Closer(store),
-//	})
+//	db, err := sqlitex.Open(a, cfg.DatabasePath, migrate)   // report + /readyz + shutdown
+//	a.ClosesOnShutdown("plugins", "3 loaded", manager.Close)
 //
 //	return a.Run()
+//
+// [App.Declare] is the seam those registrations travel through — packages call
+// it so their component, its readiness check and its teardown arrive together.
+// Application code uses the named methods above instead.
 package app
 
 import (
@@ -50,6 +51,7 @@ import (
 
 	"github.com/neodata-io/neokit/buildinfo"
 	"github.com/neodata-io/neokit/config"
+	"github.com/neodata-io/neokit/declare"
 	"github.com/neodata-io/neokit/fiberx"
 	"github.com/neodata-io/neokit/health"
 	"github.com/neodata-io/neokit/lifecycle"
@@ -213,7 +215,7 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.Shutdown.Push("tracing", traceShutdown)
-	a.Declare(otelComponent("tracing"))
+	declareOTEL(a, "tracing")
 
 	pipeline, err := metrics.Init(ctx, metrics.Config{
 		ServiceName: o.Name, Version: o.Version, Pull: true,
@@ -223,43 +225,44 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.Shutdown.Push("metrics-export", pipeline.Shutdown)
-	a.Declare(otelComponent("metrics export"))
-	a.Declare(metricsComponent(pipeline.Handler != nil, o.Base.MetricsToken))
-	a.Declare(healthComponent())
+	declareOTEL(a, "metrics export")
+	declareMetricsEndpoint(a, pipeline.Handler != nil, o.Base.MetricsToken)
+	declareHealth(a)
 
 	a.HTTP = a.newFiber(o, pipeline.Handler)
 	return a, nil
 }
 
-// otelComponent reports whether an OpenTelemetry signal is exporting, reading
+// declareOTEL reports whether an OpenTelemetry signal is exporting, reading
 // the same env var its SDK does so the report cannot disagree with reality.
-func otelComponent(name string) Component {
-	endpoint := strings.TrimSpace(osGetenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
-	if endpoint == "" {
-		return Component{Name: name, On: false, Detail: "OTEL_EXPORTER_OTLP_ENDPOINT unset"}
+func declareOTEL(a *App, name string) {
+	if endpoint := strings.TrimSpace(osGetenv("OTEL_EXPORTER_OTLP_ENDPOINT")); endpoint != "" {
+		declare.Add(a, name, declare.Detail(endpoint))
+		return
 	}
-	return Component{Name: name, On: true, Detail: endpoint}
+	declare.Add(a, name, declare.Disabled("OTEL_EXPORTER_OTLP_ENDPOINT unset"))
 }
 
-// metricsComponent is the report line for the Prometheus endpoint.
+// declareMetricsEndpoint is the report line for the Prometheus endpoint.
 //
 // Whether it is authenticated is the fact worth stating: unauthenticated is the
 // default and the right answer on a private network, but it is also the one
 // setting whose absence is completely silent — the endpoint answers either way,
 // and nothing else in the process will ever mention it again.
-func metricsComponent(mounted bool, token string) Component {
+func declareMetricsEndpoint(a *App, mounted bool, token string) {
 	if !mounted {
 		// Only reachable when the Prometheus reader failed to build, which
 		// metrics.Init has already logged. Reported rather than hidden: the
 		// endpoint answering 404 is otherwise indistinguishable from a typo in
 		// whatever is trying to scrape it.
-		return Component{Name: "metrics endpoint", On: false, Detail: "reader unavailable — see the log above"}
+		declare.Add(a, "metrics endpoint", declare.Disabled("reader unavailable — see the log above"))
+		return
 	}
 	guard := "unauthenticated · set METRICS_TOKEN to require a bearer token"
 	if token != "" {
 		guard = "bearer token required"
 	}
-	return Component{Name: "metrics endpoint", On: true, Detail: MetricsPath + " · " + guard}
+	declare.Add(a, "metrics endpoint", declare.Detail(MetricsPath+" · "+guard))
 }
 
 // bearerGuard requires `Authorization: Bearer <token>`, or passes everything
@@ -287,14 +290,14 @@ func bearerGuard(token string) fiber.Handler {
 	}
 }
 
-// healthComponent is the report line for the probe endpoints.
+// declareHealth is the report line for the probe endpoints.
 //
 // Worth a line because their location is the one thing about them an operator
 // cannot guess and cannot see anywhere else: they are on the application
 // listener, which means they are reachable by anyone who can reach the API, and
 // [config.Base.BindAddr] is the only thing that narrows that.
-func healthComponent() Component {
-	return Component{Name: "health", On: true, Detail: LivePath + ", " + ReadyPath}
+func declareHealth(a *App) {
+	declare.Add(a, "health", declare.Detail(LivePath+", "+ReadyPath))
 }
 
 // newFiber builds the HTTP server and the standard middleware chain.
