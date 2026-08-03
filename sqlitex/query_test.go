@@ -23,7 +23,7 @@ func scanLink(r *sql.Rows) (link, error) {
 func linksDB(t *testing.T, n int) *sql.DB {
 	t.Helper()
 
-	db, err := sqlitex.Open(&recorder{}, filepath.Join(t.TempDir(), "q.db"), nil)
+	db, err := sqlitex.Open(filepath.Join(t.TempDir(), "q.db"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func BenchmarkHandRolledScanLoop(b *testing.B) {
 func benchDB(b *testing.B) *sql.DB {
 	b.Helper()
 
-	db, err := sqlitex.Open(&recorder{}, filepath.Join(b.TempDir(), "bench.db"), nil)
+	db, err := sqlitex.Open(filepath.Join(b.TempDir(), "bench.db"), nil)
 	if err != nil {
 		b.Fatal(err)
 	}

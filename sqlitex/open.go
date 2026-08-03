@@ -1,7 +1,6 @@
 package sqlitex
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -11,27 +10,14 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // the driver Open opens with
-
-	"github.com/neodata-io/neokit/declare"
 )
 
-// ComponentName is what [Open] declares. Tests and scrape configs use it
-// instead of retyping "database".
-const ComponentName = "database"
-
-// Open opens the service's database with the settings a server actually wants,
-// runs migrate against it, and declares it as [ComponentName] — the boot report
-// line, the readiness check and the shutdown step all come from this one call.
-// A nil migrate skips the migration step.
+// Open opens the service's database with the settings a server actually wants
+// and runs migrate against it. A nil migrate skips the migration step.
 //
-//	db, err := sqlitex.Open(a, cfg.DatabasePath, migrate)
-func Open(d declare.Declarer, path string, migrate func(*sql.DB) error) (*sql.DB, error) {
-	return OpenNamed(d, ComponentName, path, migrate)
-}
-
-// OpenNamed is [Open] with an explicit component name, for the service that
-// opens two databases. Nothing is declared if the open fails.
-func OpenNamed(d declare.Declarer, name, path string, migrate func(*sql.DB) error) (*sql.DB, error) {
+//	db, err := sqlitex.Open(cfg.DatabasePath, migrate)
+//	a.Shutdown.Push("database", func(context.Context) error { return db.Close() })
+func Open(path string, migrate func(*sql.DB) error) (*sql.DB, error) {
 	// An empty path is never a legitimate target, and it is not harmless: SQLite
 	// accepts it and hands back a private, anonymous database that accepts writes
 	// and vanishes on restart. A deployment that forgot to set its path would
@@ -87,12 +73,6 @@ func OpenNamed(d declare.Declarer, name, path string, migrate func(*sql.DB) erro
 		}
 	}
 
-	// Last, so nothing is declared for a database that failed to open or migrate.
-	declare.Add(d, name,
-		declare.Detail(path),
-		declare.Ready(db.PingContext),
-		declare.Close(func(context.Context) error { return db.Close() }),
-	)
 	return db, nil
 }
 
