@@ -22,14 +22,15 @@
 //	if err != nil { return err }
 //	defer a.Close()
 //
-//	db, err := sqlitex.Open(a, cfg.DatabasePath, migrate)   // report + /readyz + shutdown
-//	a.ClosesOnShutdown("plugins", "3 loaded", manager.Close)
+//	db, err := sqlitex.Open(cfg.DatabasePath, migrate)
+//	a.Shutdown.Push("database", func(context.Context) error { return db.Close() })
+//	a.Shutdown.Push("plugins", manager.Close)
 //
 //	return a.Run()
 //
-// [App.Declare] is the seam those registrations travel through — packages call
-// it so their component, its readiness check and its teardown arrive together.
-// Application code uses the named methods above instead.
+// A component with background work (a scheduler, a session sweep) is started
+// with [safe.Go] against [App.Context] — see that package for how it's joined
+// at shutdown by the same "background-work" step every App already pushes.
 package app
 
 import (
@@ -40,7 +41,6 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -52,7 +52,6 @@ import (
 
 	"github.com/neodata-io/neokit/buildinfo"
 	"github.com/neodata-io/neokit/config"
-	"github.com/neodata-io/neokit/declare"
 	"github.com/neodata-io/neokit/fiberx"
 	"github.com/neodata-io/neokit/health"
 	"github.com/neodata-io/neokit/lifecycle"
@@ -70,22 +69,17 @@ const (
 	defaultIdleTimeout = 120 * time.Second
 )
 
-// The probe endpoints, on the application listener.
+// LivePath is the liveness probe, on the application listener.
 //
-// Exported because their reachability is the deployment's problem rather than a
+// Exported because its reachability is the deployment's problem rather than a
 // second listener's: a container health check and a reverse-proxy deny rule both
-// have to name them, and the same literal typed into a compose file, an ingress
+// have to name it, and the same literal typed into a compose file, an ingress
 // and a test is how one of the three ends up stale.
 //
-// Both answer with a verdict and no more — [App.ReadyDetail] is where the
-// per-check detail lives, for a route you have put behind your own
-// authentication. The split is deliberate: an orchestrator reads only the status
-// code, so naming your dependencies and their errors here would give away a map
+// It answers with a verdict and no more — an orchestrator reads only the
+// status code, so naming a dependency and its error here would give away a map
 // of the infrastructure to buy nothing.
-const (
-	LivePath  = "/healthz"
-	ReadyPath = "/readyz"
-)
+const LivePath = "/healthz"
 
 // MetricsPath is where the Prometheus endpoint is served. Always mounted, at the
 // conventional path, so a scrape config that assumes it works without being told
@@ -129,7 +123,7 @@ type Options struct {
 }
 
 // App is a constructed application. Everything a caller wires against is an
-// exported field; the boot machinery behind [App.Declare] is not.
+// exported field.
 type App struct {
 	Name    string
 	Version string
@@ -147,18 +141,6 @@ type App struct {
 	// so a long-lived response ends instead of holding the drain open for its
 	// full timeout. [App.StreamContext] is how a handler subscribes.
 	shuttingDown *shutdownSignal
-
-	// checks is the set /readyz runs. Unexported so it can only be fed by
-	// Declare, which also writes the boot report — a check registered around it
-	// would be invisible there.
-	checks *health.Registry
-
-	components []Component
-
-	// started flips once Run has rendered the report and launched background
-	// work. Atomic because the declaration it warns about is by definition one
-	// that arrived from somewhere Declare's single-goroutine rule did not reach.
-	started atomic.Bool
 }
 
 // shutdownSignal tells long-lived responses to stop. Released before the HTTP
@@ -212,7 +194,6 @@ func New(o Options) (*App, error) {
 		Log:          log,
 		Errors:       &fiberx.Errors{Log: log},
 		Shutdown:     &lifecycle.Stack{Log: log},
-		checks:       &health.Registry{Log: log},
 		ctx:          ctx,
 		cancel:       cancel,
 		shuttingDown: newShutdownSignal(),
@@ -227,7 +208,6 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.Shutdown.Push("tracing", traceShutdown)
-	declareOTEL(a, "tracing")
 
 	pipeline, err := metrics.Init(ctx, metrics.Config{
 		ServiceName: o.Name, Version: o.Version, Pull: true,
@@ -237,44 +217,9 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.Shutdown.Push("metrics-export", pipeline.Shutdown)
-	declareOTEL(a, "metrics export")
-	declareMetricsEndpoint(a, pipeline.Handler != nil, o.Base.MetricsToken)
-	declareHealth(a)
 
 	a.HTTP = a.newFiber(o, pipeline.Handler)
 	return a, nil
-}
-
-// declareOTEL reports whether an OpenTelemetry signal is exporting, reading
-// the same env var its SDK does so the report cannot disagree with reality.
-func declareOTEL(a *App, name string) {
-	if endpoint := strings.TrimSpace(osGetenv("OTEL_EXPORTER_OTLP_ENDPOINT")); endpoint != "" {
-		declare.Add(a, name, declare.Detail(endpoint))
-		return
-	}
-	declare.Add(a, name, declare.Disabled("OTEL_EXPORTER_OTLP_ENDPOINT unset"))
-}
-
-// declareMetricsEndpoint is the report line for the Prometheus endpoint.
-//
-// Whether it is authenticated is the fact worth stating: unauthenticated is the
-// default and the right answer on a private network, but it is also the one
-// setting whose absence is completely silent — the endpoint answers either way,
-// and nothing else in the process will ever mention it again.
-func declareMetricsEndpoint(a *App, mounted bool, token string) {
-	if !mounted {
-		// Only reachable when the Prometheus reader failed to build, which
-		// metrics.Init has already logged. Reported rather than hidden: the
-		// endpoint answering 404 is otherwise indistinguishable from a typo in
-		// whatever is trying to scrape it.
-		declare.Add(a, "metrics endpoint", declare.Disabled("reader unavailable — see the log above"))
-		return
-	}
-	guard := "unauthenticated · set METRICS_TOKEN to require a bearer token"
-	if token != "" {
-		guard = "bearer token required"
-	}
-	declare.Add(a, "metrics endpoint", declare.Detail(MetricsPath+" · "+guard))
 }
 
 // bearerGuard requires `Authorization: Bearer <token>`, or passes everything
@@ -300,16 +245,6 @@ func bearerGuard(token string) fiber.Handler {
 		}
 		return c.Next()
 	}
-}
-
-// declareHealth is the report line for the probe endpoints.
-//
-// Worth a line because their location is the one thing about them an operator
-// cannot guess and cannot see anywhere else: they are on the application
-// listener, which means they are reachable by anyone who can reach the API, and
-// [config.Base.BindAddr] is the only thing that narrows that.
-func declareHealth(a *App) {
-	declare.Add(a, "health", declare.Detail(LivePath+", "+ReadyPath))
 }
 
 // newFiber builds the HTTP server and the standard middleware chain.
@@ -357,7 +292,6 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 	// Recover is above this line, so a readiness check that panics is still a 500
 	// rather than a dead process. TestProbesBypassTheRequestLog pins the ordering.
 	f.Get(LivePath, adaptor.HTTPHandler(health.LiveHandler()))
-	f.Get(ReadyPath, adaptor.HTTPHandler(a.checks.ReadyHandler()))
 
 	// The scrape belongs up here for the same reasons and one more: measured by
 	// the middleware below, every scrape would add a data point about the act of
@@ -388,20 +322,6 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 	}))
 	return f
 }
-
-// ReadyDetail is the readiness sweep with its detail intact: every declared
-// check, whether it passed, its error and how long it took. [App.ReadyPath]
-// answers with a bare verdict instead, because it sits on the public listener.
-//
-// Mount this behind your own authentication — it is the same data, and the point
-// is that you choose who reads it:
-//
-//	admin.Get("/readyz", adaptor.HTTPHandler(a.ReadyDetail()))
-//
-// Returning the handler rather than the [health.Registry] is deliberate: the
-// registry can also register checks, and those must go through [App.Declare] so
-// the boot report and the sweep cannot disagree about what this process is.
-func (a *App) ReadyDetail() http.Handler { return a.checks.DetailHandler() }
 
 // Context is the application's lifetime. Start background work from it: it is
 // cancelled once the HTTP server has drained, not when shutdown begins, so a

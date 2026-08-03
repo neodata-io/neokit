@@ -26,13 +26,6 @@ const (
 	httpDrainTimeout     = 10 * time.Second
 )
 
-// Report renders the boot block: what this process actually is. Run prints it to
-// stdout; it is exported so a caller can send it somewhere else instead.
-func (a *App) Report() string {
-	addr, _ := listenAddress(a.Cfg.BindAddr, a.Cfg.Port)
-	return a.report(addr)
-}
-
 // Run starts the listener, waits for a termination signal or a fatal listener
 // error, and unwinds the teardown stack. It blocks until the process is done.
 //
@@ -43,23 +36,13 @@ func (a *App) Report() string {
 func (a *App) Run() error {
 	addr, network := listenAddress(a.Cfg.BindAddr, a.Cfg.Port)
 
-	// Here rather than in New: the report is only complete once the caller has
-	// finished declaring its components.
-	fmt.Println(a.Report())
-
-	// After the report, so the process states what it is before any of it starts
-	// logging. The flag it sets is what makes a later Declare warn: from here on
-	// a declaration reaches neither the report nor this loop.
-	a.startBackgroundWork()
-	a.started.Store(true)
-
 	// Buffered, so the listener goroutine cannot leak when Run returns on a
 	// signal without ever reading from it.
 	serverErr := make(chan error, 1)
 
 	go func() {
 		if err := a.HTTP.Listen(addr, fiber.ListenConfig{
-			DisableStartupMessage: true, // the boot report replaces it
+			DisableStartupMessage: true, // Fiber's own banner would fight the structured log
 			ListenerNetwork:       network,
 		}); err != nil {
 			serverErr <- fmt.Errorf("api server: %w", netx.AddrInUseHint(err, a.Cfg.Port, "PORT"))
@@ -92,20 +75,6 @@ func (a *App) Run() error {
 		return fatal
 	}
 	return shutdownErr
-}
-
-// startBackgroundWork launches each declared component's work on the
-// application context. Off components are skipped, for the reason their Ready
-// is: an unconfigured feature must not start doing anything.
-func (a *App) startBackgroundWork() {
-	for _, c := range a.components {
-		if !c.On || c.Run == nil {
-			continue
-		}
-		// The application context, so a component whose Run panics on every call
-		// stops respawning at shutdown rather than holding the join below open.
-		safe.Go(a.ctx, c.Name, func() { c.Run(a.ctx) })
-	}
 }
 
 // pushRunSteps registers the teardown Run owns. Order matters: the stack unwinds

@@ -2,7 +2,6 @@ package app_test
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/adaptor"
 
 	"github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/config"
@@ -45,8 +43,8 @@ func TestNewRequiresAName(t *testing.T) {
 }
 
 // Version is the opposite call: it defaults rather than demanding, because Go
-// already knows the answer. An empty one must never reach the boot report, the
-// logs or the metrics resource as a blank field.
+// already knows the answer. An empty one must never reach the logs or the
+// metrics resource as a blank field.
 func TestVersionDefaultsRatherThanBeingBlank(t *testing.T) {
 	a, err := app.New(app.Options{Name: "testapp", Base: config.Base{Port: 0}, Log: quiet()})
 	if err != nil {
@@ -62,9 +60,6 @@ func TestVersionDefaultsRatherThanBeingBlank(t *testing.T) {
 	// metadata at all.
 	if !strings.Contains(a.Version, "dev") {
 		t.Errorf("Version = %q, want the dev marker for an unstamped build", a.Version)
-	}
-	if !strings.Contains(a.Report(), a.Version) {
-		t.Errorf("the boot report does not carry the version:\n%s", a.Report())
 	}
 }
 
@@ -120,107 +115,6 @@ func TestAppContextIsLiveUntilClose(t *testing.T) {
 	}
 }
 
-// New declares its own components, so a caller reading Components() sees the
-// whole process — including the parts neokit switched on or left off. A view
-// that showed only the caller's own declarations would disagree with the boot
-// report about what this process is.
-func TestComponentsIncludesTheBuildersOwn(t *testing.T) {
-	a := newApp(t)
-	for _, name := range []string{"tracing", "metrics export", "health"} {
-		if _, ok := findComponent(a, name); !ok {
-			t.Errorf("%q missing from Components(): %+v", name, a.Components())
-		}
-	}
-}
-
-// The probes now sit on the application listener, so where they are is the one
-// thing about them an operator cannot infer from anywhere else — and it decides
-// whether they are reachable by anyone who can reach the API. The report has to
-// name them.
-func TestTheReportNamesTheProbeEndpoints(t *testing.T) {
-	a := newApp(t)
-
-	got, ok := findComponent(a, "health")
-	if !ok {
-		t.Fatalf("no health line: %+v", a.Components())
-	}
-	for _, path := range []string{app.LivePath, app.ReadyPath} {
-		if !strings.Contains(got.Detail, path) {
-			t.Errorf("detail = %q, want it to name %q", got.Detail, path)
-		}
-		if !strings.Contains(a.Report(), path) {
-			t.Errorf("boot report does not name %q:\n%s", path, a.Report())
-		}
-	}
-}
-
-// Liveness must answer without touching a dependency: a probe that consults the
-// database gets a healthy container killed during a database blip.
-func TestLivenessAnswersWithoutAnyCheck(t *testing.T) {
-	a := newApp(t)
-	a.Declare(app.Component{
-		Name: "database", On: true, Detail: "down",
-		Ready: func(context.Context) error { return errors.New("unreachable") },
-	})
-
-	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, app.LivePath, nil),
-		fiber.TestConfig{Timeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("Test: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200 — liveness must not consult a check", resp.StatusCode)
-	}
-}
-
-// Readiness does run them, so a failing dependency takes this instance out of
-// rotation without restarting it.
-func TestReadinessReflectsADeclaredCheck(t *testing.T) {
-	a := newApp(t)
-	a.Declare(app.Component{
-		Name: "database", On: true, Detail: "down",
-		Ready: func(context.Context) error { return errors.New("unreachable") },
-	})
-
-	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, app.ReadyPath, nil),
-		fiber.TestConfig{Timeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("Test: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		t.Error("status = 200, want a failing check to make the app unready")
-	}
-}
-
-// The two ends of the split, asserted together so neither can drift: the public
-// probe gives away nothing about what this process depends on, and ReadyDetail
-// gives an authenticated caller all of it.
-func TestReadinessDetailIsSeparateFromThePublicProbe(t *testing.T) {
-	a := newApp(t)
-	a.Declare(app.Component{
-		Name: "database", On: true, Detail: "down",
-		Ready: func(context.Context) error { return errors.New("connection refused") },
-	})
-
-	_, public := get(t, a, app.ReadyPath, "")
-	if strings.Contains(public, "database") || strings.Contains(public, "connection refused") {
-		t.Errorf("the public probe leaks a dependency and its error: %s", public)
-	}
-
-	// Mounted the way a caller would, except that the guard is what they add.
-	a.HTTP.Get("/admin/readyz", adaptor.HTTPHandler(a.ReadyDetail()))
-
-	status, detail := get(t, a, "/admin/readyz", "")
-	if status != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503 — the two must not disagree about the verdict", status)
-	}
-	if !strings.Contains(detail, "database") || !strings.Contains(detail, "connection refused") {
-		t.Errorf("the detailed handler is missing the failing check: %s", detail)
-	}
-}
-
 // The probes are registered above the middleware chain on purpose: probe traffic
 // is the highest-volume, lowest-information a service sees, and counting it in
 // the request histogram drags every latency percentile toward the cost of
@@ -239,7 +133,7 @@ func TestProbesBypassTheRequestLog(t *testing.T) {
 
 	a.HTTP.Get("/ordinary", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
 
-	for _, path := range []string{app.LivePath, app.ReadyPath, "/ordinary"} {
+	for _, path := range []string{app.LivePath, "/ordinary"} {
 		resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, path, nil),
 			fiber.TestConfig{Timeout: 5 * time.Second})
 		if err != nil {
@@ -248,10 +142,8 @@ func TestProbesBypassTheRequestLog(t *testing.T) {
 		_ = resp.Body.Close()
 	}
 
-	for _, path := range []string{app.LivePath, app.ReadyPath} {
-		if strings.Contains(logged.String(), path) {
-			t.Errorf("the %s probe reached the request log:\n%s", path, logged.String())
-		}
+	if strings.Contains(logged.String(), app.LivePath) {
+		t.Errorf("the %s probe reached the request log:\n%s", app.LivePath, logged.String())
 	}
 	// The control: without it this passes just as well when the logger is broken,
 	// which is the failure mode that would hide a real regression here.
@@ -333,26 +225,6 @@ func TestMetricsTokenIsEnforced(t *testing.T) {
 			}
 		})
 	}
-
-	got, _ := findComponent(a, "metrics endpoint")
-	if !strings.Contains(got.Detail, "bearer token required") {
-		t.Errorf("report detail = %q, want it to say the endpoint is authenticated", got.Detail)
-	}
-}
-
-// The report must say when the endpoint is public, because nothing else will.
-// An unset METRICS_TOKEN is silent everywhere else: the endpoint answers either
-// way, and the difference only shows up when someone else reads it.
-func TestTheReportSaysWhenMetricsAreUnauthenticated(t *testing.T) {
-	a := newApp(t)
-
-	got, ok := findComponent(a, "metrics endpoint")
-	if !ok {
-		t.Fatalf("no metrics endpoint line: %+v", a.Components())
-	}
-	if !strings.Contains(got.Detail, "unauthenticated") || !strings.Contains(got.Detail, "METRICS_TOKEN") {
-		t.Errorf("detail = %q, want it to name the exposure and the setting that closes it", got.Detail)
-	}
 }
 
 // A scrape must not measure itself. At a 15-second interval, an endpoint that
@@ -385,16 +257,6 @@ func TestScrapesAreNotThemselvesMeasuredOrLogged(t *testing.T) {
 	if strings.Contains(logged.String(), app.MetricsPath) {
 		t.Errorf("a scrape reached the request log:\n%s", logged.String())
 	}
-}
-
-// findComponent looks one up by name.
-func findComponent(a *app.App, name string) (app.Component, bool) {
-	for _, s := range a.Components() {
-		if s.Name == name {
-			return s, true
-		}
-	}
-	return app.Component{}, false
 }
 
 // The error envelope must be installed as Fiber's ErrorHandler, or a returned
