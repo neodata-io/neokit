@@ -31,8 +31,7 @@ func run() error {
 	}
 
 	// No Version: an unset one fills itself in from the VCS metadata Go embeds,
-	// so this binary still reports its commit in the boot report and every log
-	// line.
+	// so this binary still reports its commit in every log line.
 	service, err := app.New(app.Options{
 		Name: "minimal-api",
 		Base: cfg,
