@@ -2,10 +2,12 @@ package fiberauth
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -236,6 +238,87 @@ func TestGatePathsDefaultToTheAppDefaults(t *testing.T) {
 	}
 	if got, want := g.WhoamiPath(), neoapp.DefaultAPIBase+"/auth/whoami"; got != want {
 		t.Errorf("WhoamiPath = %q, want %q", got, want)
+	}
+}
+
+// A failed sign-in reaches a browser mid-navigation, so with a page configured
+// it must be a redirect carrying only the reason code. The cause is logged, and
+// must never reach the URL: it routinely contains the client secret the provider
+// just rejected.
+func TestDefaultFailureHandlerRedirectsWithOnlyTheReason(t *testing.T) {
+	h := defaultFailureHandler("/aanmelden-mislukt", "reason")
+	app := fiber.New()
+	app.Get("/boom", func(c fiber.Ctx) error {
+		return h(c, ReasonSecret, errors.New("client_secret 'hunter2' rejected"))
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/boom", nil))
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusFound {
+		t.Fatalf("status = %d, want 302 — the caller is a browser mid-navigation", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	if loc != "/aanmelden-mislukt?reason=secret" {
+		t.Errorf("Location = %q, want /aanmelden-mislukt?reason=secret", loc)
+	}
+	if strings.Contains(loc, "hunter2") {
+		t.Error("the cause leaked into the redirect URL")
+	}
+}
+
+// Every Reason must survive the round trip into a URL, so a page can switch on
+// it. An empty or unescaped one would render the generic fallback instead of the
+// specific fix, which is the one thing such a page exists to prevent.
+func TestEveryReasonProducesANonEmptyCode(t *testing.T) {
+	h := defaultFailureHandler("/failed", "reason")
+	for _, r := range []Reason{
+		ReasonExpired, ReasonDenied, ReasonProvider, ReasonCode,
+		ReasonSecret, ReasonToken, ReasonUnreachable, ReasonServer,
+	} {
+		app := fiber.New()
+		app.Get("/boom", func(c fiber.Ctx) error { return h(c, r, nil) })
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/boom", nil))
+		if err != nil {
+			t.Fatalf("Test: %v", err)
+		}
+		resp.Body.Close()
+
+		want := "/failed?reason=" + url.QueryEscape(string(r))
+		if got := resp.Header.Get("Location"); got != want {
+			t.Errorf("reason %q: Location = %q, want %q", r, got, want)
+		}
+		if string(r) == "" {
+			t.Errorf("reason %q has an empty code", r)
+		}
+	}
+}
+
+// With no page configured the gate still answers, as JSON. Ugly for a browser,
+// but it is the honest fallback for a caller that never told us where to send
+// someone — and it still must not carry the cause.
+func TestDefaultFailureHandlerWithoutAPathAnswersJSON(t *testing.T) {
+	h := defaultFailureHandler("", "reason")
+	app := fiber.New()
+	app.Get("/boom", func(c fiber.Ctx) error {
+		return h(c, ReasonSecret, errors.New("client_secret 'hunter2' rejected"))
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/boom", nil))
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(raw), "hunter2") {
+		t.Errorf("the cause leaked into the body: %s", raw)
 	}
 }
 
