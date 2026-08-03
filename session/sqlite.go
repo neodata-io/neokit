@@ -34,7 +34,10 @@ var schema = []string{
 		last_seen_at TEXT NOT NULL,
 		expires_at   TEXT NOT NULL
 	)`,
-	`CREATE INDEX IF NOT EXISTS auth_session_expires ON auth_session(expires_at)`,
+	// idx_ prefixed, which is both the common convention and the name an
+	// application that already had this table will have used — so adopting the
+	// package does not leave a second index on the same column.
+	`CREATE INDEX IF NOT EXISTS idx_auth_session_expires ON auth_session(expires_at)`,
 }
 
 // SQLite is a [Store] over any *sql.DB speaking SQLite. It also implements
