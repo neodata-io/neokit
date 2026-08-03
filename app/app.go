@@ -21,13 +21,14 @@
 //	if err != nil { return err }
 //	defer a.Close()
 //
-//	store, err := sqlitex.Open(cfg.DatabasePath, migrate)
-//	a.Declare(app.Component{
-//		Name: "database", On: true, Detail: cfg.DatabasePath,
-//		Ready: store.PingContext, Close: lifecycle.Closer(store),
-//	})
+//	db, err := sqlitex.Open(a, cfg.DatabasePath, migrate)   // report + /readyz + shutdown
+//	a.ClosesOnShutdown("plugins", "3 loaded", manager.Close)
 //
 //	return a.Run()
+//
+// [App.Declare] is the seam those registrations travel through — packages call
+// it so their component, its readiness check and its teardown arrive together.
+// Application code uses the named methods above instead.
 package app
 
 import (
