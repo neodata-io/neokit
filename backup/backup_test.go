@@ -225,3 +225,65 @@ func TestNewDeclaresBackups(t *testing.T) {
 		t.Errorf("no Dir must declare off with a reason, got %+v", c)
 	}
 }
+
+// The line has to have something behind it. Declaring "daily, keep 7" and
+// scheduling nothing is the bug this replaces, so the assertion is the file.
+func TestDeclaredWorkWritesABackup(t *testing.T) {
+	dir := t.TempDir()
+	var r declRec
+	backup.New(&r, &fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
+
+	c := r.got[0]
+	if c.Run == nil {
+		t.Fatal("backups declared no background work")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); c.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-stopped })
+
+	// The job writes today's file before waiting for the next occurrence, so a
+	// service restarted after its backup hour still backs up that day.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		if len(entries) > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the declared work wrote no backup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A schedule nobody can read is a schedule nobody can verify, so the report
+// states the hour it fires at and the default is not a secret.
+func TestScheduleIsStatedAndConfigurable(t *testing.T) {
+	var r declRec
+	backup.New(&r, &fakeSnap{}, backup.Options{Dir: t.TempDir(), Retention: 7})
+	if got := r.got[0].Detail; !strings.Contains(got, "03:00") {
+		t.Errorf("detail = %q, want the default 03:00 stated", got)
+	}
+
+	var r2 declRec
+	backup.New(&r2, &fakeSnap{}, backup.Options{
+		Dir: t.TempDir(), Retention: 7, At: backup.Clock{Hour: 21, Minute: 30},
+	})
+	if got := r2.got[0].Detail; !strings.Contains(got, "21:30") {
+		t.Errorf("detail = %q, want the configured 21:30 stated", got)
+	}
+}
+
+// Off means off: no directory, no work started.
+func TestNoDirDeclaresNoWork(t *testing.T) {
+	var r declRec
+	backup.New(&r, &fakeSnap{}, backup.Options{})
+	if r.got[0].Run != nil {
+		t.Error("a disabled backup must declare no background work")
+	}
+}

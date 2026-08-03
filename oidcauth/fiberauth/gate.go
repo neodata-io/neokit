@@ -53,6 +53,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/neodata-io/neokit/app"
+	"github.com/neodata-io/neokit/declare"
 	"github.com/neodata-io/neokit/oidcauth"
 )
 
@@ -167,7 +168,8 @@ type Gate struct {
 //
 // It cannot fail: a gate with no Provider is a working gate that is switched off.
 //
-// The session sweep stays yours — see [Gate.SweepJob].
+// The expired-session sweep is part of the same declaration, so a store that can
+// prune is pruned without a second call to remember.
 func New(a *app.App, o Options) *Gate {
 	prefix := strings.TrimSpace(o.CookiePrefix)
 	if prefix == "" {
@@ -199,12 +201,17 @@ func New(a *app.App, o Options) *Gate {
 	a.HTTP.Use(g.ResolveIdentity())
 	g.register(a.HTTP)
 
-	detail := "not configured"
-	on := g.Enabled()
-	if on {
-		detail = g.Provider().Issuer()
+	if !g.Enabled() {
+		declare.Add(a, "login", declare.Disabled("not configured"))
+		return g
 	}
-	a.Declare(app.Component{Name: "login", On: on, Detail: detail})
+	opts := []declare.Option{declare.Detail(g.Provider().Issuer())}
+	// Attached to the login line rather than declared beside it: one feature,
+	// one name. A gate that is off creates no sessions, so it sweeps none.
+	if job, ok := oidcauth.SweepJob(g.sessions, g.logger()); ok {
+		opts = append(opts, declare.Run(job.Run))
+	}
+	declare.Add(a, "login", opts...)
 	return g
 }
 

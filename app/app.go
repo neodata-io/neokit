@@ -10,9 +10,10 @@
 // constructor. There is no lookup, no reflection, and no bespoke handler
 // signature — you write ordinary Fiber handlers against ordinary types.
 //
-// What it fixes is narrow: where its own four teardown steps sit. Streams and
-// the HTTP drain run before yours, the OpenTelemetry flush after them, because
-// those positions are what make a SIGTERM exit clean — each is pinned by a test.
+// What it fixes is narrow: where its own five teardown steps sit. Streams, the
+// HTTP drain and the background-work join run before yours, the OpenTelemetry
+// flush after them, because those positions are what make a SIGTERM exit clean
+// — each is pinned by a test.
 // Your own steps, and their order among themselves, are yours: push them onto
 // [App.Shutdown] and they unwind in reverse. So are routes, Fiber config, error
 // mapping and the logger.

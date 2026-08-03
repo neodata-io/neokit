@@ -88,9 +88,9 @@ func (j Job) Run(ctx context.Context) {
 }
 
 // Start runs the job on a supervised background goroutine and returns
-// immediately. The goroutine is joined by [safe.WaitGo] at shutdown, so a
-// process that drains its background work before closing the resources these
-// jobs use gets that ordering for free.
+// immediately. app.Run joins that goroutine during teardown, before the
+// application's own Close steps — so a job started this way finishes its write
+// before the store it writes to closes.
 //
 // Use [Job.Run] directly when you own the goroutine — for instance to join it
 // with a [safe.Group] of your own rather than the package-level default.

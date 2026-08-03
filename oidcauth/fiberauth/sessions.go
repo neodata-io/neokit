@@ -5,7 +5,6 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
-	"github.com/neodata-io/neokit/jobs"
 	"github.com/neodata-io/neokit/oidcauth"
 )
 
@@ -111,10 +110,7 @@ func (g *Gate) revokeSession() fiber.Handler {
 	}
 }
 
-// SweepJob returns the periodic expired-session sweep for this gate's store, or
-// ok=false when that store cannot sweep. See [oidcauth.SweepJob].
-//
-//	if job, ok := gate.SweepJob(); ok { job.Start(ctx) }
-func (g *Gate) SweepJob() (jobs.Job, bool) {
-	return oidcauth.SweepJob(g.sessions, g.logger())
-}
+// The expired-session sweep is not exported here. [New] declares it as the login
+// component's background work, so a second entry point could only ever start a
+// duplicate sweep over the same store. Use [oidcauth.SweepJob] directly if you
+// are not mounting a Gate.

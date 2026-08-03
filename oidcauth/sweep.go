@@ -21,6 +21,10 @@ const (
 // [ExpiredSweeper]. ok is false when the store cannot sweep, so a caller can skip
 // scheduling it rather than run a job that does nothing.
 //
+// For a service mounting a Gate this is already done: fiberauth.New declares the
+// sweep as the login component's background work. Use this directly only when
+// you are not.
+//
 // It sweeps once at start, because a restart is exactly when a backlog has
 // accumulated.
 //
