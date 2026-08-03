@@ -146,20 +146,32 @@ started, so there is nothing to join.
 
 ### 4. `backup`
 
-`Options` gains the schedule:
+`Options` gains the schedule, as a named type so the report can render it and a
+caller can read it back:
 
 ```go
-// At is the local time the nightly backup runs. Zero means 03:00.
-At struct{ Hour, Minute int }
+// Clock is a local wall-clock time of day.
+type Clock struct{ Hour, Minute int }
+
+const DefaultHour = 3
+
+// At is the local time the scheduled backup runs. Zero means DefaultHour:00.
+At Clock
 ```
 
 `New` builds a `jobs.Daily` and declares it:
 
 ```go
 declare.Add(d, "backups",
-	declare.Detail(fmt.Sprintf("daily at %02d:%02d, keep %d", hour, minute, o.Retention)),
-	declare.Run(daily.Run))
+	declare.Detail(fmt.Sprintf("daily at %s, keep %d", o.At, o.Retention)),
+	declare.Run(svc.schedule(o.At).Run))
 ```
+
+The job sets `RunAtStart`. `jobs.Daily` warns against it for announcements but
+names this exact case as the exception — work "idempotent for the day (writing a
+dated file)" — and `WriteDaily` is already pinned as a same-day no-op. Without it
+a service that restarts every morning after its backup hour would never back up
+at all.
 
 Off with no `Dir`, as today, and then no job is declared. `backup` gains an import
 of `jobs`.
