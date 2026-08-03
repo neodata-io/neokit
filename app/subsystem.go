@@ -43,7 +43,27 @@ type Subsystem struct {
 //
 // Call it during boot, before [App.Run], from one goroutine: the report renders
 // at the top of Run, so a later declaration would miss it anyway.
+//
+// An empty Name panics, for the reason [New] rejects an empty Options.Name: the
+// name labels three separate outputs, and an anonymous one is untraceable in all
+// three. A duplicate name and a late declaration are warned about rather than
+// refused — both still produce a working process, just a confusing one.
 func (a *App) Declare(s Subsystem) {
+	if strings.TrimSpace(s.Name) == "" {
+		panic("app: Subsystem.Name is required")
+	}
+	if a.booted.Load() {
+		a.Log.Warn("subsystem declared after the boot report; it will not appear there",
+			"subsystem", s.Name)
+	}
+	for _, existing := range a.subsystems {
+		if existing.Name == s.Name {
+			a.Log.Warn("subsystem already declared; the report, readiness and teardown will each list it twice",
+				"subsystem", s.Name)
+			break
+		}
+	}
+
 	a.subsystems = append(a.subsystems, s)
 
 	if s.On && s.Ready != nil {

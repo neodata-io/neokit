@@ -38,6 +38,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -147,6 +148,9 @@ type App struct {
 	// above the middleware chain, so a scrape is not itself logged and metered.
 	metrics    http.Handler
 	subsystems []Subsystem
+	// booted is set by Run before it prints the boot report, after which a
+	// Declare is half-applied: it misses the report but still registers.
+	booted atomic.Bool
 }
 
 // drainSignal broadcasts that shutdown has started, before the HTTP drain.
