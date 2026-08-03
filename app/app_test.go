@@ -340,3 +340,80 @@ func TestServerSentEventsAreNotCompressed(t *testing.T) {
 		t.Errorf("Content-Encoding = %q, want none — compression breaks SSE flushing", enc)
 	}
 }
+
+// The two mount points default so a service that says nothing still lands where
+// every neokit service lands.
+func TestMountPointsDefault(t *testing.T) {
+	a := newApp(t)
+
+	if a.APIBase != app.DefaultAPIBase {
+		t.Errorf("APIBase = %q, want %q", a.APIBase, app.DefaultAPIBase)
+	}
+	if a.AuthBase != app.DefaultAuthBase {
+		t.Errorf("AuthBase = %q, want %q", a.AuthBase, app.DefaultAuthBase)
+	}
+}
+
+// The router is the point of the whole change: a route registered on it answers
+// at APIBase+path, so a caller never concatenates the base itself at ~140 call
+// sites and hopes they agree.
+func TestAPIRouterMountsAtAPIBase(t *testing.T) {
+	a := newApp(t)
+	a.API.Get("/horses", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, "/api/v1/horses", nil))
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Errorf("status = %d, want 200 — the group is not mounted at APIBase", resp.StatusCode)
+	}
+}
+
+func TestMountPointsAreOverridable(t *testing.T) {
+	a, err := app.New(app.Options{
+		Name: "testapp", APIBase: "/api/v2", AuthBase: "/oauth",
+		Base: config.Base{Port: 0, LogLevel: "error", LogFormat: "json"},
+		Log:  quiet(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	if a.APIBase != "/api/v2" {
+		t.Errorf("APIBase = %q, want /api/v2", a.APIBase)
+	}
+	if a.AuthBase != "/oauth" {
+		t.Errorf("AuthBase = %q, want /oauth", a.AuthBase)
+	}
+
+	a.API.Get("/horses", func(c fiber.Ctx) error { return c.SendString("ok") })
+	resp, err := a.HTTP.Test(httptest.NewRequest(http.MethodGet, "/api/v2/horses", nil))
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Errorf("status = %d, want 200 — API must follow the overridden base", resp.StatusCode)
+	}
+}
+
+// Whitespace is the realistic way an env-driven override arrives empty, and it
+// must read as "not set" rather than mounting everything under " ".
+func TestBlankMountPointFallsBackToTheDefault(t *testing.T) {
+	a, err := app.New(app.Options{
+		Name: "testapp", APIBase: "   ",
+		Base: config.Base{Port: 0, LogLevel: "error", LogFormat: "json"},
+		Log:  quiet(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	if a.APIBase != app.DefaultAPIBase {
+		t.Errorf("APIBase = %q, want the default %q", a.APIBase, app.DefaultAPIBase)
+	}
+}

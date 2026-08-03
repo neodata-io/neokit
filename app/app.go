@@ -86,6 +86,34 @@ const LivePath = "/healthz"
 // — see [config.Base.MetricsToken] for the part you may want to set.
 const MetricsPath = "/metrics"
 
+// Defaults for the two mount points a service hangs its own routes off. They
+// live here rather than in each feature package so the login gate and a
+// service's own route groups read one value instead of two that agree by
+// convention until one of them moves.
+const (
+	// DefaultAPIBase is where the versioned API hangs. [App.API] is a group
+	// mounted at it.
+	DefaultAPIBase = "/api/v1"
+
+	// DefaultAuthBase is where the browser-facing OIDC handshake lives, and it is
+	// deliberately **unversioned**: login, callback and logout are redirect
+	// targets a browser is sent to, not endpoints an API consumer calls, so they
+	// are not part of the contract a version freezes. The callback URI is also
+	// registered *at the identity provider*, which makes moving it the one change
+	// that cannot be made unilaterally.
+	DefaultAuthBase = "/api/auth"
+)
+
+// orDefault treats whitespace as unset. An override that arrives from the
+// environment is empty far more often than it is deliberately " ", and mounting
+// every route under a blank segment is not a failure anyone would debug quickly.
+func orDefault(v, def string) string {
+	if v = strings.TrimSpace(v); v == "" {
+		return def
+	}
+	return v
+}
+
 // Options configures [New]. Only Name is required.
 type Options struct {
 	// Name identifies the service in logs, traces and metrics. Required — an
@@ -120,6 +148,15 @@ type Options struct {
 
 	// Log replaces the logger. Nil configures one from Base via logx.
 	Log *slog.Logger
+
+	// APIBase mounts the versioned API, and is the prefix [App.API] groups at.
+	// Empty means [DefaultAPIBase].
+	APIBase string
+
+	// AuthBase mounts the browser-facing OIDC handshake. Empty means
+	// [DefaultAuthBase]. Versioning it would buy nothing and cost something real —
+	// see that constant.
+	AuthBase string
 }
 
 // App is a constructed application. Everything a caller wires against is an
@@ -133,6 +170,17 @@ type App struct {
 	HTTP     *fiber.App
 	Errors   *fiberx.Errors
 	Shutdown *lifecycle.Stack
+
+	// APIBase and AuthBase are the resolved mount points, and API is a route group
+	// already mounted at APIBase.
+	//
+	// Both the string and the router are exported because they serve different
+	// callers and neither substitutes for the other: route registration wants the
+	// router, while tests building request URLs and handlers embedding a path in a
+	// response body want the string.
+	APIBase  string
+	AuthBase string
+	API      fiber.Router
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -194,6 +242,8 @@ func New(o Options) (*App, error) {
 		Log:          log,
 		Errors:       &fiberx.Errors{Log: log},
 		Shutdown:     &lifecycle.Stack{Log: log},
+		APIBase:      orDefault(o.APIBase, DefaultAPIBase),
+		AuthBase:     orDefault(o.AuthBase, DefaultAuthBase),
 		ctx:          ctx,
 		cancel:       cancel,
 		shuttingDown: newShutdownSignal(),
@@ -219,6 +269,8 @@ func New(o Options) (*App, error) {
 	a.Shutdown.Push("metrics-export", pipeline.Shutdown)
 
 	a.HTTP = a.newFiber(o, pipeline.Handler)
+	// After newFiber, necessarily: the group is a child of the app it mounts on.
+	a.API = a.HTTP.Group(a.APIBase)
 	return a, nil
 }
 
