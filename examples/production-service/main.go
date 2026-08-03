@@ -40,26 +40,24 @@ func run() error {
 	}
 	defer service.Close()
 
-	db, err := sqlitex.Open(cfg.DatabasePath, nil)
+	// One call, four outputs: the handle, a line in the boot report, a /readyz
+	// check, and a place in the shutdown order — declared before Run adds its own
+	// steps, so the database closes after the HTTP drain rather than out from
+	// under requests still in flight.
+	db, err := sqlitex.Open(service, "database", cfg.DatabasePath, nil)
 	if err != nil {
 		return err
 	}
-	// Pushed before Run adds its own steps, so the stack unwinds the database
-	// after the HTTP drain rather than out from under requests still in flight.
-	service.Shutdown.PushCloser("database", db)
 
-	// One declaration, two outputs: a line in the boot report and a /readyz
-	// check. The database cannot be called one thing on the console and another
-	// in the readiness body.
-	service.Declare(app.Subsystem{
-		Name:   "database",
-		On:     true,
-		Detail: cfg.DatabasePath,
-		Ready:  db.PingContext,
-	})
-
+	// db is an ordinary *sql.DB. Open registered it, but it handed it back rather
+	// than hiding it — so a handler reaches it through its own constructor, and
+	// forgetting to wire one is a compile error rather than a runtime surprise.
 	service.HTTP.Get("/", func(c fiber.Ctx) error {
-		return c.JSON(fiber.Map{"service": service.Name})
+		var version string
+		if err := db.QueryRowContext(c.Context(), "SELECT sqlite_version()").Scan(&version); err != nil {
+			return err
+		}
+		return c.JSON(fiber.Map{"service": service.Name, "sqlite": version})
 	})
 
 	return service.Run()

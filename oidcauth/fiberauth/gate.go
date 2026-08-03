@@ -27,15 +27,17 @@
 //
 // # Usage
 //
-//	gate := fiberauth.New(fiberauth.Options{
+//	gate := fiberauth.New(a, fiberauth.Options{
 //	    Provider:     func() *oidcauth.Provider { return authn }, // nil ⇒ open
 //	    Sessions:     store,
 //	    CookiePrefix: "myapp",
 //	})
-//	app.Use(gate.ResolveIdentity())
-//	gate.Register(app)
 //
-//	admin := app.Group("/api/v1/admin", gate.RequireOwner())
+//	admin := a.HTTP.Group("/api/v1/admin", gate.RequireOwner())
+//
+// [New] mounts the identity middleware, then the routes, then declares the gate
+// in the boot report — in that order, which is the one a caller cannot arrange by
+// hand.
 //
 // Apply [Gate.RequireOwner] to your own route groups rather than expecting this
 // package to hold a list of admin paths: the route definitions already carry
@@ -50,6 +52,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/oidcauth"
 )
 
@@ -153,8 +156,19 @@ type Gate struct {
 	now func() time.Time
 }
 
-// New builds a gate from options, filling every default.
-func New(o Options) *Gate {
+// New builds the gate, wires it into a, and declares it in the boot report. One
+// call — there is no separate Register step to forget or to run out of order.
+//
+// The order it wires in is the point: [Gate.ResolveIdentity] is mounted before
+// the handshake routes, because whoami and the session endpoints read the
+// identity that middleware resolves. A caller cannot get that order right by
+// hand — it needs the gate to obtain the middleware, by which time the routes
+// would already be mounted.
+//
+// It cannot fail: a gate with no Provider is a working gate that is switched off.
+//
+// The session sweep stays yours — see [Gate.SweepJob].
+func New(a *app.App, o Options) *Gate {
 	prefix := strings.TrimSpace(o.CookiePrefix)
 	if prefix == "" {
 		prefix = "auth"
@@ -178,6 +192,19 @@ func New(o Options) *Gate {
 	if g.onFailure == nil {
 		g.onFailure = defaultFailureHandler(o.LoginFailurePath, orDefault(o.ReasonParam, "reason"))
 	}
+
+	// Middleware first, then routes: whoami and the session endpoints call
+	// IdentityFrom, which reads what ResolveIdentity puts in Locals, and Fiber
+	// only runs middleware registered ahead of a route.
+	a.HTTP.Use(g.ResolveIdentity())
+	g.register(a.HTTP)
+
+	detail := "not configured"
+	on := g.Enabled()
+	if on {
+		detail = g.Provider().Issuer()
+	}
+	a.Declare(app.Component{Name: "login", On: on, Detail: detail})
 	return g
 }
 

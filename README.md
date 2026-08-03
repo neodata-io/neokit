@@ -120,14 +120,14 @@ production-service 1.4.0 · :8080
   ✗ tracing           OTEL_EXPORTER_OTLP_ENDPOINT unset
 ```
 
-That block is generated from the same `app.Subsystem` declarations that register
+That block is generated from the same `app.Component` declarations that register
 the `/readyz` checks, so it cannot drift from what the process actually is.
 
 Give a declaration a `Close` and it is the teardown step too, so a dependency is
 named once rather than once per concern:
 
 ```go
-a.Declare(app.Subsystem{
+a.Declare(app.Component{
     Name: "database", On: true, Detail: cfg.DatabasePath,
     Ready: store.Ping,
     Close: lifecycle.Closer(store),
@@ -141,19 +141,24 @@ authn, ok := oidcauth.New(oidcauth.Config{
     Issuer:   os.Getenv("OIDC_ISSUER"),   ClientID:     os.Getenv("OIDC_CLIENT_ID"),
     BaseURL:  os.Getenv("OIDC_BASE_URL"), ClientSecret: os.Getenv("OIDC_CLIENT_SECRET"),
 })
-gate := fiberauth.New(fiberauth.Options{
+gate := fiberauth.New(a, fiberauth.Options{
     Provider:     func() *oidcauth.Provider { if !ok { return nil }; return authn },
     Sessions:     store,      // your own storage; neokit ships none
     CookiePrefix: "myapp",
 })
-app.Use(gate.ResolveIdentity())
-gate.Register(app)
-admin := app.Group("/api/v1/admin", gate.RequireOwner())
+admin := a.HTTP.Group("/api/v1/admin", gate.RequireOwner())
 ```
+
+`New` mounts the identity middleware, then the handshake routes, then adds the
+`login` line to the boot report — in that order, which is the one a caller cannot
+arrange by hand: you need the gate to obtain the middleware, and by then the
+routes would already be mounted.
 
 `ok == false` (no credentials configured) means the gate is off: the middleware
 returns immediately, the guards pass through, and the handshake routes 404 — so
 an app can ship open and close later without a second feature flag.
+
+The session sweep stays yours — `if job, ok := gate.SweepJob(); ok { job.Start(a.Context()) }`.
 
 ## Runnable examples
 

@@ -73,11 +73,11 @@ func TestRunReturnsAFatalListenerError(t *testing.T) {
 }
 
 // The report is what the process says it is. It must name every declared
-// subsystem and mark each on or off.
-func TestReportNamesEverySubsystem(t *testing.T) {
+// component and mark each on or off.
+func TestReportNamesEveryComponent(t *testing.T) {
 	a := newApp(t)
-	a.Declare(app.Subsystem{Name: "database", On: true, Detail: "./data/app.db"})
-	a.Declare(app.Subsystem{Name: "login", On: false, Detail: "not configured"})
+	a.Declare(app.Component{Name: "database", On: true, Detail: "./data/app.db"})
+	a.Declare(app.Component{Name: "login", On: false, Detail: "not configured"})
 
 	got := a.Report()
 	for _, want := range []string{"database", "./data/app.db", "login", "not configured", "testapp"} {

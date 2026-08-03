@@ -63,7 +63,7 @@ const (
 // address: they are cheaper to abuse than most, since the callback triggers an
 // outbound token exchange per request, and that is exactly the case where a
 // budget keyed on a caller-written header is no budget at all.
-func (g *Gate) Register(app *fiber.App) {
+func (g *Gate) register(app *fiber.App) {
 	// The rate limiter is prepended to each handshake route rather than mounted on
 	// a group: Fiber runs the handlers of a route in the order given, so this is
 	// the whole chain, and a group would also catch anything else mounted under

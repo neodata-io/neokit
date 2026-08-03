@@ -3,6 +3,7 @@ package fiberauth
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,8 +13,35 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	neoapp "github.com/neodata-io/neokit/app"
+	"github.com/neodata-io/neokit/config"
 	"github.com/neodata-io/neokit/oidcauth"
 )
+
+// newTestApp builds the app a gate mounts itself on. Aliased to neoapp because
+// these tests use `app` as a local name for the Fiber router underneath.
+func newTestApp(t *testing.T) *neoapp.App {
+	t.Helper()
+	a, err := neoapp.New(neoapp.Options{
+		Name: "testapp",
+		Base: config.Base{Port: 0, LogLevel: "error", LogFormat: "json"},
+		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	return a
+}
+
+func componentNamed(a *neoapp.App, name string) (neoapp.Component, bool) {
+	for _, c := range a.Components() {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return neoapp.Component{}, false
+}
 
 // ── Test doubles ────────────────────────────────────────────────────────────
 
@@ -117,10 +145,10 @@ func testProvider(t *testing.T, baseURL string) *oidcauth.Provider {
 	return p
 }
 
-// newGate wires a gate. A nil provider means "login not configured".
-func newGate(t *testing.T, p *oidcauth.Provider, store oidcauth.SessionStore) *Gate {
+// newGate wires a gate onto a. A nil provider means "login not configured".
+func newGate(t *testing.T, a *neoapp.App, p *oidcauth.Provider, store oidcauth.SessionStore) *Gate {
 	t.Helper()
-	return New(Options{
+	return New(a, Options{
 		Provider:     func() *oidcauth.Provider { return p },
 		Sessions:     store,
 		CookiePrefix: "myapp",
@@ -174,7 +202,7 @@ func withCookie(req *http.Request, name, value string) *http.Request {
 // switching them off must restore that exactly. This is what makes the gate
 // additive and reversible.
 func TestDisabledGateLeavesEveryRouteOpen(t *testing.T) {
-	g := newGate(t, nil, newMemStore())
+	g := newGate(t, newTestApp(t), nil, newMemStore())
 	app := probeApp(g)
 
 	for _, path := range []string{"/open", "/admin", "/member"} {
@@ -190,7 +218,7 @@ func TestDisabledGateLeavesEveryRouteOpen(t *testing.T) {
 func TestDisabledGateNeverTouchesTheStore(t *testing.T) {
 	store := newMemStore()
 	store.put("tok", liveSession(true))
-	g := newGate(t, nil, store)
+	g := newGate(t, newTestApp(t), nil, store)
 	app := probeApp(g)
 
 	resp := do(t, app, withCookie(httptest.NewRequest(http.MethodGet, "/open", nil), "myapp_session", "tok"))
@@ -206,9 +234,9 @@ func TestDisabledGateNeverTouchesTheStore(t *testing.T) {
 func TestSessionRoutes404WhenLoginIsNotConfigured(t *testing.T) {
 	store := newMemStore()
 	store.put("tok", liveSession(true))
-	g := newGate(t, nil, store)
-	app := fiber.New()
-	g.Register(app)
+	a := newTestApp(t)
+	g := newGate(t, a, nil, store)
+	app := a.HTTP
 
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, g.SessionsPath()},
@@ -227,9 +255,9 @@ func TestSessionRoutes404WhenLoginIsNotConfigured(t *testing.T) {
 func TestLogoutKeepsWorkingAfterLoginIsDisabled(t *testing.T) {
 	store := newMemStore()
 	store.put("tok", liveSession(true))
-	g := newGate(t, nil, store)
-	app := fiber.New()
-	g.Register(app)
+	a := newTestApp(t)
+	g := newGate(t, a, nil, store)
+	app := a.HTTP
 
 	resp := do(t, app, withCookie(httptest.NewRequest(http.MethodPost, g.LogoutPath(), nil), "myapp_session", "tok"))
 	if resp.StatusCode != http.StatusNoContent {
@@ -247,9 +275,9 @@ func TestLogoutKeepsWorkingAfterLoginIsDisabled(t *testing.T) {
 // switching the login off flips secure to false while a __Host- cookie is still
 // on the client. A logout that could not clear it would be a lie.
 func TestLogoutClearsEveryCookieNameItCouldHaveUsed(t *testing.T) {
-	g := newGate(t, nil, newMemStore())
-	app := fiber.New()
-	g.Register(app)
+	a := newTestApp(t)
+	g := newGate(t, a, nil, newMemStore())
+	app := a.HTTP
 
 	resp := do(t, app, httptest.NewRequest(http.MethodPost, g.LogoutPath(), nil))
 	for _, name := range []string{"myapp_session", "__Host-myapp_session"} {
@@ -274,7 +302,7 @@ func clearsCookie(resp *http.Response, name string) bool {
 func TestResolveIdentityRecognisesALiveSession(t *testing.T) {
 	store := newMemStore()
 	store.put("tok", liveSession(true))
-	g := newGate(t, testProvider(t, "http://app.test"), store)
+	g := newGate(t, newTestApp(t), testProvider(t, "http://app.test"), store)
 	app := probeApp(g)
 
 	resp := do(t, app, withCookie(httptest.NewRequest(http.MethodGet, "/open", nil), "myapp_session", "tok"))
@@ -288,7 +316,7 @@ func TestGuardsDistinguishAnonymousFromNonOwner(t *testing.T) {
 	store := newMemStore()
 	store.put("owner", liveSession(true))
 	store.put("member", liveSession(false))
-	g := newGate(t, testProvider(t, "http://app.test"), store)
+	g := newGate(t, newTestApp(t), testProvider(t, "http://app.test"), store)
 	app := probeApp(g)
 
 	cases := []struct {
@@ -324,7 +352,7 @@ func TestExpiredSessionIsRejectedEvenByANaiveStore(t *testing.T) {
 	s.ExpiresAt = now.Add(-time.Second) // dead, but the store will still hand it over
 	store.put("tok", s)
 
-	g := newGate(t, testProvider(t, "http://app.test"), store)
+	g := newGate(t, newTestApp(t), testProvider(t, "http://app.test"), store)
 	app := probeApp(g)
 
 	resp := do(t, app, withCookie(httptest.NewRequest(http.MethodGet, "/admin", nil), "myapp_session", "tok"))
@@ -343,7 +371,7 @@ func TestSessionOverTheAbsoluteCapIsRejectedHoweverActive(t *testing.T) {
 	s.ExpiresAt = now.Add(time.Hour)            // …but freshly renewed
 	store.put("tok", s)
 
-	g := newGate(t, testProvider(t, "http://app.test"), store)
+	g := newGate(t, newTestApp(t), testProvider(t, "http://app.test"), store)
 	app := probeApp(g)
 
 	resp := do(t, app, withCookie(httptest.NewRequest(http.MethodGet, "/admin", nil), "myapp_session", "tok"))
@@ -363,7 +391,7 @@ func TestTouchClampsRenewalToTheAbsoluteCap(t *testing.T) {
 	s.ExpiresAt = now.Add(time.Hour)
 	store.put("tok", s)
 
-	g := newGate(t, testProvider(t, "http://app.test"), store)
+	g := newGate(t, newTestApp(t), testProvider(t, "http://app.test"), store)
 	app := probeApp(g)
 	do(t, app, withCookie(httptest.NewRequest(http.MethodGet, "/open", nil), "myapp_session", "tok"))
 
@@ -384,7 +412,7 @@ func TestTouchClampsRenewalToTheAbsoluteCap(t *testing.T) {
 func TestFreshSessionIsNotTouched(t *testing.T) {
 	store := newMemStore()
 	store.put("tok", liveSession(true)) // LastSeenAt == now
-	g := newGate(t, testProvider(t, "http://app.test"), store)
+	g := newGate(t, newTestApp(t), testProvider(t, "http://app.test"), store)
 	app := probeApp(g)
 
 	do(t, app, withCookie(httptest.NewRequest(http.MethodGet, "/open", nil), "myapp_session", "tok"))
@@ -404,7 +432,7 @@ func TestFreshSessionIsNotTouched(t *testing.T) {
 func TestHTTPSDeploymentUsesAndOnlyReadsThePrefixedCookie(t *testing.T) {
 	store := newMemStore()
 	store.put("tok", liveSession(true))
-	g := newGate(t, testProvider(t, "https://app.example.com"), store)
+	g := newGate(t, newTestApp(t), testProvider(t, "https://app.example.com"), store)
 	app := probeApp(g)
 
 	t.Run("prefixed name is read", func(t *testing.T) {
@@ -431,9 +459,9 @@ func TestHTTPSDeploymentUsesAndOnlyReadsThePrefixedCookie(t *testing.T) {
 // rejects the whole header — which would make a clear silently a no-op on
 // exactly the deployments that use the prefix.
 func TestClearingAPrefixedCookieKeepsTheAttributesTheBrowserDemands(t *testing.T) {
-	g := newGate(t, nil, newMemStore())
-	app := fiber.New()
-	g.Register(app)
+	a := newTestApp(t)
+	g := newGate(t, a, nil, newMemStore())
+	app := a.HTTP
 
 	resp := do(t, app, httptest.NewRequest(http.MethodPost, g.LogoutPath(), nil))
 	for _, c := range resp.Cookies() {
@@ -564,10 +592,9 @@ func TestBoundedDescriptionCollapsesNewlinesAndBounds(t *testing.T) {
 // LoginURL must always be present: the sign-in screen needs somewhere to point
 // precisely when nobody is signed in, which is when it is rendered.
 func TestWhoamiAlwaysCarriesALoginURL(t *testing.T) {
-	g := newGate(t, testProvider(t, "http://app.test"), newMemStore())
-	app := fiber.New()
-	app.Use(g.ResolveIdentity())
-	g.Register(app)
+	a := newTestApp(t)
+	g := newGate(t, a, testProvider(t, "http://app.test"), newMemStore())
+	app := a.HTTP
 
 	resp := do(t, app, httptest.NewRequest(http.MethodGet, g.WhoamiPath(), nil))
 	body, _ := io.ReadAll(resp.Body)
@@ -584,10 +611,9 @@ func TestWhoamiAlwaysCarriesALoginURL(t *testing.T) {
 func TestWhoamiDistinguishesNonOwnerFromAnonymous(t *testing.T) {
 	store := newMemStore()
 	store.put("member", liveSession(false))
-	g := newGate(t, testProvider(t, "http://app.test"), store)
-	app := fiber.New()
-	app.Use(g.ResolveIdentity())
-	g.Register(app)
+	a := newTestApp(t)
+	g := newGate(t, a, testProvider(t, "http://app.test"), store)
+	app := a.HTTP
 
 	resp := do(t, app, withCookie(httptest.NewRequest(http.MethodGet, g.WhoamiPath(), nil), "myapp_session", "member"))
 	body, _ := io.ReadAll(resp.Body)
@@ -603,10 +629,9 @@ func TestWhoamiDistinguishesNonOwnerFromAnonymous(t *testing.T) {
 func TestSessionListNeverExposesTheTokenHash(t *testing.T) {
 	store := newMemStore()
 	token := store.put("owner-token", liveSession(true))
-	g := newGate(t, testProvider(t, "http://app.test"), store)
-	app := fiber.New()
-	app.Use(g.ResolveIdentity())
-	g.Register(app)
+	a := newTestApp(t)
+	g := newGate(t, a, testProvider(t, "http://app.test"), store)
+	app := a.HTTP
 
 	resp := do(t, app, withCookie(httptest.NewRequest(http.MethodGet, g.SessionsPath(), nil), "myapp_session", token))
 	if resp.StatusCode != http.StatusOK {
@@ -628,10 +653,9 @@ func TestSessionListNeverExposesTheTokenHash(t *testing.T) {
 func TestRevokingAnUnknownSessionSucceeds(t *testing.T) {
 	store := newMemStore()
 	token := store.put("owner-token", liveSession(true))
-	g := newGate(t, testProvider(t, "http://app.test"), store)
-	app := fiber.New()
-	app.Use(g.ResolveIdentity())
-	g.Register(app)
+	a := newTestApp(t)
+	g := newGate(t, a, testProvider(t, "http://app.test"), store)
+	app := a.HTTP
 
 	resp := do(t, app, withCookie(
 		httptest.NewRequest(http.MethodDelete, g.SessionsPath()+"/no-such-session", nil),
@@ -648,7 +672,7 @@ func TestRevokingAnUnknownSessionSucceeds(t *testing.T) {
 // configured in two places, so nothing but a test holds them together.
 func TestCallbackPathMatchesTheProviderRedirectURI(t *testing.T) {
 	p := testProvider(t, "https://app.example.com")
-	g := newGate(t, p, newMemStore())
+	g := newGate(t, newTestApp(t), p, newMemStore())
 	if !strings.HasSuffix(p.RedirectURI(), g.CallbackPath()) {
 		t.Errorf("provider redirect %q does not end in the gate's callback path %q",
 			p.RedirectURI(), g.CallbackPath())
@@ -661,7 +685,7 @@ func TestCallbackPathMatchesTheProviderRedirectURI(t *testing.T) {
 func TestResolveIdentityIsRaceFree(t *testing.T) {
 	store := newMemStore()
 	store.put("tok", liveSession(true))
-	g := newGate(t, testProvider(t, "http://app.test"), store)
+	g := newGate(t, newTestApp(t), testProvider(t, "http://app.test"), store)
 	app := probeApp(g)
 
 	var wg sync.WaitGroup
@@ -673,4 +697,74 @@ func TestResolveIdentityIsRaceFree(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// ── New wires the gate ──────────────────────────────────────────────────────
+
+// One call builds the gate and puts it in the boot report, so a caller never
+// writes Declare for login.
+func TestNewDeclaresTheLoginComponent(t *testing.T) {
+	a := newTestApp(t)
+	newGate(t, a, nil, newMemStore())
+
+	c, ok := componentNamed(a, "login")
+	if !ok {
+		t.Fatalf("login missing from Components(): %+v", a.Components())
+	}
+	if c.On {
+		t.Error("a gate with no Provider must be declared off")
+	}
+	if c.Detail == "" {
+		t.Error("an off gate must say why in Detail")
+	}
+}
+
+// A configured gate must name its issuer in the report, so an operator can see
+// which identity provider this process actually trusts.
+func TestNewDeclaresAnEnabledGateWithItsIssuer(t *testing.T) {
+	a := newTestApp(t)
+	newGate(t, a, testProvider(t, "https://app.example.com"), newMemStore())
+
+	c, ok := componentNamed(a, "login")
+	if !ok {
+		t.Fatalf("login missing from Components(): %+v", a.Components())
+	}
+	if !c.On {
+		t.Error("a gate with a Provider must be declared on")
+	}
+	if c.Detail != "https://id.example.com" {
+		t.Errorf("Detail = %q, want the issuer", c.Detail)
+	}
+}
+
+// The handshake routes are mounted by New, not by a separate Register call that
+// a caller can forget.
+func TestNewMountsTheHandshakeRoutes(t *testing.T) {
+	a := newTestApp(t)
+	g := newGate(t, a, testProvider(t, "http://app.test"), newMemStore())
+
+	resp := do(t, a.HTTP, httptest.NewRequest(http.MethodGet, g.LoginPath(), nil))
+	if resp.StatusCode == http.StatusNotFound {
+		t.Errorf("%s returned 404 — New did not mount the handshake routes", g.LoginPath())
+	}
+}
+
+// The ordering New exists to guarantee. Whoami reads the identity that
+// ResolveIdentity resolves, so the middleware has to be mounted ahead of the
+// route. Registering them the other way round makes whoami report anonymous for
+// a signed-in user — silently, and with every other test still passing, because
+// a caller who mounts its own middleware first would never see it.
+func TestNewMountsResolveIdentityAheadOfTheRoutes(t *testing.T) {
+	store := newMemStore()
+	token := store.put("owner-token", liveSession(true))
+	a := newTestApp(t)
+	g := newGate(t, a, testProvider(t, "http://app.test"), store)
+
+	resp := do(t, a.HTTP, withCookie(
+		httptest.NewRequest(http.MethodGet, g.WhoamiPath(), nil), "myapp_session", token))
+	body, _ := io.ReadAll(resp.Body)
+
+	if !strings.Contains(string(body), "u-1") {
+		t.Errorf("whoami = %s\nwant the resolved subject — ResolveIdentity did not run before the route", body)
+	}
 }

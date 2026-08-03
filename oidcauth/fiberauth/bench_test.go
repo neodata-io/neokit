@@ -1,6 +1,8 @@
 package fiberauth
 
 import (
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +10,8 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	neoapp "github.com/neodata-io/neokit/app"
+	"github.com/neodata-io/neokit/config"
 	"github.com/neodata-io/neokit/oidcauth"
 )
 
@@ -53,7 +57,7 @@ func runBench(b *testing.B, app *fiber.App, req func() *http.Request) {
 // The zero-cost case: no login configured. The middleware must return on its
 // first branch.
 func BenchmarkResolveIdentityDisabled(b *testing.B) {
-	g := New(Options{
+	g := New(newBenchApp(b), Options{
 		Provider: func() *oidcauth.Provider { return nil },
 		Sessions: newMemStore(), CookiePrefix: "myapp", RateLimit: -1,
 	})
@@ -68,7 +72,7 @@ func BenchmarkResolveIdentityEnabledNoCookie(b *testing.B) {
 		Issuer: "https://id.example.com", ClientID: "app", ClientSecret: "s",
 		BaseURL: "https://app.example.com",
 	})
-	g := New(Options{
+	g := New(newBenchApp(b), Options{
 		Provider: func() *oidcauth.Provider { return p },
 		Sessions: newMemStore(), CookiePrefix: "myapp", RateLimit: -1,
 	})
@@ -85,7 +89,7 @@ func BenchmarkResolveIdentityLiveSession(b *testing.B) {
 	})
 	store := newMemStore()
 	store.put("tok", liveSession(true))
-	g := New(Options{
+	g := New(newBenchApp(b), Options{
 		Provider: func() *oidcauth.Provider { return p },
 		Sessions: store, CookiePrefix: "myapp", RateLimit: -1,
 	})
@@ -98,7 +102,7 @@ func BenchmarkResolveIdentityLiveSession(b *testing.B) {
 // A disabled guard is a straight pass-through; it must cost no more than the
 // bare handler.
 func BenchmarkGuardDisabled(b *testing.B) {
-	g := New(Options{
+	g := New(newBenchApp(b), Options{
 		Provider: func() *oidcauth.Provider { return nil },
 		Sessions: newMemStore(), CookiePrefix: "myapp", RateLimit: -1,
 	})
@@ -130,4 +134,20 @@ func BenchmarkSafeReturnPath(b *testing.B) {
 	for b.Loop() {
 		_ = SafeReturnPath("/dashboard/energy?tab=today")
 	}
+}
+
+// newBenchApp is newTestApp for a benchmark: New mounts the gate onto an app, so
+// even a benchmark that only measures middleware has to supply one.
+func newBenchApp(b *testing.B) *neoapp.App {
+	b.Helper()
+	a, err := neoapp.New(neoapp.Options{
+		Name: "benchapp",
+		Base: config.Base{Port: 0, LogLevel: "error", LogFormat: "json"},
+		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		b.Fatalf("app.New: %v", err)
+	}
+	b.Cleanup(func() { _ = a.Close() })
+	return a
 }
