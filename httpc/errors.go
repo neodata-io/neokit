@@ -3,13 +3,23 @@ package httpc
 import (
 	"errors"
 	"net/http"
+
+	"github.com/neodata-io/neokit/errs"
 )
 
 // ErrNotFound is the shared sentinel an API client returns (typically wrapped)
 // when a remote resource does not exist. Callers match it with errors.Is and
 // [Classify] maps it to [FaultNotFound], so a client has to return this value
 // rather than a private error of its own to participate in either contract.
-var ErrNotFound = errors.New("not found")
+//
+// It is an alias of [github.com/neodata-io/neokit/errs.ErrNotFound], which makes
+// "the upstream answered 404" and "this service has no such record" one value.
+// The collapse is deliberate — it is already true of any service whose own
+// domain sentinel reaches here — but it has an edge worth knowing: a handler
+// that returns a raw httpc error from a failed outbound call renders 404 to its
+// own client rather than 502. Wrap or map at that boundary if the distinction
+// matters there.
+var ErrNotFound = errs.ErrNotFound
 
 // ErrAlreadyExists is the shared sentinel an API client returns (typically
 // wrapped) when a resource cannot be created because one with the same identity

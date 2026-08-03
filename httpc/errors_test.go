@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/neodata-io/neokit/errs"
 )
 
 func TestIsConflict(t *testing.T) {
@@ -38,5 +40,24 @@ func TestErrAlreadyExists_Wrapped(t *testing.T) {
 	}
 	if errors.Is(err, ErrNotFound) {
 		t.Error("ErrAlreadyExists must not be confused with ErrNotFound")
+	}
+}
+
+// The two must be the same value, not two errors with the same text. A consumer
+// whose domain sentinel reaches this one (NeoGate's domain.ErrNotFound does, via
+// neogate.ErrNotFound) relies on that identity: if this were a copy, fiberx's
+// standard mapper would never match it and every 404 would render as a 500.
+func TestErrNotFoundIsTheErrsValue(t *testing.T) {
+	if ErrNotFound != errs.ErrNotFound {
+		t.Fatal("httpc.ErrNotFound is a copy, not errs.ErrNotFound — errors.Is will not match across the boundary")
+	}
+}
+
+// Classify is the other contract on this sentinel and must keep working now that
+// the value is owned by another package.
+func TestWrappedErrNotFoundStillClassifies(t *testing.T) {
+	wrapped := fmt.Errorf("GET /users/1: %w", errs.ErrNotFound)
+	if got := Classify(wrapped); got != FaultNotFound {
+		t.Errorf("Classify = %v, want FaultNotFound", got)
 	}
 }
