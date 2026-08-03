@@ -2,13 +2,31 @@ package app
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/neodata-io/neokit/declare"
+	"github.com/neodata-io/neokit/config"
+	"github.com/neodata-io/neokit/safe"
 )
+
+func newInternalApp(t *testing.T) *App {
+	t.Helper()
+
+	a, err := New(Options{
+		Name: "testapp", Version: "1.2.3",
+		Base: config.Base{Port: 0, LogLevel: "error", LogFormat: "json"},
+		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	return a
+}
 
 // The bug this change exists to fix. A job still finishing its write when
 // SIGTERM arrives must be joined before the store it writes to closes;
@@ -21,20 +39,19 @@ func TestBackgroundWorkIsJoinedBeforeTheCallersTeardown(t *testing.T) {
 	var order []string
 	record := func(s string) { mu.Lock(); defer mu.Unlock(); order = append(order, s) }
 
-	// Declared first, as a service opens its database first.
-	a.ClosesOnShutdown("store", "test", func(context.Context) error {
+	// Pushed first, as a service opens its database first.
+	a.Shutdown.Push("store", func(context.Context) error {
 		record("store closed")
 		return nil
 	})
-	// Declared after it, and deliberately slow to stop: the sleep is what a
-	// join has to wait out and a missing one races straight past.
-	declare.Add(a, "writer", declare.Run(func(ctx context.Context) {
-		<-ctx.Done()
+	// Started after it, and deliberately slow to stop: the sleep is what a join
+	// has to wait out and a missing one races straight past.
+	safe.Go(a.Context(), "writer", func() {
+		<-a.Context().Done()
 		time.Sleep(50 * time.Millisecond)
 		record("write finished")
-	}))
+	})
 
-	a.startBackgroundWork()
 	a.pushRunSteps()
 	if err := a.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -47,39 +64,16 @@ func TestBackgroundWorkIsJoinedBeforeTheCallersTeardown(t *testing.T) {
 	}
 }
 
-// An unconfigured optional feature must not start doing work — the rule Ready
-// already follows. Backups with no directory configured is the real case.
-func TestBackgroundWorkSkipsComponentsThatAreOff(t *testing.T) {
-	a := newInternalApp(t)
-
-	started := make(chan struct{})
-	declare.Add(a, "backups",
-		declare.Run(func(context.Context) { close(started) }),
-		declare.Disabled("no backup directory configured"))
-
-	a.startBackgroundWork()
-	a.pushRunSteps()
-	_ = a.Close()
-
-	select {
-	case <-started:
-		t.Error("started the work of a component declared off")
-	default:
-	}
-}
-
 // The application context is what a job selects on, so it has to be the one
 // cancelled during teardown rather than a fresh Background().
 func TestBackgroundWorkRunsOnTheApplicationContext(t *testing.T) {
 	a := newInternalApp(t)
 
 	got := make(chan context.Context, 1)
-	declare.Add(a, "writer", declare.Run(func(ctx context.Context) {
-		got <- ctx
-		<-ctx.Done()
-	}))
-
-	a.startBackgroundWork()
+	safe.Go(a.Context(), "writer", func() {
+		got <- a.Context()
+		<-a.Context().Done()
+	})
 
 	var ctx context.Context
 	select {
