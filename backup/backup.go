@@ -22,7 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/neodata-io/neokit/declare"
 	"github.com/neodata-io/neokit/jobs"
 )
 
@@ -95,18 +94,18 @@ type Service struct {
 	dir       string
 	retention int
 	prefix    string
+	at        Clock
 	now       func() time.Time
 }
 
-// New wires the service and declares the "backups" line on d, along with the
-// schedule that keeps it true: on with the time and retention when a directory
-// is configured, off with the reason when not. See [Options] for field meaning.
+// New wires the service: the daily schedule Run drives keeps the backup
+// directory current when one is configured. See [Options] for field meaning.
 //
 // An [Options.At] outside 0:00–23:59 panics here, where the value is still
 // traceable to the call that supplied it. The scheduler panics on one too, but
 // it does so inside a supervised goroutine minutes later — a stack trace with no
 // caller in it, on a loop that never produces a backup.
-func New(d declare.Declarer, s Snapshotter, o Options) *Service {
+func New(s Snapshotter, o Options) *Service {
 	if o.Retention < 1 {
 		o.Retention = 1
 	}
@@ -122,15 +121,17 @@ func New(d declare.Declarer, s Snapshotter, o Options) *Service {
 		panic(fmt.Sprintf("backup: Options.At is %d:%d, which is not a time of day", at.Hour, at.Minute))
 	}
 
-	svc := &Service{snap: s, dir: o.Dir, retention: o.Retention, prefix: prefix, now: time.Now}
-	if o.Dir == "" {
-		declare.Add(d, "backups", declare.Disabled("no backup directory configured"))
-		return svc
+	return &Service{snap: s, dir: o.Dir, retention: o.Retention, prefix: prefix, at: at, now: time.Now}
+}
+
+// Run drives the daily backup schedule until ctx is done. It's a no-op that
+// returns immediately when no backup directory is configured — start it
+// unconditionally with safe.Go(a.Context(), "backups", svc.Run).
+func (s *Service) Run(ctx context.Context) {
+	if strings.TrimSpace(s.dir) == "" {
+		return
 	}
-	declare.Add(d, "backups",
-		declare.Detail(fmt.Sprintf("daily at %s, keep %d", at, o.Retention)),
-		declare.Run(svc.schedule(at).Run))
-	return svc
+	s.schedule(s.at).Run(ctx)
 }
 
 // schedule is the daily job that keeps the declared line honest.

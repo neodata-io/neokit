@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/neodata-io/neokit/backup"
-	"github.com/neodata-io/neokit/declare"
 )
 
 // fakeSnap writes a recognisable file wherever it is pointed.
@@ -25,7 +24,7 @@ func (f *fakeSnap) SnapshotTo(_ context.Context, dst string) error {
 func TestWriteDailyIsIdempotentWithinADay(t *testing.T) {
 	dir := t.TempDir()
 	snap := &fakeSnap{}
-	s := backup.New(&declRec{}, snap, backup.Options{Dir: dir, Retention: 7})
+	s := backup.New(snap, backup.Options{Dir: dir, Retention: 7})
 
 	for range 3 {
 		if err := s.WriteDaily(context.Background()); err != nil {
@@ -46,7 +45,7 @@ func TestRetentionKeepsTheNewest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 3})
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 3})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
@@ -70,7 +69,7 @@ func TestRetentionKeepsTheNewest(t *testing.T) {
 // written, which is the one outcome a backup system must never have.
 func TestRetentionIsClampedToAtLeastOne(t *testing.T) {
 	dir := t.TempDir()
-	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 0})
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 0})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
@@ -87,7 +86,7 @@ func TestRetentionIsClampedToAtLeastOne(t *testing.T) {
 // working directory.
 func TestEmptyDirDisablesScheduledBackups(t *testing.T) {
 	snap := &fakeSnap{}
-	s := backup.New(&declRec{}, snap, backup.Options{Dir: "", Retention: 7})
+	s := backup.New(snap, backup.Options{Dir: "", Retention: 7})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("a disabled backup must not be an error: %v", err)
 	}
@@ -100,7 +99,7 @@ func TestEmptyDirDisablesScheduledBackups(t *testing.T) {
 // reflect the database now, not whenever the scheduler last ran.
 func TestBackupStreamsAFreshSnapshot(t *testing.T) {
 	snap := &fakeSnap{}
-	s := backup.New(&declRec{}, snap, backup.Options{Dir: t.TempDir(), Retention: 7})
+	s := backup.New(snap, backup.Options{Dir: t.TempDir(), Retention: 7})
 
 	var buf writeCounter
 	if err := s.Backup(context.Background(), &buf); err != nil {
@@ -129,7 +128,7 @@ func TestListIsNewestFirst(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 10})
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 10})
 	got, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -145,7 +144,7 @@ func TestListIsNewestFirst(t *testing.T) {
 func TestCustomPrefixIsUsedForWritingAndReading(t *testing.T) {
 	dir := t.TempDir()
 	snap := &fakeSnap{}
-	s := backup.New(&declRec{}, snap, backup.Options{Dir: dir, Retention: 7, Prefix: "neogate-"})
+	s := backup.New(snap, backup.Options{Dir: dir, Retention: 7, Prefix: "neogate-"})
 
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
@@ -169,7 +168,7 @@ func TestAForeignPrefixIsIgnoredEntirely(t *testing.T) {
 	if err := os.WriteFile(foreign, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 1, Prefix: "backup-"})
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 1, Prefix: "backup-"})
 
 	// Write enough of our own that pruning is guaranteed to run.
 	if err := s.WriteDaily(context.Background()); err != nil {
@@ -191,7 +190,7 @@ func TestAForeignPrefixIsIgnoredEntirely(t *testing.T) {
 
 func TestEmptyPrefixFallsBackToTheDefault(t *testing.T) {
 	dir := t.TempDir()
-	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
@@ -201,46 +200,15 @@ func TestEmptyPrefixFallsBackToTheDefault(t *testing.T) {
 	}
 }
 
-// declRec captures what New declares.
-type declRec struct{ got []declare.Component }
-
-func (r *declRec) Declare(c declare.Component) { r.got = append(r.got, c) }
-
-// New declares the backups line itself: on with the retention when a directory
-// is configured, off with the reason when not.
-func TestNewDeclaresBackups(t *testing.T) {
-	var r declRec
-	backup.New(&r, &fakeSnap{}, backup.Options{Dir: t.TempDir(), Retention: 7})
-	if len(r.got) != 1 {
-		t.Fatalf("declared %d components, want 1", len(r.got))
-	}
-	c := r.got[0]
-	if c.Name != "backups" || !c.On || !strings.Contains(c.Detail, "keep 7") {
-		t.Errorf("component = %+v", c)
-	}
-
-	var r2 declRec
-	backup.New(&r2, &fakeSnap{}, backup.Options{})
-	if c := r2.got[0]; c.On || c.Detail == "" {
-		t.Errorf("no Dir must declare off with a reason, got %+v", c)
-	}
-}
-
-// The line has to have something behind it. Declaring "daily, keep 7" and
+// Run has to have something behind it. Configuring "daily, keep 7" and
 // scheduling nothing is the bug this replaces, so the assertion is the file.
-func TestDeclaredWorkWritesABackup(t *testing.T) {
+func TestRunWritesABackup(t *testing.T) {
 	dir := t.TempDir()
-	var r declRec
-	backup.New(&r, &fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
-
-	c := r.got[0]
-	if c.Run == nil {
-		t.Fatal("backups declared no background work")
-	}
+	svc := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
-	go func() { defer close(stopped); c.Run(ctx) }()
+	go func() { defer close(stopped); svc.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-stopped })
 
 	// The job writes today's file before waiting for the next occurrence, so a
@@ -255,37 +223,9 @@ func TestDeclaredWorkWritesABackup(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the declared work wrote no backup")
+			t.Fatal("Run wrote no backup")
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// A schedule nobody can read is a schedule nobody can verify, so the report
-// states the hour it fires at and the default is not a secret.
-func TestScheduleIsStatedAndConfigurable(t *testing.T) {
-	var r declRec
-	backup.New(&r, &fakeSnap{}, backup.Options{Dir: t.TempDir(), Retention: 7})
-	if got := r.got[0].Detail; !strings.Contains(got, "03:00") {
-		t.Errorf("detail = %q, want the default 03:00 stated", got)
-	}
-
-	var r2 declRec
-	backup.New(&r2, &fakeSnap{}, backup.Options{
-		Dir: t.TempDir(), Retention: 7, At: &backup.Clock{Hour: 21, Minute: 30},
-	})
-	if got := r2.got[0].Detail; !strings.Contains(got, "21:30") {
-		t.Errorf("detail = %q, want the configured 21:30 stated", got)
-	}
-}
-
-// Midnight is a time of day like any other. It is only unsayable if the zero
-// value doubles as "unset" — which is why At is a pointer.
-func TestMidnightIsExpressible(t *testing.T) {
-	var r declRec
-	backup.New(&r, &fakeSnap{}, backup.Options{Dir: t.TempDir(), At: &backup.Clock{}})
-	if got := r.got[0].Detail; !strings.Contains(got, "00:00") {
-		t.Errorf("detail = %q, want the requested 00:00 rather than the default", got)
 	}
 }
 
@@ -300,17 +240,21 @@ func TestAnImpossibleTimeFailsAtWiring(t *testing.T) {
 					t.Errorf("New accepted At = %s", at)
 				}
 			}()
-			var r declRec
-			backup.New(&r, &fakeSnap{}, backup.Options{Dir: t.TempDir(), At: &at})
+			backup.New(&fakeSnap{}, backup.Options{Dir: t.TempDir(), At: &at})
 		})
 	}
 }
 
-// Off means off: no directory, no work started.
-func TestNoDirDeclaresNoWork(t *testing.T) {
-	var r declRec
-	backup.New(&r, &fakeSnap{}, backup.Options{})
-	if r.got[0].Run != nil {
-		t.Error("a disabled backup must declare no background work")
+// Off means off: no directory, Run returns immediately instead of scheduling.
+func TestRunIsANoopWhenNoDirIsConfigured(t *testing.T) {
+	svc := backup.New(&fakeSnap{}, backup.Options{})
+
+	done := make(chan struct{})
+	go func() { defer close(done); svc.Run(context.Background()) }()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run must return immediately when no backup directory is configured")
 	}
 }
