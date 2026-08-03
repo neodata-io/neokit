@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/neodata-io/neokit/declare"
 	"github.com/neodata-io/neokit/httpc"
 )
 
@@ -37,7 +36,7 @@ func recorder(t *testing.T, status int) (*httptest.Server, *capture) {
 
 func TestWebhookPostsTheDocumentedPayload(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
-	s := NewWebhook(&declRec{}, srv.URL, "sh4red", Options{})
+	s := NewWebhook(srv.URL, "sh4red", Options{})
 
 	err := s.Send(context.Background(), Notification{
 		Title: "Backup complete", Body: "3 files", Level: LevelSuccess,
@@ -74,7 +73,7 @@ func TestWebhookPostsTheDocumentedPayload(t *testing.T) {
 // receiver might compare against.
 func TestWebhookOmitsTheSecretHeaderWhenUnset(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
-	if err := NewWebhook(&declRec{}, srv.URL, "", Options{}).Send(context.Background(), Notification{Title: "t"}); err != nil {
+	if err := NewWebhook(srv.URL, "", Options{}).Send(context.Background(), Notification{Title: "t"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if _, present := got.header["X-Webhook-Secret"]; present {
@@ -84,7 +83,7 @@ func TestWebhookOmitsTheSecretHeaderWhenUnset(t *testing.T) {
 
 func TestNtfySendsTitleAndBodySeparately(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
-	s := NewNtfy(&declRec{}, srv.URL+"/my-topic", "t0ken", Options{})
+	s := NewNtfy(srv.URL+"/my-topic", "t0ken", Options{})
 
 	err := s.Send(context.Background(), Notification{
 		Title: "Disk almost full", Body: "92% used", Level: LevelWarning,
@@ -117,7 +116,7 @@ func TestNtfySendsTitleAndBodySeparately(t *testing.T) {
 // rejects a malformed one outright.
 func TestNtfyStripsControlCharactersFromHeaders(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
-	s := NewNtfy(&declRec{}, srv.URL, "", Options{})
+	s := NewNtfy(srv.URL, "", Options{})
 
 	err := s.Send(context.Background(), Notification{
 		Title: "line one\r\nX-Injected: yes",
@@ -147,7 +146,7 @@ func TestNtfyFallsBackToALevelTag(t *testing.T) {
 		LevelInfo:    "bell",
 	} {
 		srv, got := recorder(t, http.StatusOK)
-		if err := NewNtfy(&declRec{}, srv.URL, "", Options{}).Send(context.Background(),
+		if err := NewNtfy(srv.URL, "", Options{}).Send(context.Background(),
 			Notification{Title: "t", Level: level}); err != nil {
 			t.Fatalf("Send: %v", err)
 		}
@@ -159,7 +158,7 @@ func TestNtfyFallsBackToALevelTag(t *testing.T) {
 
 func TestAppriseUsesItsOwnTypeVocabulary(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
-	s := NewApprise(&declRec{}, srv.URL+"/notify/", Options{})
+	s := NewApprise(srv.URL+"/notify/", Options{})
 
 	if err := s.Send(context.Background(), Notification{
 		Title: "Build failed", Body: "step 3", Level: LevelFailure, Tags: []string{"ci"},
@@ -182,7 +181,7 @@ func TestAppriseUsesItsOwnTypeVocabulary(t *testing.T) {
 // is best-effort, and dropping one over a typo'd severity is the wrong trade.
 func TestAnUnknownLevelDegradesToInfo(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
-	if err := NewApprise(&declRec{}, srv.URL, Options{}).Send(context.Background(),
+	if err := NewApprise(srv.URL, Options{}).Send(context.Background(),
 		Notification{Title: "t", Level: Level("shouty")}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -200,7 +199,7 @@ func TestAFailedDeliveryClassifiesAsAnAPIError(t *testing.T) {
 	}
 	for status, wantFault := range cases {
 		srv, _ := recorder(t, status)
-		err := NewWebhook(&declRec{}, srv.URL, "", Options{}).Send(context.Background(), Notification{Title: "t"})
+		err := NewWebhook(srv.URL, "", Options{}).Send(context.Background(), Notification{Title: "t"})
 		if err == nil {
 			t.Fatalf("status %d: want an error", status)
 		}
@@ -222,8 +221,8 @@ func TestMultiSendsToEveryBackendAndJoinsErrors(t *testing.T) {
 	bad, badGot := recorder(t, http.StatusInternalServerError)
 
 	m := Multi{
-		NewWebhook(&declRec{}, ok.URL, "", Options{}),
-		NewApprise(&declRec{}, bad.URL, Options{}),
+		NewWebhook(ok.URL, "", Options{}),
+		NewApprise(bad.URL, Options{}),
 		nil, // a nil sender is skipped rather than panicking
 	}
 	err := m.Send(context.Background(), Notification{Title: "t", Body: "b"})
@@ -240,7 +239,7 @@ func TestMultiSendsToEveryBackendAndJoinsErrors(t *testing.T) {
 
 func TestMultiWithNoFailuresReturnsNil(t *testing.T) {
 	ok, _ := recorder(t, http.StatusOK)
-	m := Multi{NewWebhook(&declRec{}, ok.URL, "", Options{})}
+	m := Multi{NewWebhook(ok.URL, "", Options{})}
 	if err := m.Send(context.Background(), Notification{Title: "t"}); err != nil {
 		t.Errorf("Send: %v", err)
 	}
@@ -253,7 +252,7 @@ func TestATransportFailureDoesNotLeakTheURLCredential(t *testing.T) {
 	url := dead.URL
 	dead.Close()
 
-	err := NewWebhook(&declRec{}, url+"/hook?token=s3cret-token", "", Options{}).
+	err := NewWebhook(url+"/hook?token=s3cret-token", "", Options{}).
 		Send(context.Background(), Notification{Title: "t"})
 	if err == nil {
 		t.Fatal("want a transport error")
@@ -269,7 +268,7 @@ func TestSendHonoursContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := NewWebhook(&declRec{}, srv.URL, "", Options{}).Send(ctx, Notification{Title: "t"})
+	err := NewWebhook(srv.URL, "", Options{}).Send(ctx, Notification{Title: "t"})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
@@ -278,7 +277,7 @@ func TestSendHonoursContextCancellation(t *testing.T) {
 func BenchmarkWebhookMarshal(b *testing.B) {
 	srv, _ := recorder(&testing.T{}, http.StatusOK)
 	defer srv.Close()
-	s := NewWebhook(&declRec{}, srv.URL, "secret", Options{})
+	s := NewWebhook(srv.URL, "secret", Options{})
 	n := Notification{Title: "Backup complete", Body: "3 files", Level: LevelSuccess}
 	ctx := context.Background()
 	b.ReportAllocs()
@@ -287,28 +286,3 @@ func BenchmarkWebhookMarshal(b *testing.B) {
 	}
 }
 
-// declRec captures what a constructor declares.
-type declRec struct{ got []declare.Component }
-
-func (r *declRec) Declare(c declare.Component) { r.got = append(r.got, c) }
-
-// A topic URL is a capability secret, so only the host may reach the boot
-// report — the redaction rule the Send error path already follows.
-func TestSendersDeclareHostOnly(t *testing.T) {
-	srv, _ := recorder(t, http.StatusOK)
-	var r declRec
-	NewNtfy(&r, srv.URL+"/secret-topic", "", Options{})
-	if len(r.got) != 1 {
-		t.Fatalf("declared %d components, want 1", len(r.got))
-	}
-	c := r.got[0]
-	if c.Name != "ntfy" || !c.On {
-		t.Errorf("component = %+v", c)
-	}
-	if strings.Contains(c.Detail, "secret-topic") {
-		t.Errorf("topic leaked into the report: %q", c.Detail)
-	}
-	if c.Detail == "" {
-		t.Error("want the host as detail")
-	}
-}

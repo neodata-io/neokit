@@ -19,11 +19,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
-	"github.com/neodata-io/neokit/declare"
 	"github.com/neodata-io/neokit/httpc"
 )
 
@@ -172,10 +170,8 @@ type Webhook struct {
 
 // NewWebhook builds a webhook sender. secret, when non-empty, is sent as
 // X-Webhook-Secret so the receiver can authenticate the caller.
-func NewWebhook(d declare.Declarer, url, secret string, opts Options) *Webhook {
-	w := &Webhook{url: url, secret: secret, client: opts.client(), now: time.Now}
-	declare.Add(d, w.Name(), declare.Detail(reportDetail(url)))
-	return w
+func NewWebhook(url, secret string, opts Options) *Webhook {
+	return &Webhook{url: url, secret: secret, client: opts.client(), now: time.Now}
 }
 
 func (w *Webhook) Name() string { return "webhook" }
@@ -208,10 +204,8 @@ type Ntfy struct {
 // NewNtfy builds an ntfy sender for a full topic URL, e.g.
 // "https://ntfy.sh/my-topic". token, when non-empty, is sent as a bearer token
 // for a protected topic.
-func NewNtfy(d declare.Declarer, topicURL, token string, opts Options) *Ntfy {
-	n := &Ntfy{topicURL: topicURL, token: token, client: opts.client()}
-	declare.Add(d, n.Name(), declare.Detail(reportDetail(topicURL)))
-	return n
+func NewNtfy(topicURL, token string, opts Options) *Ntfy {
+	return &Ntfy{topicURL: topicURL, token: token, client: opts.client()}
 }
 
 func (t *Ntfy) Name() string { return "ntfy" }
@@ -308,10 +302,8 @@ type Apprise struct {
 
 // NewApprise builds an Apprise sender. url points at the API's notify endpoint —
 // "http://apprise:8000/notify/" or a stateful "http://apprise:8000/notify/{key}".
-func NewApprise(d declare.Declarer, url string, opts Options) *Apprise {
-	a := &Apprise{url: url, client: opts.client()}
-	declare.Add(d, a.Name(), declare.Detail(reportDetail(url)))
-	return a
+func NewApprise(url string, opts Options) *Apprise {
+	return &Apprise{url: url, client: opts.client()}
 }
 
 func (a *Apprise) Name() string { return "apprise" }
@@ -360,14 +352,4 @@ func (m Multi) Send(ctx context.Context, n Notification) error {
 		}
 	}
 	return joinErrors(errs)
-}
-
-// reportDetail is the safe half of a notification URL: ntfy topics and hook
-// paths are capability secrets, so only the hostname reaches the boot report.
-func reportDetail(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return ""
-	}
-	return u.Host
 }
