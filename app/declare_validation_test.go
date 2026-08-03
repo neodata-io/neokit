@@ -27,16 +27,16 @@ func appWithLog(t *testing.T, into *bytes.Buffer) *app.App {
 
 // Name is the one field with no sensible default: it labels the report line, the
 // readiness check and the shutdown step. New already refuses an empty
-// Options.Name for the same reason, so Declare refuses an empty Subsystem.Name.
+// Options.Name for the same reason, so Declare refuses an empty Component.Name.
 func TestDeclareRequiresAName(t *testing.T) {
 	a := newApp(t)
 
 	defer func() {
 		if recover() == nil {
-			t.Error("Declare must reject a subsystem with no Name")
+			t.Error("Declare must reject a component with no Name")
 		}
 	}()
-	a.Declare(app.Subsystem{On: true, Detail: "anonymous"})
+	a.Declare(app.Component{On: true, Detail: "anonymous"})
 }
 
 // A repeated name yields two report lines, two readiness checks and two shutdown
@@ -45,8 +45,8 @@ func TestDeclareWarnsOnADuplicateName(t *testing.T) {
 	var logged bytes.Buffer
 	a := appWithLog(t, &logged)
 
-	a.Declare(app.Subsystem{Name: "database", On: true, Detail: "first"})
-	a.Declare(app.Subsystem{Name: "database", On: true, Detail: "second"})
+	a.Declare(app.Component{Name: "database", On: true, Detail: "first"})
+	a.Declare(app.Component{Name: "database", On: true, Detail: "second"})
 
 	if !strings.Contains(logged.String(), "already declared") {
 		t.Errorf("want a warning naming the duplicate; got:\n%s", logged.String())
@@ -59,9 +59,9 @@ func TestDeclareWarnsWhenItCollidesWithABuiltIn(t *testing.T) {
 	var logged bytes.Buffer
 	a := appWithLog(t, &logged)
 
-	a.Declare(app.Subsystem{Name: "tracing", On: true, Detail: "mine, not neokit's"})
+	a.Declare(app.Component{Name: "tracing", On: true, Detail: "mine, not neokit's"})
 
 	if !strings.Contains(logged.String(), "already declared") {
-		t.Errorf("want a warning for colliding with neokit's own subsystem; got:\n%s", logged.String())
+		t.Errorf("want a warning for colliding with neokit's own component; got:\n%s", logged.String())
 	}
 }

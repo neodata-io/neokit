@@ -43,7 +43,7 @@ func (a *App) Run() error {
 	addr, network := listenAddress(a.Cfg.BindAddr, a.Cfg.Port)
 
 	// Here rather than in New: the report is only complete once the caller has
-	// finished declaring its subsystems. Declaring after this point is warned
+	// finished declaring its components. Declaring after this point is warned
 	// about, since the report has already been rendered without it.
 	a.booted.Store(true)
 	fmt.Println(a.Report())

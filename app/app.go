@@ -22,7 +22,7 @@
 //	defer a.Close()
 //
 //	store, err := sqlitex.Open(cfg.DatabasePath, migrate)
-//	a.Declare(app.Subsystem{
+//	a.Declare(app.Component{
 //		Name: "database", On: true, Detail: cfg.DatabasePath,
 //		Ready: store.PingContext, Close: lifecycle.Closer(store),
 //	})
@@ -143,7 +143,7 @@ type App struct {
 	// Unexported so it can only be fed by Declare, which also writes the boot
 	// report — a check registered around it would be invisible there.
 	readiness  *health.Registry
-	subsystems []Subsystem
+	components []Component
 	// booted is set by Run before it prints the boot report, after which a
 	// Declare is half-applied: it misses the report but still registers.
 	booted atomic.Bool
@@ -169,7 +169,7 @@ func newDrainSignal() *drainSignal {
 // application context, then the HTTP server with its probe routes and
 // middleware. It is documented here rather than re-derived per project.
 //
-// New starts no listener. Register routes, declare subsystems, push your own
+// New starts no listener. Register routes, declare components, push your own
 // teardown steps, then call [App.Run].
 func New(o Options) (*App, error) {
 	if strings.TrimSpace(o.Name) == "" {
@@ -213,7 +213,7 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.Shutdown.Push("tracing", traceShutdown)
-	a.Declare(otelSubsystem("tracing"))
+	a.Declare(otelComponent("tracing"))
 
 	pipeline, err := metrics.Init(ctx, metrics.Config{
 		ServiceName: o.Name, Version: o.Version, Pull: true,
@@ -223,43 +223,43 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.Shutdown.Push("metrics-export", pipeline.Shutdown)
-	a.Declare(otelSubsystem("metrics export"))
-	a.Declare(metricsSubsystem(pipeline.Handler != nil, o.Base.MetricsToken))
-	a.Declare(healthSubsystem())
+	a.Declare(otelComponent("metrics export"))
+	a.Declare(metricsComponent(pipeline.Handler != nil, o.Base.MetricsToken))
+	a.Declare(healthComponent())
 
 	a.HTTP = a.newFiber(o, pipeline.Handler)
 	return a, nil
 }
 
-// otelSubsystem reports whether an OpenTelemetry signal is exporting, reading
+// otelComponent reports whether an OpenTelemetry signal is exporting, reading
 // the same env var its SDK does so the report cannot disagree with reality.
-func otelSubsystem(name string) Subsystem {
+func otelComponent(name string) Component {
 	endpoint := strings.TrimSpace(osGetenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	if endpoint == "" {
-		return Subsystem{Name: name, On: false, Detail: "OTEL_EXPORTER_OTLP_ENDPOINT unset"}
+		return Component{Name: name, On: false, Detail: "OTEL_EXPORTER_OTLP_ENDPOINT unset"}
 	}
-	return Subsystem{Name: name, On: true, Detail: endpoint}
+	return Component{Name: name, On: true, Detail: endpoint}
 }
 
-// metricsSubsystem is the report line for the Prometheus endpoint.
+// metricsComponent is the report line for the Prometheus endpoint.
 //
 // Whether it is authenticated is the fact worth stating: unauthenticated is the
 // default and the right answer on a private network, but it is also the one
 // setting whose absence is completely silent — the endpoint answers either way,
 // and nothing else in the process will ever mention it again.
-func metricsSubsystem(mounted bool, token string) Subsystem {
+func metricsComponent(mounted bool, token string) Component {
 	if !mounted {
 		// Only reachable when the Prometheus reader failed to build, which
 		// metrics.Init has already logged. Reported rather than hidden: the
 		// endpoint answering 404 is otherwise indistinguishable from a typo in
 		// whatever is trying to scrape it.
-		return Subsystem{Name: "metrics endpoint", On: false, Detail: "reader unavailable — see the log above"}
+		return Component{Name: "metrics endpoint", On: false, Detail: "reader unavailable — see the log above"}
 	}
 	guard := "unauthenticated · set METRICS_TOKEN to require a bearer token"
 	if token != "" {
 		guard = "bearer token required"
 	}
-	return Subsystem{Name: "metrics endpoint", On: true, Detail: MetricsPath + " · " + guard}
+	return Component{Name: "metrics endpoint", On: true, Detail: MetricsPath + " · " + guard}
 }
 
 // bearerGuard requires `Authorization: Bearer <token>`, or passes everything
@@ -287,14 +287,14 @@ func bearerGuard(token string) fiber.Handler {
 	}
 }
 
-// healthSubsystem is the report line for the probe endpoints.
+// healthComponent is the report line for the probe endpoints.
 //
 // Worth a line because their location is the one thing about them an operator
 // cannot guess and cannot see anywhere else: they are on the application
 // listener, which means they are reachable by anyone who can reach the API, and
 // [config.Base.BindAddr] is the only thing that narrows that.
-func healthSubsystem() Subsystem {
-	return Subsystem{Name: "health", On: true, Detail: LivePath + ", " + ReadyPath}
+func healthComponent() Component {
+	return Component{Name: "health", On: true, Detail: LivePath + ", " + ReadyPath}
 }
 
 // newFiber builds the HTTP server and the standard middleware chain.

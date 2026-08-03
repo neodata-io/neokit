@@ -120,15 +120,15 @@ func TestAppContextIsLiveUntilClose(t *testing.T) {
 	}
 }
 
-// New declares its own subsystems, so a caller reading Subsystems() sees the
+// New declares its own components, so a caller reading Components() sees the
 // whole process — including the parts neokit switched on or left off. A view
 // that showed only the caller's own declarations would disagree with the boot
 // report about what this process is.
-func TestSubsystemsIncludesTheBuildersOwn(t *testing.T) {
+func TestComponentsIncludesTheBuildersOwn(t *testing.T) {
 	a := newApp(t)
 	for _, name := range []string{"tracing", "metrics export", "health"} {
-		if _, ok := findSubsystem(a, name); !ok {
-			t.Errorf("%q missing from Subsystems(): %+v", name, a.Subsystems())
+		if _, ok := findComponent(a, name); !ok {
+			t.Errorf("%q missing from Components(): %+v", name, a.Components())
 		}
 	}
 }
@@ -140,9 +140,9 @@ func TestSubsystemsIncludesTheBuildersOwn(t *testing.T) {
 func TestTheReportNamesTheProbeEndpoints(t *testing.T) {
 	a := newApp(t)
 
-	got, ok := findSubsystem(a, "health")
+	got, ok := findComponent(a, "health")
 	if !ok {
-		t.Fatalf("no health line: %+v", a.Subsystems())
+		t.Fatalf("no health line: %+v", a.Components())
 	}
 	for _, path := range []string{app.LivePath, app.ReadyPath} {
 		if !strings.Contains(got.Detail, path) {
@@ -158,7 +158,7 @@ func TestTheReportNamesTheProbeEndpoints(t *testing.T) {
 // database gets a healthy container killed during a database blip.
 func TestLivenessAnswersWithoutAnyCheck(t *testing.T) {
 	a := newApp(t)
-	a.Declare(app.Subsystem{
+	a.Declare(app.Component{
 		Name: "database", On: true, Detail: "down",
 		Ready: func(context.Context) error { return errors.New("unreachable") },
 	})
@@ -178,7 +178,7 @@ func TestLivenessAnswersWithoutAnyCheck(t *testing.T) {
 // rotation without restarting it.
 func TestReadinessReflectsADeclaredCheck(t *testing.T) {
 	a := newApp(t)
-	a.Declare(app.Subsystem{
+	a.Declare(app.Component{
 		Name: "database", On: true, Detail: "down",
 		Ready: func(context.Context) error { return errors.New("unreachable") },
 	})
@@ -199,7 +199,7 @@ func TestReadinessReflectsADeclaredCheck(t *testing.T) {
 // gives an authenticated caller all of it.
 func TestReadinessDetailIsSeparateFromThePublicProbe(t *testing.T) {
 	a := newApp(t)
-	a.Declare(app.Subsystem{
+	a.Declare(app.Component{
 		Name: "database", On: true, Detail: "down",
 		Ready: func(context.Context) error { return errors.New("connection refused") },
 	})
@@ -334,7 +334,7 @@ func TestMetricsTokenIsEnforced(t *testing.T) {
 		})
 	}
 
-	got, _ := findSubsystem(a, "metrics endpoint")
+	got, _ := findComponent(a, "metrics endpoint")
 	if !strings.Contains(got.Detail, "bearer token required") {
 		t.Errorf("report detail = %q, want it to say the endpoint is authenticated", got.Detail)
 	}
@@ -346,9 +346,9 @@ func TestMetricsTokenIsEnforced(t *testing.T) {
 func TestTheReportSaysWhenMetricsAreUnauthenticated(t *testing.T) {
 	a := newApp(t)
 
-	got, ok := findSubsystem(a, "metrics endpoint")
+	got, ok := findComponent(a, "metrics endpoint")
 	if !ok {
-		t.Fatalf("no metrics endpoint line: %+v", a.Subsystems())
+		t.Fatalf("no metrics endpoint line: %+v", a.Components())
 	}
 	if !strings.Contains(got.Detail, "unauthenticated") || !strings.Contains(got.Detail, "METRICS_TOKEN") {
 		t.Errorf("detail = %q, want it to name the exposure and the setting that closes it", got.Detail)
@@ -387,14 +387,14 @@ func TestScrapesAreNotThemselvesMeasuredOrLogged(t *testing.T) {
 	}
 }
 
-// findSubsystem looks one up by name.
-func findSubsystem(a *app.App, name string) (app.Subsystem, bool) {
-	for _, s := range a.Subsystems() {
+// findComponent looks one up by name.
+func findComponent(a *app.App, name string) (app.Component, bool) {
+	for _, s := range a.Components() {
 		if s.Name == name {
 			return s, true
 		}
 	}
-	return app.Subsystem{}, false
+	return app.Component{}, false
 }
 
 // The error envelope must be installed as Fiber's ErrorHandler, or a returned

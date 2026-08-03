@@ -10,12 +10,17 @@ import (
 	"testing"
 
 	"github.com/neodata-io/neokit/config"
+	"github.com/neodata-io/neokit/declare"
 )
 
+// The whole point of the declare package: a constructor can take a Declarer and
+// be handed an *App. Breaking this breaks every self-declaring constructor.
+var _ declare.Declarer = (*App)(nil)
+
 // The readiness registry is unexported — reachable only by declaring a
-// subsystem — so what Declare feeds into it can only be asserted from inside the
+// component — so what Declare feeds into it can only be asserted from inside the
 // package. The coupling itself is the contract worth pinning: one Declare, both
-// outputs, or a subsystem ends up in the report under one name and in /readyz
+// outputs, or a component ends up in the report under one name and in /readyz
 // under another.
 func newInternalApp(t *testing.T) *App {
 	t.Helper()
@@ -32,20 +37,20 @@ func newInternalApp(t *testing.T) *App {
 	return a
 }
 
-func declared(a *App, name string) (Subsystem, bool) {
-	for _, s := range a.Subsystems() {
+func declared(a *App, name string) (Component, bool) {
+	for _, s := range a.Components() {
 		if s.Name == name {
 			return s, true
 		}
 	}
-	return Subsystem{}, false
+	return Component{}, false
 }
 
-// One Declare feeds both the boot report and the readiness set, so a subsystem
+// One Declare feeds both the boot report and the readiness set, so a component
 // is named once.
 func TestDeclareRegistersAReadinessCheck(t *testing.T) {
 	a := newInternalApp(t)
-	a.Declare(Subsystem{
+	a.Declare(Component{
 		Name: "database", On: true, Detail: "./data/app.db",
 		Ready: func(context.Context) error { return nil },
 	})
@@ -55,28 +60,28 @@ func TestDeclareRegistersAReadinessCheck(t *testing.T) {
 	}
 	got, ok := declared(a, "database")
 	if !ok {
-		t.Fatalf("database missing from Subsystems(): %+v", a.Subsystems())
+		t.Fatalf("database missing from Components(): %+v", a.Components())
 	}
 	if !got.On || got.Detail != "./data/app.db" {
-		t.Errorf("Subsystem = %+v", got)
+		t.Errorf("Component = %+v", got)
 	}
 }
 
 // An unconfigured optional feature must never make a container look unready —
 // that would pull a working instance out of rotation over a feature nobody
 // asked for.
-func TestAnOffSubsystemRegistersNoCheck(t *testing.T) {
+func TestAnOffComponentRegistersNoCheck(t *testing.T) {
 	a := newInternalApp(t)
-	a.Declare(Subsystem{
+	a.Declare(Component{
 		Name: "login", On: false, Detail: "not configured",
 		Ready: func(context.Context) error { return errors.New("never called") },
 	})
 
 	if a.readiness.Len() != 0 {
-		t.Error("an off subsystem must contribute no readiness check")
+		t.Error("an off component must contribute no readiness check")
 	}
 	if got := a.readiness.Check(context.Background()); !got.Ready {
-		t.Error("an off subsystem must not make the app unready")
+		t.Error("an off component must not make the app unready")
 	}
 }
 
@@ -96,22 +101,22 @@ func TestDeclareAfterTheBootReportWarns(t *testing.T) {
 	t.Cleanup(func() { _ = a.Close() })
 
 	a.booted.Store(true) // what Run does before it prints the report
-	a.Declare(Subsystem{Name: "late", On: true, Detail: "declared after Run started"})
+	a.Declare(Component{Name: "late", On: true, Detail: "declared after Run started"})
 
 	if !strings.Contains(logged.String(), "boot report") {
 		t.Errorf("want a warning that the declaration missed the report; got:\n%s", logged.String())
 	}
 }
 
-// A subsystem with no check is normal — most are informational.
+// A component with no check is normal — most are informational.
 func TestDeclareWithoutACheckIsFine(t *testing.T) {
 	a := newInternalApp(t)
-	a.Declare(Subsystem{Name: "web push", On: true, Detail: "vapid key persisted"})
+	a.Declare(Component{Name: "web push", On: true, Detail: "vapid key persisted"})
 
 	if a.readiness.Len() != 0 {
-		t.Error("a subsystem with no Ready must register no check")
+		t.Error("a component with no Ready must register no check")
 	}
 	if _, ok := declared(a, "web push"); !ok {
-		t.Errorf("it must still appear in the report: %+v", a.Subsystems())
+		t.Errorf("it must still appear in the report: %+v", a.Components())
 	}
 }

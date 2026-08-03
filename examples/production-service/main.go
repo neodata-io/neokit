@@ -51,7 +51,7 @@ func run() error {
 	// One declaration, two outputs: a line in the boot report and a /readyz
 	// check. The database cannot be called one thing on the console and another
 	// in the readiness body.
-	service.Declare(app.Subsystem{
+	service.Declare(app.Component{
 		Name:   "database",
 		On:     true,
 		Detail: cfg.DatabasePath,

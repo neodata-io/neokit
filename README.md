@@ -120,14 +120,14 @@ production-service 1.4.0 · :8080
   ✗ tracing           OTEL_EXPORTER_OTLP_ENDPOINT unset
 ```
 
-That block is generated from the same `app.Subsystem` declarations that register
+That block is generated from the same `app.Component` declarations that register
 the `/readyz` checks, so it cannot drift from what the process actually is.
 
 Give a declaration a `Close` and it is the teardown step too, so a dependency is
 named once rather than once per concern:
 
 ```go
-a.Declare(app.Subsystem{
+a.Declare(app.Component{
     Name: "database", On: true, Detail: cfg.DatabasePath,
     Ready: store.Ping,
     Close: lifecycle.Closer(store),
