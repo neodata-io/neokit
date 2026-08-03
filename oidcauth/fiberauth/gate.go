@@ -35,7 +35,7 @@
 //	    CookiePrefix: "myapp",
 //	})
 //
-//	admin := a.HTTP.Group("/api/v1/admin", gate.RequireOwner())
+//	admin := a.API.Group("/admin", gate.RequireOwner())
 //
 // [New] mounts the identity middleware, then the routes — in that order, which
 // is the one a caller cannot arrange by hand: a caller mounting its own
@@ -254,7 +254,10 @@ func (g *Gate) Enabled() bool { return g.Provider() != nil }
 func (g *Gate) LoginPath() string { return g.handshakeBase + "/login" }
 
 // CallbackPath is the OIDC redirect URI's path. It must agree with the
-// provider's [oidcauth.Config.CallbackPath]; [Gate.Register] checks this.
+// provider's [oidcauth.Config.CallbackPath] — and nothing here enforces that, so
+// a caller that overrides one without the other gets a redirect URI the identity
+// provider rejects. (An earlier version of this comment claimed Register checked
+// it. Register mounts the routes and returns; it never did.)
 func (g *Gate) CallbackPath() string { return g.handshakeBase + "/callback" }
 
 // LogoutPath ends the local session.

@@ -11,8 +11,10 @@ an implementation detail waiting to be abstracted away.
 
 Take one package at a time, or start with `app` when a service wants the whole
 boot sequence from one constructor. There is no service container and no lookup
-by string: every dependency `app` builds is an exported field on it, and a
-handler stays an ordinary Fiber handler over ordinary types. Reflection is
+by string: every dependency `app` builds is an exported field on it — including
+`a.API`, a route group already mounted at `a.APIBase`, so route registration
+never concatenates a version prefix by hand — and a handler stays an ordinary
+Fiber handler over ordinary types. Reflection is
 confined to the two places Go offers no alternative — decoding the environment
 in `config`, and `validator` tags in `fiberx`. Nothing reaches a binary unless
 its package is imported.
@@ -32,9 +34,9 @@ cfg, err := config.Load[config.Base]()
 a, err := neokit.New(app.Options{Name: "okstables", Base: cfg})
 defer a.Close()
 
-db, err := a.Database(cfg.DatabasePath, nil)   // ✓ database  + /readyz + shutdown
+db, err := a.Database(cfg.DatabasePath, nil)   // ✓ database + ordered shutdown
 
-a.HTTP.Get("/api/v1/hello", func(c fiber.Ctx) error {
+a.API.Get("/hello", func(c fiber.Ctx) error {  // ✓ mounted at /api/v1
     return c.JSON(fiber.Map{"hello": "okstables"})
 })
 return a.Run()
@@ -154,7 +156,7 @@ gate := fiberauth.New(a, fiberauth.Options{
     Sessions:     sessions,
     CookiePrefix: "myapp",
 })
-admin := a.HTTP.Group("/api/v1/admin", gate.RequireOwner())
+admin := a.API.Group("/admin", gate.RequireOwner())
 ```
 
 `New` mounts the identity middleware, then the handshake routes, then adds the
