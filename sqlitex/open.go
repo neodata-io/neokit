@@ -1,6 +1,7 @@
 package sqlitex
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,14 +11,20 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // the driver Open opens with
+
+	"github.com/neodata-io/neokit/declare"
 )
 
-// Open opens a SQLite database with the settings a server actually wants, then
-// runs migrate against it. A nil migrate skips that step.
+// Open opens a SQLite database with the settings a server actually wants, runs
+// migrate against it, and declares it on d — so the boot report line, the
+// readiness check and the shutdown step all come from this one call. A nil
+// migrate skips the migration step.
 //
-// The caller owns the returned *sql.DB and must Close it — normally by pushing
-// it onto a lifecycle.Stack.
-func Open(path string, migrate func(*sql.DB) error) (*sql.DB, error) {
+// name labels the component; pass distinct names when opening more than one
+// database. Nothing is declared if the open fails.
+//
+//	db, err := sqlitex.Open(a, "database", cfg.DatabasePath, migrate)
+func Open(d declare.Declarer, name, path string, migrate func(*sql.DB) error) (*sql.DB, error) {
 	// An empty path is never a legitimate target, and it is not harmless: SQLite
 	// accepts it and hands back a private, anonymous database that accepts writes
 	// and vanishes on restart. A deployment that forgot to set its path would
@@ -72,6 +79,13 @@ func Open(path string, migrate func(*sql.DB) error) (*sql.DB, error) {
 			return nil, fmt.Errorf("migrate schema: %w", err)
 		}
 	}
+
+	// Last, so nothing is declared for a database that failed to open or migrate.
+	d.Declare(declare.Component{
+		Name: name, On: true, Detail: path,
+		Ready: db.PingContext,
+		Close: func(context.Context) error { return db.Close() },
+	})
 	return db, nil
 }
 
