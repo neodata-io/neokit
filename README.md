@@ -148,9 +148,10 @@ authn, ok := oidcauth.New(oidcauth.Config{
     Issuer:   os.Getenv("OIDC_ISSUER"),   ClientID:     os.Getenv("OIDC_CLIENT_ID"),
     BaseURL:  os.Getenv("OIDC_BASE_URL"), ClientSecret: os.Getenv("OIDC_CLIENT_SECRET"),
 })
+sessions, err := session.NewSQLite(db)   // creates its own table; or bring your own store
 gate := fiberauth.New(a, fiberauth.Options{
     Provider:     func() *oidcauth.Provider { if !ok { return nil }; return authn },
-    Sessions:     store,      // your own storage; neokit ships none
+    Sessions:     sessions,
     CookiePrefix: "myapp",
 })
 admin := a.HTTP.Group("/api/v1/admin", gate.RequireOwner())
@@ -199,6 +200,7 @@ gets exactly that.
 | `safe` `ids` `clock` | goroutine recovery, id/token generation, injectable clock |
 | `netx` | `AddrInUseHint` — a readable message for a listener already bound |
 | `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
+| `session` | `Session`, `Store`, `Policy` — and `NewSQLite`, the store neokit ships. Standard library only |
 | `oidcauth` | provider-agnostic OpenID Connect relying party: PKCE, nonce, typed error sentinels |
 | `oidcauth/fiberauth` | the browser half — handshake routes, `__Host-` cookies, session middleware, guards |
 | `jobs` | `Job{Every, Timeout, RunAtStart, Do}` — periodic work that is bounded and panic-guarded |
