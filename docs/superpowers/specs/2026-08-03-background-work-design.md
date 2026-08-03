@@ -99,7 +99,7 @@ func (a *App) startBackgroundWork() {
 		if !c.On || c.Run == nil {
 			continue
 		}
-		safe.Go(c.Name, func() { c.Run(a.ctx) })
+		safe.Go(a.ctx, c.Name, func() { c.Run(a.ctx) })
 	}
 }
 ```

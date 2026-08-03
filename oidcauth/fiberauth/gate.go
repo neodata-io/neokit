@@ -169,7 +169,8 @@ type Gate struct {
 // It cannot fail: a gate with no Provider is a working gate that is switched off.
 //
 // The expired-session sweep is part of the same declaration, so a store that can
-// prune is pruned without a second call to remember.
+// prune is pruned without a second call to remember — including when the gate is
+// off, since the rows an earlier configuration created outlive it.
 func New(a *app.App, o Options) *Gate {
 	prefix := strings.TrimSpace(o.CookiePrefix)
 	if prefix == "" {
@@ -203,11 +204,20 @@ func New(a *app.App, o Options) *Gate {
 
 	if !g.Enabled() {
 		declare.Add(a, "login", declare.Disabled("not configured"))
+		// A store outlives the login that filled it, and nothing else prunes it —
+		// so the sweep still runs, under its own name because there is no login
+		// line left to hang it off. Stating it is the point: a sweep with no
+		// login configured is otherwise unexplainable.
+		if job, ok := oidcauth.SweepJob(g.sessions, g.logger()); ok {
+			declare.Add(a, "session sweep",
+				declare.Detail("pruning expired sessions; no login configured"),
+				declare.Run(job.Run))
+		}
 		return g
 	}
 	opts := []declare.Option{declare.Detail(g.Provider().Issuer())}
 	// Attached to the login line rather than declared beside it: one feature,
-	// one name. A gate that is off creates no sessions, so it sweeps none.
+	// one name.
 	if job, ok := oidcauth.SweepJob(g.sessions, g.logger()); ok {
 		opts = append(opts, declare.Run(job.Run))
 	}

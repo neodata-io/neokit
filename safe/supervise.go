@@ -1,7 +1,9 @@
 package safe
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -60,18 +62,23 @@ func (g *Group) logger() *slog.Logger {
 func (g *Group) enter() { g.n.Add(1) }
 
 // leave decrements the live count and, when it reaches zero, wakes any waiter.
-//
-// The decrement happens before mu is taken, and Wait only ever creates idle
-// while holding mu having just observed a non-zero count. That ordering is what
-// makes the handoff safe: if this goroutine's decrement lands first, Wait sees
-// zero and returns without ever creating a channel; if Wait's observation lands
-// first, it has created idle and still holds mu, so this close cannot be missed.
 func (g *Group) leave() {
 	if g.n.Add(-1) != 0 {
 		return
 	}
+	g.wake()
+}
+
+// wake releases a waiter, but only while the group is genuinely idle.
+//
+// The re-check under mu is the point. leave's decrement and this lock are two
+// steps, and a Go landing between them puts the count back above zero: closing
+// idle then would report a finished drain to a caller whose very next act is to
+// close the resources the new goroutine is using. Nothing is lost by declining
+// — whichever leave observes a zero count under mu does the closing.
+func (g *Group) wake() {
 	g.mu.Lock()
-	if g.idle != nil {
+	if g.idle != nil && g.n.Load() == 0 {
 		close(g.idle)
 		g.idle = nil
 	}
@@ -84,7 +91,12 @@ func (g *Group) leave() {
 // into — silently dying so that one subsystem stops for the rest of the process
 // lifetime with only a single log line. A clean return (fn finished, e.g. its
 // context was cancelled at shutdown) ends the loop.
-func (g *Group) Go(name string, fn func()) {
+//
+// ctx governs the supervision, not fn — fn still has to honour its own
+// cancellation to return. What it stops is the respawn into a shutdown: that run
+// cannot finish the work, and it does hold the drain open. Pass
+// context.Background() only for work that genuinely outlives every caller.
+func (g *Group) Go(ctx context.Context, name string, fn func()) {
 	g.enter()
 	go func() {
 		defer g.leave()
@@ -92,24 +104,48 @@ func (g *Group) Go(name string, fn func()) {
 			if !runGuarded(g.logger(), name, fn) {
 				return // fn returned normally — nothing to respawn
 			}
-			g.logger().Warn("restarting panicked background goroutine", "goroutine", name)
-			time.Sleep(restartBackoff)
+			if !g.backoff(ctx, name) {
+				return // shutting down
+			}
 		}
 	}()
 }
 
+// backoff spaces out a respawn and reports whether to make one.
+func (g *Group) backoff(ctx context.Context, name string) bool {
+	if ctx.Err() != nil {
+		g.logger().Warn("not restarting panicked background goroutine: shutting down", "goroutine", name)
+		return false
+	}
+	g.logger().Warn("restarting panicked background goroutine", "goroutine", name)
+
+	t := time.NewTimer(restartBackoff)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
 // Wait blocks until every goroutine in the group has returned — which happens
-// once their context is cancelled at shutdown — or until timeout elapses.
-// Shutdown calls it before closing the resources those goroutines use, so a job
-// mid-call isn't cut off by having its connection closed underneath it.
+// once their context is cancelled at shutdown — or until ctx is done. Shutdown
+// calls it before closing the resources those goroutines use, so a job mid-call
+// isn't cut off by having its connection closed underneath it.
 //
-// It returns [ErrDrainTimeout] if the drain did not finish. The caller is about
-// to tear down the very resources the stragglers are still using, so that is a
-// decision for the caller rather than a warning to bury in a log.
+// A context rather than a duration: the caller holding a drain budget is a
+// shutdown step, and deriving a duration back out of its context loses both the
+// early cancellation and the floor at zero.
+//
+// It returns an error wrapping [ErrDrainTimeout] if the drain did not finish.
+// The caller is about to tear down the very resources the stragglers are still
+// using, so that is a decision for the caller rather than a warning to bury in a
+// log.
 //
 // Wait does not stop the group: goroutines may be supervised again afterwards,
 // and Wait may be called repeatedly.
-func (g *Group) Wait(timeout time.Duration) error {
+func (g *Group) Wait(ctx context.Context) error {
 	g.mu.Lock()
 	if g.n.Load() == 0 {
 		g.mu.Unlock()
@@ -121,14 +157,13 @@ func (g *Group) Wait(timeout time.Duration) error {
 	idle := g.idle
 	g.mu.Unlock()
 
-	t := time.NewTimer(timeout)
-	defer t.Stop()
 	select {
 	case <-idle:
 		return nil
-	case <-t.C:
-		g.logger().Warn("timed out waiting for background goroutines to stop", "timeout", timeout)
-		return ErrDrainTimeout
+	case <-ctx.Done():
+		g.logger().Warn("gave up waiting for background goroutines to stop",
+			"stragglers", g.Len(), "cause", ctx.Err())
+		return fmt.Errorf("%w: %w", ErrDrainTimeout, ctx.Err())
 	}
 }
 
@@ -145,11 +180,12 @@ func (g *Group) Len() int { return int(g.n.Load()) }
 // drain. Anything else reusable should hold its own [Group].
 var defaultGroup Group
 
-// Go supervises fn on the package-level default group. See [Group.Go].
-func Go(name string, fn func()) { defaultGroup.Go(name, fn) }
+// Go supervises fn on the package-level default group, bounded by ctx. See
+// [Group.Go].
+func Go(ctx context.Context, name string, fn func()) { defaultGroup.Go(ctx, name, fn) }
 
 // WaitGo drains the package-level default group. See [Group.Wait].
-func WaitGo(timeout time.Duration) error { return defaultGroup.Wait(timeout) }
+func WaitGo(ctx context.Context) error { return defaultGroup.Wait(ctx) }
 
 // runGuarded runs fn, recovering and logging any panic; it reports whether one
 // occurred so the supervisor knows to respawn (true) or stop (false).

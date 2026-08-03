@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/neodata-io/neokit/config"
@@ -80,6 +81,37 @@ func TestAnOffComponentRegistersNoCheck(t *testing.T) {
 	}
 	if got := a.checks.Check(context.Background()); !got.Ready {
 		t.Error("an off component must not make the app unready")
+	}
+}
+
+// A late declaration is silently useless: the report is already printed and
+// startBackgroundWork has already iterated the components, so its Run never
+// starts. The warning is the only trace it leaves.
+func TestALateDeclarationWarns(t *testing.T) {
+	var log strings.Builder
+	a := newInternalApp(t)
+	a.Log = slog.New(slog.NewTextHandler(&log, nil))
+
+	a.started.Store(true) // as Run sets it, after the report
+	a.Declare(Component{Name: "backups", On: true, Run: func(context.Context) {}})
+
+	if !strings.Contains(log.String(), "backups") {
+		t.Errorf("a declaration after the process started must warn:\n%s", log.String())
+	}
+}
+
+// A duplicate is not silently useless — it is silently doubled, including the
+// background work, which is the part an operator cannot see in the report.
+func TestADuplicateDeclarationWarns(t *testing.T) {
+	var log strings.Builder
+	a := newInternalApp(t)
+	a.Log = slog.New(slog.NewTextHandler(&log, nil))
+
+	a.Declare(Component{Name: "backups", On: true})
+	a.Declare(Component{Name: "backups", On: true})
+
+	if !strings.Contains(log.String(), "already declared") {
+		t.Errorf("a duplicate name must warn:\n%s", log.String())
 	}
 }
 

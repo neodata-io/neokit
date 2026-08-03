@@ -97,7 +97,7 @@ func (d Daily) Run(ctx context.Context) {
 // Start runs the job on a supervised background goroutine and returns
 // immediately. See [Job.Start].
 func (d Daily) Start(ctx context.Context) {
-	safe.Go("job:"+d.Name, func() { d.Run(ctx) })
+	safe.Go(ctx, "job:"+d.Name, func() { d.Run(ctx) })
 }
 
 // Next returns the first occurrence strictly after from.

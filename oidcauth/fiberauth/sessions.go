@@ -110,7 +110,7 @@ func (g *Gate) revokeSession() fiber.Handler {
 	}
 }
 
-// The expired-session sweep is not exported here. [New] declares it as the login
-// component's background work, so a second entry point could only ever start a
-// duplicate sweep over the same store. Use [oidcauth.SweepJob] directly if you
-// are not mounting a Gate.
+// The expired-session sweep is not exported here. [New] declares it whether the
+// gate is on or off, so a second entry point could only ever start a duplicate
+// sweep over the same store. Use [oidcauth.SweepJob] directly if you are not
+// mounting a Gate.

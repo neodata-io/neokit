@@ -14,6 +14,7 @@ import (
 
 	"github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/config"
+	"github.com/neodata-io/neokit/declare"
 )
 
 // Close covers the early-return paths while Run covers the normal one. Both fire
@@ -70,6 +71,48 @@ func TestRunReturnsAFatalListenerError(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return after a failed bind")
 	}
+}
+
+// Run has to be the thing that starts declared background work. Every other test
+// calls startBackgroundWork itself, so without this one the call could be
+// deleted from Run and a build that never writes a backup would pass CI.
+//
+// The bind failure is only the exit route: Run starts the work before the
+// listener, so it has already happened by the time the error comes back.
+func TestRunStartsDeclaredBackgroundWork(t *testing.T) {
+	// Occupy a port so Run returns instead of blocking on a signal.
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	a, err := app.New(app.Options{
+		Name: "testapp", Log: quiet(),
+		Base: config.Base{Port: ln.Addr().(*net.TCPAddr).Port, BindAddr: "127.0.0.1",
+			LogLevel: "error", LogFormat: "json"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	started := make(chan struct{})
+	declare.Add(a, "writer", declare.Run(func(ctx context.Context) {
+		close(started)
+		<-ctx.Done()
+	}))
+
+	done := make(chan error, 1)
+	go func() { done <- a.Run() }()
+
+	select {
+	case <-started:
+	case err := <-done:
+		t.Fatalf("Run returned without starting the declared work: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run never started the declared work")
+	}
+	<-done
 }
 
 // The report is what the process says it is. It must name every declared

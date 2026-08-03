@@ -49,19 +49,28 @@ type Component = declare.Component
 // and has a check, and for teardown when it has a Close.
 //
 // Call it during boot, before [App.Run], from one goroutine: the report renders
-// at the top of Run, so a later declaration would miss it anyway.
+// at the top of Run and background work starts there too, so a later declaration
+// reaches neither.
 //
 // An empty Name panics, for the reason [New] rejects an empty Options.Name: the
-// name labels three separate outputs, and an anonymous one is untraceable in all
-// three. A duplicate name and a late declaration are warned about rather than
-// refused — both still produce a working process, just a confusing one.
+// name labels four separate outputs, and an anonymous one is untraceable in all
+// four. A duplicate name and a late declaration are warned about rather than
+// refused — a warning names the mistake where a refusal would only take down a
+// process over a report line.
 func (a *App) Declare(s Component) {
 	if strings.TrimSpace(s.Name) == "" {
 		panic("app: Component.Name is required")
 	}
+	// Late is worse than confusing: Run has already rendered the report and
+	// iterated the components, so this one's Run never starts at all — silently,
+	// which is the failure a warning here exists to name.
+	if a.started.Load() {
+		a.Log.Warn("component declared after the process started; it misses the boot report and its background work never runs",
+			"component", s.Name)
+	}
 	for _, existing := range a.components {
 		if existing.Name == s.Name {
-			a.Log.Warn("component already declared; the report, readiness and teardown will each list it twice",
+			a.Log.Warn("component already declared; the report lists it twice and its readiness, teardown and background work each run twice",
 				"component", s.Name)
 			break
 		}

@@ -36,7 +36,7 @@ func (a *App) Report() string {
 // Run starts the listener, waits for a termination signal or a fatal listener
 // error, and unwinds the teardown stack. It blocks until the process is done.
 //
-// The four steps it pushes complete the order described on [App]:
+// The four steps it pushes complete the process's teardown order:
 //
 //	streams → api → background-context → background-work
 //	        → [the application's steps, reversed] → metrics-export → tracing
@@ -48,8 +48,10 @@ func (a *App) Run() error {
 	fmt.Println(a.Report())
 
 	// After the report, so the process states what it is before any of it starts
-	// logging.
+	// logging. The flag it sets is what makes a later Declare warn: from here on
+	// a declaration reaches neither the report nor this loop.
 	a.startBackgroundWork()
+	a.started.Store(true)
 
 	// Buffered, so the listener goroutine cannot leak when Run returns on a
 	// signal without ever reading from it.
@@ -100,7 +102,9 @@ func (a *App) startBackgroundWork() {
 		if !c.On || c.Run == nil {
 			continue
 		}
-		safe.Go(c.Name, func() { c.Run(a.ctx) })
+		// The application context, so a component whose Run panics on every call
+		// stops respawning at shutdown rather than holding the join below open.
+		safe.Go(a.ctx, c.Name, func() { c.Run(a.ctx) })
 	}
 }
 
@@ -110,10 +114,8 @@ func (a *App) pushRunSteps() {
 	// Before the application's own steps, so a job finishes its write before the
 	// store it writes to closes — the ordering [safe.Go] and jobs.Job.Start
 	// promise. It drains the process-wide group, so work the application started
-	// itself is joined here too.
-	a.Shutdown.Push("background-work", func(ctx context.Context) error {
-		return safe.WaitGo(drainBudget(ctx))
-	})
+	// itself is joined here too. The step's own context carries the budget.
+	a.Shutdown.Push("background-work", safe.WaitGo)
 
 	// After the API drain, not before: reversing the two lets a late request
 	// start background work concurrently with the drain that waits for it.
@@ -134,16 +136,6 @@ func (a *App) pushRunSteps() {
 		a.signalShutdown()
 		return nil
 	})
-}
-
-// drainBudget is what remains of the step's own timeout, so the background drain
-// cannot outlive the bound the shutdown stack applies to every step.
-func drainBudget(ctx context.Context) time.Duration {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return shutdownStepTimeout
-	}
-	return time.Until(deadline)
 }
 
 // Close runs the teardown stack and cancels the application context. It is

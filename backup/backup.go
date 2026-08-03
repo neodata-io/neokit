@@ -48,11 +48,16 @@ const (
 	dateLayout = "2006-01-02"
 )
 
-// Clock is a local wall-clock time of day. The zero value means midnight, so
-// [Options.At] treats it as unset and uses [DefaultHour].
+// Clock is a local wall-clock time of day, read in the deployment's own
+// timezone.
 type Clock struct{ Hour, Minute int }
 
 func (c Clock) String() string { return fmt.Sprintf("%02d:%02d", c.Hour, c.Minute) }
+
+// valid reports whether c names a real time of day.
+func (c Clock) valid() bool {
+	return c.Hour >= 0 && c.Hour <= 23 && c.Minute >= 0 && c.Minute <= 59
+}
 
 // Options configures a [Service].
 type Options struct {
@@ -66,10 +71,13 @@ type Options struct {
 	// outcome a backup system must never have.
 	Retention int
 
-	// At is the local time the scheduled backup runs. The zero value means
-	// [DefaultHour]:00 — the quiet part of the night in the deployment's own
-	// timezone, which is what a wall-clock schedule is for.
-	At Clock
+	// At is the local time the scheduled backup runs. Nil means [DefaultHour]:00
+	// — the quiet part of the night in the deployment's own timezone, which is
+	// what a wall-clock schedule is for.
+	//
+	// A pointer so that midnight stays expressible: &Clock{} is 00:00, where a
+	// plain zero value could only ever mean "unset".
+	At *Clock
 
 	// Prefix begins every backup filename. Empty means [DefaultPrefix].
 	//
@@ -93,6 +101,11 @@ type Service struct {
 // New wires the service and declares the "backups" line on d, along with the
 // schedule that keeps it true: on with the time and retention when a directory
 // is configured, off with the reason when not. See [Options] for field meaning.
+//
+// An [Options.At] outside 0:00–23:59 panics here, where the value is still
+// traceable to the call that supplied it. The scheduler panics on one too, but
+// it does so inside a supervised goroutine minutes later — a stack trace with no
+// caller in it, on a loop that never produces a backup.
 func New(d declare.Declarer, s Snapshotter, o Options) *Service {
 	if o.Retention < 1 {
 		o.Retention = 1
@@ -101,8 +114,12 @@ func New(d declare.Declarer, s Snapshotter, o Options) *Service {
 	if prefix == "" {
 		prefix = DefaultPrefix
 	}
-	if o.At == (Clock{}) {
-		o.At = Clock{Hour: DefaultHour}
+	at := Clock{Hour: DefaultHour}
+	if o.At != nil {
+		at = *o.At
+	}
+	if !at.valid() {
+		panic(fmt.Sprintf("backup: Options.At is %d:%d, which is not a time of day", at.Hour, at.Minute))
 	}
 
 	svc := &Service{snap: s, dir: o.Dir, retention: o.Retention, prefix: prefix, now: time.Now}
@@ -111,8 +128,8 @@ func New(d declare.Declarer, s Snapshotter, o Options) *Service {
 		return svc
 	}
 	declare.Add(d, "backups",
-		declare.Detail(fmt.Sprintf("daily at %s, keep %d", o.At, o.Retention)),
-		declare.Run(svc.schedule(o.At).Run))
+		declare.Detail(fmt.Sprintf("daily at %s, keep %d", at, o.Retention)),
+		declare.Run(svc.schedule(at).Run))
 	return svc
 }
 

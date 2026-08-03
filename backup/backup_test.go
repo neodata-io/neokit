@@ -272,10 +272,37 @@ func TestScheduleIsStatedAndConfigurable(t *testing.T) {
 
 	var r2 declRec
 	backup.New(&r2, &fakeSnap{}, backup.Options{
-		Dir: t.TempDir(), Retention: 7, At: backup.Clock{Hour: 21, Minute: 30},
+		Dir: t.TempDir(), Retention: 7, At: &backup.Clock{Hour: 21, Minute: 30},
 	})
 	if got := r2.got[0].Detail; !strings.Contains(got, "21:30") {
 		t.Errorf("detail = %q, want the configured 21:30 stated", got)
+	}
+}
+
+// Midnight is a time of day like any other. It is only unsayable if the zero
+// value doubles as "unset" — which is why At is a pointer.
+func TestMidnightIsExpressible(t *testing.T) {
+	var r declRec
+	backup.New(&r, &fakeSnap{}, backup.Options{Dir: t.TempDir(), At: &backup.Clock{}})
+	if got := r.got[0].Detail; !strings.Contains(got, "00:00") {
+		t.Errorf("detail = %q, want the requested 00:00 rather than the default", got)
+	}
+}
+
+// An hour the scheduler would reject has to fail here, at the call that supplied
+// it. Deferred, it becomes a panic inside a supervised goroutine that respawns
+// forever and never writes a backup.
+func TestAnImpossibleTimeFailsAtWiring(t *testing.T) {
+	for _, at := range []backup.Clock{{Hour: 24}, {Hour: -1}, {Minute: 60}, {Minute: -1}} {
+		t.Run(at.String(), func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("New accepted At = %s", at)
+				}
+			}()
+			var r declRec
+			backup.New(&r, &fakeSnap{}, backup.Options{Dir: t.TempDir(), At: &at})
+		})
 	}
 }
 

@@ -95,7 +95,7 @@ func (j Job) Run(ctx context.Context) {
 // Use [Job.Run] directly when you own the goroutine — for instance to join it
 // with a [safe.Group] of your own rather than the package-level default.
 func (j Job) Start(ctx context.Context) {
-	safe.Go("job:"+j.Name, func() { j.Run(ctx) })
+	safe.Go(ctx, "job:"+j.Name, func() { j.Run(ctx) })
 }
 
 // tick runs Do once: bounded, guarded, and never able to end the loop.

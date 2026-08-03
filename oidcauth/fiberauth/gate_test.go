@@ -177,6 +177,48 @@ func TestNewRunsTheSessionSweep(t *testing.T) {
 	}
 }
 
+// Switching a login off does not delete the sessions it already created, and
+// nothing else prunes them. The sweep therefore outlives the login — under its
+// own name, because there is no login line left to attach it to.
+func TestTheSweepRunsEvenWithNoLoginConfigured(t *testing.T) {
+	a := newTestApp(t)
+	store := &sweepingStore{memStore: newMemStore(), swept: make(chan struct{}, 1)}
+	newGate(t, a, nil, store)
+
+	c, ok := componentNamed(a, "session sweep")
+	if !ok {
+		t.Fatalf("no sweep declared with the login off: %+v", a.Components())
+	}
+	if !c.On {
+		t.Fatal("a sweep that is declared off never runs — the rows stay forever")
+	}
+	if c.Run == nil {
+		t.Fatal("the sweep declared no background work")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); c.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-stopped })
+
+	select {
+	case <-store.swept:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the declared sweep never ran")
+	}
+}
+
+// A store that cannot sweep declares nothing at all, on or off: a job that
+// cannot prune is a report line with no work behind it.
+func TestAStoreThatCannotSweepDeclaresNoSweep(t *testing.T) {
+	a := newTestApp(t)
+	newGate(t, a, nil, newMemStore())
+
+	if _, ok := componentNamed(a, "session sweep"); ok {
+		t.Errorf("a store that cannot sweep must declare no sweep: %+v", a.Components())
+	}
+}
+
 // A store that cannot sweep declares no work — and login is still one line, not
 // two, because the sweep is part of what login is rather than a feature of its
 // own.
