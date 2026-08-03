@@ -1,13 +1,16 @@
 // Package fiberx holds cross-cutting Fiber v3 HTTP helpers: the error
 // envelope, request binding/validation, metrics+logging middleware, rate
 // limiting and optimistic-concurrency helpers. It never knows a caller's own
-// domain sentinels — see DomainMapper for the seam that keeps them out.
+// domain sentinels — see DomainMapper for the seam that keeps them out. It does
+// know neokit's own [github.com/neodata-io/neokit/errs], which is what lets a
+// service render 404, 400 and 409 with no mapper configured.
 package fiberx
 
 import (
 	"errors"
 	"log/slog"
 
+	"github.com/neodata-io/neokit/errs"
 	"github.com/neodata-io/neokit/logx"
 
 	"github.com/gofiber/fiber/v3"
@@ -24,11 +27,15 @@ type DomainMapper func(err error) (status int, message, code string, ok bool)
 // falling back to the generic vocabulary below. A nil mapper is fine — it
 // simply means every error falls straight through to the generic path.
 type Errors struct {
-	// Mapper translates a caller's own error sentinels first; nil means every
-	// error falls straight through to the generic vocabulary. Exported for the
-	// same reason QuietPath below is: both are things only the caller can know,
-	// and configuring one of them at construction and the other by assignment
-	// would be an arbitrary split.
+	// Mapper translates a caller's own error sentinels first. Nil means only the
+	// standard set in [github.com/neodata-io/neokit/errs] is recognised, and
+	// anything else is a 500. A Mapper that returns ok=true wins outright,
+	// including over the standard set — that is how a caller keeps its own public
+	// message for a sentinel it shares.
+	//
+	// Exported for the same reason QuietPath below is: both are things only the
+	// caller can know, and configuring one of them at construction and the other
+	// by assignment would be an arbitrary split.
 	Mapper DomainMapper
 
 	// Log receives request failures and summary records. Nil means
@@ -46,8 +53,9 @@ type Errors struct {
 	QuietPath func(path string) bool
 }
 
-// NewErrors builds an Errors bound to m. m may be nil for a caller with no
-// domain sentinels of its own (yet).
+// NewErrors builds an Errors bound to m. m may be nil: the sentinels in
+// [github.com/neodata-io/neokit/errs] are recognised either way, so a service
+// with no error vocabulary of its own still renders 404, 400 and 409 correctly.
 //
 // Equivalent to &Errors{Mapper: m}, and kept because it reads better at a call
 // site that sets nothing else.
@@ -227,7 +235,30 @@ func (e *Errors) mapError(err error) (status int, msg, code string) {
 			return status, msg, code
 		}
 	}
+	if status, msg, code, ok := stdMapper(err); ok {
+		return status, msg, code
+	}
 	return fiber.StatusInternalServerError, "internal server error", "internal"
+}
+
+// stdMapper recognises the sentinels in [github.com/neodata-io/neokit/errs], so
+// a service with no DomainMapper of its own still renders the three cases every
+// service has instead of collapsing them to a 500.
+//
+// It runs *after* a caller's Mapper, which therefore always wins. That ordering
+// is what lets a caller share a sentinel and still keep a better public message
+// for it — a generic "conflict" is correct but says less than "the record was
+// updated concurrently, please retry".
+func stdMapper(err error) (status int, msg, code string, ok bool) {
+	switch {
+	case errors.Is(err, errs.ErrNotFound):
+		return fiber.StatusNotFound, "not found", "not_found", true
+	case errors.Is(err, errs.ErrInvalidInput):
+		return fiber.StatusBadRequest, "invalid input", "invalid_input", true
+	case errors.Is(err, errs.ErrConflict):
+		return fiber.StatusConflict, "conflict", "conflict", true
+	}
+	return 0, "", "", false
 }
 
 // CodeForStatus gives a stable machine code for a response that carries no domain
