@@ -12,6 +12,7 @@ import (
 	"github.com/neodata-io/neokit/lifecycle"
 	"github.com/neodata-io/neokit/logx"
 	"github.com/neodata-io/neokit/netx"
+	"github.com/neodata-io/neokit/safe"
 )
 
 // Teardown budgets.
@@ -35,18 +36,20 @@ func (a *App) Report() string {
 // Run starts the listener, waits for a termination signal or a fatal listener
 // error, and unwinds the teardown stack. It blocks until the process is done.
 //
-// The three steps it pushes complete the order described on [App]:
+// The four steps it pushes complete the order described on [App]:
 //
-//	streams → api → background-context
+//	streams → api → background-context → background-work
 //	        → [the application's steps, reversed] → metrics-export → tracing
 func (a *App) Run() error {
 	addr, network := listenAddress(a.Cfg.BindAddr, a.Cfg.Port)
 
 	// Here rather than in New: the report is only complete once the caller has
-	// finished declaring its components. Declaring after this point is warned
-	// about, since the report has already been rendered without it.
-	a.reportPrinted.Store(true)
+	// finished declaring its components.
 	fmt.Println(a.Report())
+
+	// After the report, so the process states what it is before any of it starts
+	// logging.
+	a.startBackgroundWork()
 
 	// Buffered, so the listener goroutine cannot leak when Run returns on a
 	// signal without ever reading from it.
@@ -89,9 +92,29 @@ func (a *App) Run() error {
 	return shutdownErr
 }
 
+// startBackgroundWork launches each declared component's work on the
+// application context. Off components are skipped, for the reason their Ready
+// is: an unconfigured feature must not start doing anything.
+func (a *App) startBackgroundWork() {
+	for _, c := range a.components {
+		if !c.On || c.Run == nil {
+			continue
+		}
+		safe.Go(c.Name, func() { c.Run(a.ctx) })
+	}
+}
+
 // pushRunSteps registers the teardown Run owns. Order matters: the stack unwinds
 // in reverse, so the last pushed runs first.
 func (a *App) pushRunSteps() {
+	// Before the application's own steps, so a job finishes its write before the
+	// store it writes to closes — the ordering [safe.Go] and jobs.Job.Start
+	// promise. It drains the process-wide group, so work the application started
+	// itself is joined here too.
+	a.Shutdown.Push("background-work", func(ctx context.Context) error {
+		return safe.WaitGo(drainBudget(ctx))
+	})
+
 	// After the API drain, not before: reversing the two lets a late request
 	// start background work concurrently with the drain that waits for it.
 	a.Shutdown.Push("background-context", func(context.Context) error {
@@ -111,6 +134,16 @@ func (a *App) pushRunSteps() {
 		a.signalShutdown()
 		return nil
 	})
+}
+
+// drainBudget is what remains of the step's own timeout, so the background drain
+// cannot outlive the bound the shutdown stack applies to every step.
+func drainBudget(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return shutdownStepTimeout
+	}
+	return time.Until(deadline)
 }
 
 // Close runs the teardown stack and cancels the application context. It is

@@ -77,12 +77,31 @@ func TestReadyAndCloseCarryThrough(t *testing.T) {
 	}
 }
 
+// Run is the fourth thing a component declares about itself, alongside its
+// report line, its readiness check and its teardown step.
+func TestRunCarriesThrough(t *testing.T) {
+	var r recorder
+	ran := make(chan struct{})
+	declare.Add(&r, "backups", declare.Run(func(context.Context) { close(ran) }))
+
+	c := r.got[0]
+	if c.Run == nil {
+		t.Fatal("declare.Run left Component.Run nil")
+	}
+	c.Run(context.Background())
+	select {
+	case <-ran:
+	default:
+		t.Error("Component.Run did not call the registered function")
+	}
+}
+
 // The zero value must be inert: a caller that fills only Name and On has no
-// Ready and no Close, and neither may be called.
+// Ready, Close or Run, and none of them may be called.
 func TestZeroComponentHasNoFuncs(t *testing.T) {
 	var c declare.Component
-	if c.Ready != nil || c.Close != nil {
-		t.Error("zero Component must have nil Ready and Close")
+	if c.Ready != nil || c.Close != nil || c.Run != nil {
+		t.Error("zero Component must have nil Ready, Close and Run")
 	}
 	if c.On {
 		t.Error("zero Component must be off")

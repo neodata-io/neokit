@@ -59,10 +59,6 @@ func (a *App) Declare(s Component) {
 	if strings.TrimSpace(s.Name) == "" {
 		panic("app: Component.Name is required")
 	}
-	if a.reportPrinted.Load() {
-		a.Log.Warn("component declared after the boot report; it will not appear there",
-			"component", s.Name)
-	}
 	for _, existing := range a.components {
 		if existing.Name == s.Name {
 			a.Log.Warn("component already declared; the report, readiness and teardown will each list it twice",

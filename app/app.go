@@ -39,7 +39,6 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -153,11 +152,6 @@ type App struct {
 	checks *health.Registry
 
 	components []Component
-
-	// reportPrinted records that Run has printed the boot report. A component
-	// declared after that is half-applied — it misses the report but still
-	// registers — so Declare warns rather than leaving you to notice.
-	reportPrinted atomic.Bool
 }
 
 // shutdownSignal tells long-lived responses to stop. Released before the HTTP

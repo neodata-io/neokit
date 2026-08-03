@@ -140,18 +140,16 @@ func (g *Group) Len() int { return int(g.n.Load()) }
 //
 // It is process-wide state, with the coupling that implies: a WaitGo on it
 // drains every caller's goroutines, including a dependency's. That is tolerable
-// in a binary's own composition root, which is the only place it should be
-// used — anything reusable should hold its own [Group].
+// in a binary's own composition root, and app.Run is the sanctioned one — it
+// owns the signal handlers and the teardown order, so its drain is the process's
+// drain. Anything else reusable should hold its own [Group].
 var defaultGroup Group
 
 // Go supervises fn on the package-level default group. See [Group.Go].
 func Go(name string, fn func()) { defaultGroup.Go(name, fn) }
 
 // WaitGo drains the package-level default group. See [Group.Wait].
-//
-// The error is dropped to keep the historical signature; a timeout is still
-// logged. Use [Group.Wait] to act on it.
-func WaitGo(timeout time.Duration) { _ = defaultGroup.Wait(timeout) }
+func WaitGo(timeout time.Duration) error { return defaultGroup.Wait(timeout) }
 
 // runGuarded runs fn, recovering and logging any panic; it reports whether one
 // occurred so the supervisor knows to respawn (true) or stop (false).

@@ -1,11 +1,26 @@
 package safe_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/neodata-io/neokit/safe"
 )
+
+// A drain that gave up has to say so: app.Run turns it into a failed shutdown
+// step, and a process that abandoned background work must not exit zero.
+func TestWaitGoReportsATimeout(t *testing.T) {
+	release := make(chan struct{})
+	// Drain the straggler before leaving, or the next test's WaitGo waits on it.
+	t.Cleanup(func() { close(release); safe.WaitGo(2 * time.Second) })
+
+	safe.Go("straggler", func() { <-release })
+
+	if err := safe.WaitGo(50 * time.Millisecond); !errors.Is(err, safe.ErrDrainTimeout) {
+		t.Errorf("WaitGo err = %v, want %v", err, safe.ErrDrainTimeout)
+	}
+}
 
 func TestGoRecoversPanicAndKeepsTheWaitGroupBalanced(t *testing.T) {
 	// If Go failed to recover, the panic would escape its goroutine and take
