@@ -44,7 +44,7 @@ func run() error {
 	// check, and a place in the shutdown order — declared before Run adds its own
 	// steps, so the database closes after the HTTP drain rather than out from
 	// under requests still in flight.
-	db, err := sqlitex.Open(service, "database", cfg.DatabasePath, nil)
+	db, err := sqlitex.Open(service, cfg.DatabasePath, nil)
 	if err != nil {
 		return err
 	}

@@ -15,16 +15,23 @@ import (
 	"github.com/neodata-io/neokit/declare"
 )
 
-// Open opens a SQLite database with the settings a server actually wants, runs
-// migrate against it, and declares it on d — so the boot report line, the
-// readiness check and the shutdown step all come from this one call. A nil
-// migrate skips the migration step.
+// ComponentName is what [Open] declares. Tests and scrape configs use it
+// instead of retyping "database".
+const ComponentName = "database"
+
+// Open opens the service's database with the settings a server actually wants,
+// runs migrate against it, and declares it as [ComponentName] — the boot report
+// line, the readiness check and the shutdown step all come from this one call.
+// A nil migrate skips the migration step.
 //
-// name labels the component; pass distinct names when opening more than one
-// database. Nothing is declared if the open fails.
-//
-//	db, err := sqlitex.Open(a, "database", cfg.DatabasePath, migrate)
-func Open(d declare.Declarer, name, path string, migrate func(*sql.DB) error) (*sql.DB, error) {
+//	db, err := sqlitex.Open(a, cfg.DatabasePath, migrate)
+func Open(d declare.Declarer, path string, migrate func(*sql.DB) error) (*sql.DB, error) {
+	return OpenNamed(d, ComponentName, path, migrate)
+}
+
+// OpenNamed is [Open] with an explicit component name, for the service that
+// opens two databases. Nothing is declared if the open fails.
+func OpenNamed(d declare.Declarer, name, path string, migrate func(*sql.DB) error) (*sql.DB, error) {
 	// An empty path is never a legitimate target, and it is not harmless: SQLite
 	// accepts it and hands back a private, anonymous database that accepts writes
 	// and vanishes on restart. A deployment that forgot to set its path would
@@ -81,11 +88,11 @@ func Open(d declare.Declarer, name, path string, migrate func(*sql.DB) error) (*
 	}
 
 	// Last, so nothing is declared for a database that failed to open or migrate.
-	d.Declare(declare.Component{
-		Name: name, On: true, Detail: path,
-		Ready: db.PingContext,
-		Close: func(context.Context) error { return db.Close() },
-	})
+	declare.Add(d, name,
+		declare.Detail(path),
+		declare.Ready(db.PingContext),
+		declare.Close(func(context.Context) error { return db.Close() }),
+	)
 	return db, nil
 }
 
