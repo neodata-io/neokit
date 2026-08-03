@@ -38,6 +38,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -141,12 +142,11 @@ type App struct {
 	drain  *drainSignal
 	// Unexported so it can only be fed by Declare, which also writes the boot
 	// report — a check registered around it would be invisible there.
-	health *health.Registry
-	// metrics serves the Prometheus endpoint, or is nil when it is switched off.
-	// Unexported because where it is mounted is the builder's decision:
-	// above the middleware chain, so a scrape is not itself logged and metered.
-	metrics    http.Handler
+	readiness  *health.Registry
 	subsystems []Subsystem
+	// booted is set by Run before it prints the boot report, after which a
+	// Declare is half-applied: it misses the report but still registers.
+	booted atomic.Bool
 }
 
 // drainSignal broadcasts that shutdown has started, before the HTTP drain.
@@ -195,13 +195,13 @@ func New(o Options) (*App, error) {
 
 	a := &App{
 		Name: o.Name, Version: o.Version, Cfg: o.Base,
-		Log:      log,
-		Errors:   &fiberx.Errors{Log: log},
-		Shutdown: &lifecycle.Stack{Log: log},
-		health:   &health.Registry{Log: log},
-		ctx:      ctx,
-		cancel:   cancel,
-		drain:    newDrainSignal(),
+		Log:       log,
+		Errors:    &fiberx.Errors{Log: log},
+		Shutdown:  &lifecycle.Stack{Log: log},
+		readiness: &health.Registry{Log: log},
+		ctx:       ctx,
+		cancel:    cancel,
+		drain:     newDrainSignal(),
 	}
 
 	// Tracing and metrics export are both opt-in on the standard OTEL env vars
@@ -222,13 +222,12 @@ func New(o Options) (*App, error) {
 		cancel()
 		return nil, err
 	}
-	a.metrics = pipeline.Handler
 	a.Shutdown.Push("metrics-export", pipeline.Shutdown)
 	a.Declare(otelSubsystem("metrics export"))
-	a.Declare(metricsSubsystem(a.metrics != nil, o.Base.MetricsToken))
+	a.Declare(metricsSubsystem(pipeline.Handler != nil, o.Base.MetricsToken))
 	a.Declare(healthSubsystem())
 
-	a.HTTP = a.newFiber(o)
+	a.HTTP = a.newFiber(o, pipeline.Handler)
 	return a, nil
 }
 
@@ -299,7 +298,11 @@ func healthSubsystem() Subsystem {
 }
 
 // newFiber builds the HTTP server and the standard middleware chain.
-func (a *App) newFiber(o Options) *fiber.App {
+//
+// scrape is the Prometheus endpoint, nil when its reader failed to build. Passed
+// rather than stored on [App]: where it is mounted is this function's decision,
+// and nothing after construction has any use for it.
+func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 	cfg := fiber.Config{
 		AppName:   a.Name,
 		BodyLimit: defaultBodyLimit,
@@ -339,14 +342,14 @@ func (a *App) newFiber(o Options) *fiber.App {
 	// Recover is above this line, so a readiness check that panics is still a 500
 	// rather than a dead process. TestProbesBypassTheRequestLog pins the ordering.
 	f.Get(LivePath, adaptor.HTTPHandler(health.LiveHandler()))
-	f.Get(ReadyPath, adaptor.HTTPHandler(a.health.ReadyHandler()))
+	f.Get(ReadyPath, adaptor.HTTPHandler(a.readiness.ReadyHandler()))
 
 	// The scrape belongs up here for the same reasons and one more: measured by
 	// the middleware below, every scrape would add a data point about the act of
 	// collecting data points, and at a 15-second interval that self-observation
 	// is a visible fraction of the traffic on an otherwise idle service.
-	if a.metrics != nil {
-		f.Get(MetricsPath, bearerGuard(o.Base.MetricsToken), adaptor.HTTPHandler(a.metrics))
+	if scrape != nil {
+		f.Get(MetricsPath, bearerGuard(o.Base.MetricsToken), adaptor.HTTPHandler(scrape))
 	}
 
 	f.Use(requestid.New())
@@ -383,7 +386,7 @@ func (a *App) newFiber(o Options) *fiber.App {
 // Returning the handler rather than the [health.Registry] is deliberate: the
 // registry can also register checks, and those must go through [App.Declare] so
 // the boot report and the sweep cannot disagree about what this process is.
-func (a *App) ReadyDetail() http.Handler { return a.health.DetailHandler() }
+func (a *App) ReadyDetail() http.Handler { return a.readiness.DetailHandler() }
 
 // Context is the application's lifetime. Start background work from it: it is
 // cancelled once the HTTP server has drained, not when shutdown begins, so a

@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/neodata-io/neokit/config"
@@ -48,8 +50,8 @@ func TestDeclareRegistersAReadinessCheck(t *testing.T) {
 		Ready: func(context.Context) error { return nil },
 	})
 
-	if a.health.Len() != 1 {
-		t.Errorf("readiness has %d checks, want the declared one", a.health.Len())
+	if a.readiness.Len() != 1 {
+		t.Errorf("readiness has %d checks, want the declared one", a.readiness.Len())
 	}
 	got, ok := declared(a, "database")
 	if !ok {
@@ -70,11 +72,34 @@ func TestAnOffSubsystemRegistersNoCheck(t *testing.T) {
 		Ready: func(context.Context) error { return errors.New("never called") },
 	})
 
-	if a.health.Len() != 0 {
+	if a.readiness.Len() != 0 {
 		t.Error("an off subsystem must contribute no readiness check")
 	}
-	if got := a.health.Check(context.Background()); !got.Ready {
+	if got := a.readiness.Check(context.Background()); !got.Ready {
 		t.Error("an off subsystem must not make the app unready")
+	}
+}
+
+// The report renders once, at the top of Run. A declaration after that misses it
+// but still registers its check and its shutdown step — half-applied, and silent
+// about it. Stack.Push already warns in the same situation.
+func TestDeclareAfterTheBootReportWarns(t *testing.T) {
+	var logged bytes.Buffer
+	a, err := New(Options{
+		Name: "testapp",
+		Base: config.Base{Port: 0, LogLevel: "debug", LogFormat: "json"},
+		Log:  slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	a.booted.Store(true) // what Run does before it prints the report
+	a.Declare(Subsystem{Name: "late", On: true, Detail: "declared after Run started"})
+
+	if !strings.Contains(logged.String(), "boot report") {
+		t.Errorf("want a warning that the declaration missed the report; got:\n%s", logged.String())
 	}
 }
 
@@ -83,7 +108,7 @@ func TestDeclareWithoutACheckIsFine(t *testing.T) {
 	a := newInternalApp(t)
 	a.Declare(Subsystem{Name: "web push", On: true, Detail: "vapid key persisted"})
 
-	if a.health.Len() != 0 {
+	if a.readiness.Len() != 0 {
 		t.Error("a subsystem with no Ready must register no check")
 	}
 	if _, ok := declared(a, "web push"); !ok {
