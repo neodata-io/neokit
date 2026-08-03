@@ -34,14 +34,6 @@ func newTestApp(t *testing.T) *neoapp.App {
 	return a
 }
 
-func componentNamed(a *neoapp.App, name string) (neoapp.Component, bool) {
-	for _, c := range a.Components() {
-		if c.Name == name {
-			return c, true
-		}
-	}
-	return neoapp.Component{}, false
-}
 
 // ── Test doubles ────────────────────────────────────────────────────────────
 
@@ -150,94 +142,57 @@ func (s *sweepingStore) DeleteExpiredSessions(context.Context, time.Time) (int64
 	return 0, nil
 }
 
-// New starts the sweep itself. Handing it back to the caller is how a
-// deployment ends up with a session table nothing ever prunes.
+// New discovers the sweep itself. Handing it back to the caller as Run is how
+// a deployment ends up with a session table nothing ever prunes.
 func TestNewRunsTheSessionSweep(t *testing.T) {
 	a := newTestApp(t)
 	store := &sweepingStore{memStore: newMemStore(), swept: make(chan struct{}, 1)}
-	newGate(t, a, testProvider(t, "http://app.test"), store)
-
-	c, ok := componentNamed(a, "login")
-	if !ok {
-		t.Fatal("no login component declared")
-	}
-	if c.Run == nil {
-		t.Fatal("login declared no session sweep")
-	}
+	g := newGate(t, a, testProvider(t, "http://app.test"), store)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
-	go func() { defer close(stopped); c.Run(ctx) }()
+	go func() { defer close(stopped); g.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-stopped })
 
 	select {
 	case <-store.swept:
 	case <-time.After(2 * time.Second):
-		t.Fatal("the declared sweep never ran")
+		t.Fatal("Run never ran the session sweep")
 	}
 }
 
 // Switching a login off does not delete the sessions it already created, and
-// nothing else prunes them. The sweep therefore outlives the login — under its
-// own name, because there is no login line left to attach it to.
+// nothing else prunes them. The sweep therefore outlives the login.
 func TestTheSweepRunsEvenWithNoLoginConfigured(t *testing.T) {
 	a := newTestApp(t)
 	store := &sweepingStore{memStore: newMemStore(), swept: make(chan struct{}, 1)}
-	newGate(t, a, nil, store)
-
-	c, ok := componentNamed(a, "session sweep")
-	if !ok {
-		t.Fatalf("no sweep declared with the login off: %+v", a.Components())
-	}
-	if !c.On {
-		t.Fatal("a sweep that is declared off never runs — the rows stay forever")
-	}
-	if c.Run == nil {
-		t.Fatal("the sweep declared no background work")
-	}
+	g := newGate(t, a, nil, store)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
-	go func() { defer close(stopped); c.Run(ctx) }()
+	go func() { defer close(stopped); g.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-stopped })
 
 	select {
 	case <-store.swept:
 	case <-time.After(2 * time.Second):
-		t.Fatal("the declared sweep never ran")
+		t.Fatal("Run never ran the session sweep even with login off")
 	}
 }
 
-// A store that cannot sweep declares nothing at all, on or off: a job that
-// cannot prune is a report line with no work behind it.
-func TestAStoreThatCannotSweepDeclaresNoSweep(t *testing.T) {
+// A store that cannot sweep in bulk must leave Run a no-op, on or off: a job
+// that cannot prune is nothing to run.
+func TestRunIsANoopWhenTheStoreCannotSweep(t *testing.T) {
 	a := newTestApp(t)
-	newGate(t, a, nil, newMemStore())
+	g := newGate(t, a, nil, newMemStore())
 
-	if _, ok := componentNamed(a, "session sweep"); ok {
-		t.Errorf("a store that cannot sweep must declare no sweep: %+v", a.Components())
-	}
-}
+	done := make(chan struct{})
+	go func() { defer close(done); g.Run(context.Background()) }()
 
-// A store that cannot sweep declares no work — and login is still one line, not
-// two, because the sweep is part of what login is rather than a feature of its
-// own.
-func TestAStoreThatCannotSweepDeclaresNoWork(t *testing.T) {
-	a := newTestApp(t)
-	newGate(t, a, testProvider(t, "http://app.test"), newMemStore())
-
-	logins := 0
-	for _, c := range a.Components() {
-		if c.Name != "login" {
-			continue
-		}
-		logins++
-		if c.Run != nil {
-			t.Error("a store that cannot sweep must declare no background work")
-		}
-	}
-	if logins != 1 {
-		t.Fatalf("declared %d login components, want 1", logins)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run must return immediately when the store cannot sweep")
 	}
 }
 
@@ -811,39 +766,27 @@ func TestResolveIdentityIsRaceFree(t *testing.T) {
 
 // ── New wires the gate ──────────────────────────────────────────────────────
 
-// One call builds the gate and puts it in the boot report, so a caller never
-// writes Declare for login.
-func TestNewDeclaresTheLoginComponent(t *testing.T) {
+// A gate with no Provider reports itself disabled.
+func TestNewGateWithNoProviderIsDisabled(t *testing.T) {
 	a := newTestApp(t)
-	newGate(t, a, nil, newMemStore())
+	g := newGate(t, a, nil, newMemStore())
 
-	c, ok := componentNamed(a, "login")
-	if !ok {
-		t.Fatalf("login missing from Components(): %+v", a.Components())
-	}
-	if c.On {
-		t.Error("a gate with no Provider must be declared off")
-	}
-	if c.Detail == "" {
-		t.Error("an off gate must say why in Detail")
+	if g.Enabled() {
+		t.Error("a gate with no Provider must report disabled")
 	}
 }
 
-// A configured gate must name its issuer in the report, so an operator can see
-// which identity provider this process actually trusts.
-func TestNewDeclaresAnEnabledGateWithItsIssuer(t *testing.T) {
+// A configured gate reports itself enabled and names its issuer, so an
+// operator can see which identity provider this process actually trusts.
+func TestNewGateWithAProviderIsEnabled(t *testing.T) {
 	a := newTestApp(t)
-	newGate(t, a, testProvider(t, "https://app.example.com"), newMemStore())
+	g := newGate(t, a, testProvider(t, "https://app.example.com"), newMemStore())
 
-	c, ok := componentNamed(a, "login")
-	if !ok {
-		t.Fatalf("login missing from Components(): %+v", a.Components())
+	if !g.Enabled() {
+		t.Error("a gate with a Provider must report enabled")
 	}
-	if !c.On {
-		t.Error("a gate with a Provider must be declared on")
-	}
-	if c.Detail != "https://id.example.com" {
-		t.Errorf("Detail = %q, want the issuer", c.Detail)
+	if g.Provider().Issuer() != "https://id.example.com" {
+		t.Errorf("Issuer() = %q, want the configured issuer", g.Provider().Issuer())
 	}
 }
 

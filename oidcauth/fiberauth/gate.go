@@ -37,9 +37,10 @@
 //
 //	admin := a.HTTP.Group("/api/v1/admin", gate.RequireOwner())
 //
-// [New] mounts the identity middleware, then the routes, then declares the gate
-// in the boot report — in that order, which is the one a caller cannot arrange by
-// hand.
+// [New] mounts the identity middleware, then the routes — in that order, which
+// is the one a caller cannot arrange by hand: a caller mounting its own
+// middleware first would never see identity resolved ahead of the routes that
+// read it.
 //
 // Apply [Gate.RequireOwner] to your own route groups rather than expecting this
 // package to hold a list of admin paths: the route definitions already carry
@@ -48,6 +49,7 @@
 package fiberauth
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"time"
@@ -55,7 +57,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/neodata-io/neokit/app"
-	"github.com/neodata-io/neokit/declare"
+	"github.com/neodata-io/neokit/jobs"
 	"github.com/neodata-io/neokit/oidcauth"
 )
 
@@ -158,10 +160,14 @@ type Gate struct {
 
 	// now is the clock, injectable for tests. Never nil after New.
 	now func() time.Time
+
+	// sweepJob prunes expired sessions, when the store supports it. See Run.
+	sweepJob jobs.Job
+	hasSweep bool
 }
 
-// New builds the gate, wires it into a, and declares it in the boot report. One
-// call — there is no separate Register step to forget or to run out of order.
+// New builds the gate and wires it into a. One call — there is no separate
+// Register step to forget or to run out of order.
 //
 // The order it wires in is the point: [Gate.ResolveIdentity] is mounted before
 // the handshake routes, because whoami and the session endpoints read the
@@ -171,9 +177,11 @@ type Gate struct {
 //
 // It cannot fail: a gate with no Provider is a working gate that is switched off.
 //
-// The expired-session sweep is part of the same declaration, so a store that can
-// prune is pruned without a second call to remember — including when the gate is
-// off, since the rows an earlier configuration created outlive it.
+// The expired-session sweep is discovered here too, in [Gate.Run] — a store
+// that can prune is pruned without a second call to remember, including when
+// the gate is off, since the rows an earlier configuration created outlive it.
+// Start it with safe.Go(a.Context(), "session sweep", gate.Run); it's the
+// caller's job now, not New's.
 func New(a *app.App, o Options) *Gate {
 	prefix := strings.TrimSpace(o.CookiePrefix)
 	if prefix == "" {
@@ -205,27 +213,25 @@ func New(a *app.App, o Options) *Gate {
 	a.HTTP.Use(g.ResolveIdentity())
 	g.register(a.HTTP)
 
-	if !g.Enabled() {
-		declare.Add(a, "login", declare.Disabled("not configured"))
-		// A store outlives the login that filled it, and nothing else prunes it —
-		// so the sweep still runs, under its own name because there is no login
-		// line left to hang it off. Stating it is the point: a sweep with no
-		// login configured is otherwise unexplainable.
-		if job, ok := oidcauth.SweepJob(g.sessions, g.logger()); ok {
-			declare.Add(a, "session sweep",
-				declare.Detail("pruning expired sessions; no login configured"),
-				declare.Run(job.Run))
-		}
-		return g
-	}
-	opts := []declare.Option{declare.Detail(g.Provider().Issuer())}
-	// Attached to the login line rather than declared beside it: one feature,
-	// one name.
+	// The sweep runs whether or not login is configured — a store outlives the
+	// login that filled it, and nothing else prunes it.
 	if job, ok := oidcauth.SweepJob(g.sessions, g.logger()); ok {
-		opts = append(opts, declare.Run(job.Run))
+		g.sweepJob = job
+		g.hasSweep = true
 	}
-	declare.Add(a, "login", opts...)
 	return g
+}
+
+// Run runs the session-expiry sweep job until ctx is done, if the session store
+// supports pruning in bulk (see [oidcauth.SweepJob]); it's a no-op that returns
+// immediately otherwise. Start it unconditionally with
+// safe.Go(a.Context(), "session sweep", gate.Run) — the sweep is independent of
+// whether a login is configured.
+func (g *Gate) Run(ctx context.Context) {
+	if !g.hasSweep {
+		return
+	}
+	g.sweepJob.Run(ctx)
 }
 
 func orDefault(v, def string) string {
