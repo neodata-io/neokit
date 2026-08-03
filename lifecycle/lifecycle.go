@@ -99,6 +99,16 @@ func (s *Stack) PushCloser(name string, closer interface{ Close() error }) {
 	s.Push(name, func(context.Context) error { return closer.Close() })
 }
 
+// Closer adapts an ordinary Close() error into a [Step], for a caller that holds
+// the step value rather than pushing it straight onto a [Stack]. Nil in, nil
+// out, which [Stack.Push] already ignores.
+func Closer(c interface{ Close() error }) Step {
+	if c == nil {
+		return nil
+	}
+	return func(context.Context) error { return c.Close() }
+}
+
 // Len reports how many steps are registered.
 func (s *Stack) Len() int {
 	s.mu.Lock()
