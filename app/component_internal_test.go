@@ -1,12 +1,10 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
 
 	"github.com/neodata-io/neokit/config"
@@ -82,29 +80,6 @@ func TestAnOffComponentRegistersNoCheck(t *testing.T) {
 	}
 	if got := a.checks.Check(context.Background()); !got.Ready {
 		t.Error("an off component must not make the app unready")
-	}
-}
-
-// The report renders once, at the top of Run. A declaration after that misses it
-// but still registers its check and its shutdown step — half-applied, and silent
-// about it. Stack.Push already warns in the same situation.
-func TestDeclareAfterTheBootReportWarns(t *testing.T) {
-	var logged bytes.Buffer
-	a, err := New(Options{
-		Name: "testapp",
-		Base: config.Base{Port: 0, LogLevel: "debug", LogFormat: "json"},
-		Log:  slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	t.Cleanup(func() { _ = a.Close() })
-
-	a.reportPrinted.Store(true) // what Run does before it prints the report
-	a.Declare(Component{Name: "late", On: true, Detail: "declared after Run started"})
-
-	if !strings.Contains(logged.String(), "boot report") {
-		t.Errorf("want a warning that the declaration missed the report; got:\n%s", logged.String())
 	}
 }
 

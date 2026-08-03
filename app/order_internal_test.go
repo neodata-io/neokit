@@ -33,7 +33,7 @@ func TestPushRunStepsProducesTheDocumentedOrder(t *testing.T) {
 	slices.Reverse(teardown) // Shutdown unwinds in reverse of push order
 
 	want := []string{
-		"streams", "api", "background-context",
+		"streams", "api", "background-context", "background-work",
 		"database", "metrics-export", "tracing",
 	}
 	if !slices.Equal(teardown, want) {
@@ -51,6 +51,12 @@ func TestPushRunStepsProducesTheDocumentedOrder(t *testing.T) {
 	}
 	if at("database") < at("api") {
 		t.Error(`the application's own steps must follow "api", or a query hits a closed store`)
+	}
+	if at("background-work") < at("background-context") {
+		t.Error(`"background-work" must follow "background-context", or the join waits on work nothing has told to stop`)
+	}
+	if at("background-work") > at("database") {
+		t.Error(`"background-work" must precede the application's own steps, or a job's store closes mid-write`)
 	}
 	if at("tracing") != len(teardown)-1 {
 		t.Error(`"tracing" must be last, so a span from any earlier step still exports`)

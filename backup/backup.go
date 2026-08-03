@@ -23,7 +23,13 @@ import (
 	"time"
 
 	"github.com/neodata-io/neokit/declare"
+	"github.com/neodata-io/neokit/jobs"
 )
+
+// scheduleTimeout bounds one run. A snapshot is a file copy, so an hour is
+// generous for a large database and still short of unbounded — the failure
+// mode jobs exists to prevent.
+const scheduleTimeout = time.Hour
 
 // Snapshotter writes a consistent, standalone copy of the live database to dst,
 // which must not already exist. neokit/sqlitex's SnapshotTo has this shape.
@@ -35,9 +41,18 @@ const (
 	// DefaultPrefix begins a backup filename when Options.Prefix is empty.
 	DefaultPrefix = "backup-"
 
+	// DefaultHour is when the scheduled backup runs if Options.At is unset.
+	DefaultHour = 3
+
 	fileSuffix = ".db"
 	dateLayout = "2006-01-02"
 )
+
+// Clock is a local wall-clock time of day. The zero value means midnight, so
+// [Options.At] treats it as unset and uses [DefaultHour].
+type Clock struct{ Hour, Minute int }
+
+func (c Clock) String() string { return fmt.Sprintf("%02d:%02d", c.Hour, c.Minute) }
 
 // Options configures a [Service].
 type Options struct {
@@ -50,6 +65,11 @@ type Options struct {
 	// of zero would delete each backup the moment it was written, the one
 	// outcome a backup system must never have.
 	Retention int
+
+	// At is the local time the scheduled backup runs. The zero value means
+	// [DefaultHour]:00 — the quiet part of the night in the deployment's own
+	// timezone, which is what a wall-clock schedule is for.
+	At Clock
 
 	// Prefix begins every backup filename. Empty means [DefaultPrefix].
 	//
@@ -70,9 +90,9 @@ type Service struct {
 	now       func() time.Time
 }
 
-// New wires the service and declares the "backups" line on d — on with the
-// retention when a directory is configured, off with the reason when not. See
-// [Options] for field meaning.
+// New wires the service and declares the "backups" line on d, along with the
+// schedule that keeps it true: on with the time and retention when a directory
+// is configured, off with the reason when not. See [Options] for field meaning.
 func New(d declare.Declarer, s Snapshotter, o Options) *Service {
 	if o.Retention < 1 {
 		o.Retention = 1
@@ -81,12 +101,36 @@ func New(d declare.Declarer, s Snapshotter, o Options) *Service {
 	if prefix == "" {
 		prefix = DefaultPrefix
 	}
+	if o.At == (Clock{}) {
+		o.At = Clock{Hour: DefaultHour}
+	}
+
+	svc := &Service{snap: s, dir: o.Dir, retention: o.Retention, prefix: prefix, now: time.Now}
 	if o.Dir == "" {
 		declare.Add(d, "backups", declare.Disabled("no backup directory configured"))
-	} else {
-		declare.Add(d, "backups", declare.Detail(fmt.Sprintf("daily, keep %d", o.Retention)))
+		return svc
 	}
-	return &Service{snap: s, dir: o.Dir, retention: o.Retention, prefix: prefix, now: time.Now}
+	declare.Add(d, "backups",
+		declare.Detail(fmt.Sprintf("daily at %s, keep %d", o.At, o.Retention)),
+		declare.Run(svc.schedule(o.At).Run))
+	return svc
+}
+
+// schedule is the daily job that keeps the declared line honest.
+//
+// RunAtStart is on, which [jobs.Daily] warns against for announcements but is
+// right here: WriteDaily is named for the day, so a restart tops up a missing
+// backup and a restart loop is a no-op. Without it a service that restarts each
+// morning after its backup hour would never back up at all.
+func (s *Service) schedule(at Clock) jobs.Daily {
+	return jobs.Daily{
+		Name:       "backups",
+		Hour:       at.Hour,
+		Minute:     at.Minute,
+		Timeout:    scheduleTimeout,
+		RunAtStart: true,
+		Do:         s.WriteDaily,
+	}
 }
 
 // Backup streams a fresh snapshot to w.

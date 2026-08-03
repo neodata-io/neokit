@@ -165,7 +165,9 @@ routes would already be mounted.
 returns immediately, the guards pass through, and the handshake routes 404 — so
 an app can ship open and close later without a second feature flag.
 
-The session sweep stays yours — `if job, ok := gate.SweepJob(); ok { job.Start(a.Context()) }`.
+The expired-session sweep comes with it. A store that can prune in one statement
+is pruned daily, joined at shutdown, and named on the same `login` line — nothing
+to start and nothing to remember.
 
 ## Runnable examples
 

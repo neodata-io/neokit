@@ -131,6 +131,74 @@ func (m *memStore) put(token string, s oidcauth.Session) string {
 	return token
 }
 
+// sweepingStore is a memStore that can also prune expired rows, which is what
+// makes a session sweep worth scheduling.
+type sweepingStore struct {
+	*memStore
+	swept chan struct{}
+}
+
+// Asserted, because a store that misses the interface by one type declares no
+// sweep and says nothing about why.
+var _ oidcauth.ExpiredSweeper = (*sweepingStore)(nil)
+
+func (s *sweepingStore) DeleteExpiredSessions(context.Context, time.Time) (int64, error) {
+	select {
+	case s.swept <- struct{}{}:
+	default:
+	}
+	return 0, nil
+}
+
+// New starts the sweep itself. Handing it back to the caller is how a
+// deployment ends up with a session table nothing ever prunes.
+func TestNewRunsTheSessionSweep(t *testing.T) {
+	a := newTestApp(t)
+	store := &sweepingStore{memStore: newMemStore(), swept: make(chan struct{}, 1)}
+	newGate(t, a, testProvider(t, "http://app.test"), store)
+
+	c, ok := componentNamed(a, "login")
+	if !ok {
+		t.Fatal("no login component declared")
+	}
+	if c.Run == nil {
+		t.Fatal("login declared no session sweep")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); c.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-stopped })
+
+	select {
+	case <-store.swept:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the declared sweep never ran")
+	}
+}
+
+// A store that cannot sweep declares no work — and login is still one line, not
+// two, because the sweep is part of what login is rather than a feature of its
+// own.
+func TestAStoreThatCannotSweepDeclaresNoWork(t *testing.T) {
+	a := newTestApp(t)
+	newGate(t, a, testProvider(t, "http://app.test"), newMemStore())
+
+	logins := 0
+	for _, c := range a.Components() {
+		if c.Name != "login" {
+			continue
+		}
+		logins++
+		if c.Run != nil {
+			t.Error("a store that cannot sweep must declare no background work")
+		}
+	}
+	if logins != 1 {
+		t.Fatalf("declared %d login components, want 1", logins)
+	}
+}
+
 // testProvider builds a provider whose only job is to answer CookieSecure and
 // RedirectURI — no network is involved.
 func testProvider(t *testing.T, baseURL string) *oidcauth.Provider {

@@ -26,6 +26,10 @@ type Component struct {
 	// Close releases what this component holds. It runs even when On is false —
 	// a non-nil Close means something was allocated and would otherwise leak.
 	Close func(ctx context.Context) error
+
+	// Run is the component's background work: a backup schedule, a session
+	// sweep. It blocks until ctx is cancelled, and is only started when On.
+	Run func(ctx context.Context)
 }
 
 // Declarer is what a component registers itself with. *app.App satisfies it, so
@@ -46,6 +50,11 @@ func Ready(fn func(ctx context.Context) error) Option {
 // Close registers fn to run during shutdown.
 func Close(fn func(ctx context.Context) error) Option {
 	return func(c *Component) { c.Close = fn }
+}
+
+// Run registers fn as the component's background work. See [Component.Run].
+func Run(fn func(ctx context.Context)) Option {
+	return func(c *Component) { c.Run = fn }
 }
 
 // Disabled marks the component off; why is the report's explanation.
