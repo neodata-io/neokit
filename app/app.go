@@ -141,28 +141,39 @@ type App struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
-	drain  *drainSignal
-	// Unexported so it can only be fed by Declare, which also writes the boot
-	// report — a check registered around it would be invisible there.
-	readiness  *health.Registry
+
+	// shuttingDown is released the moment teardown begins, before the HTTP drain,
+	// so a long-lived response ends instead of holding the drain open for its
+	// full timeout. [App.StreamContext] is how a handler subscribes.
+	shuttingDown *shutdownSignal
+
+	// checks is the set /readyz runs. Unexported so it can only be fed by
+	// Declare, which also writes the boot report — a check registered around it
+	// would be invisible there.
+	checks *health.Registry
+
 	components []Component
-	// booted is set by Run before it prints the boot report, after which a
-	// Declare is half-applied: it misses the report but still registers.
-	booted atomic.Bool
+
+	// reportPrinted records that Run has printed the boot report. A component
+	// declared after that is half-applied — it misses the report but still
+	// registers — so Declare warns rather than leaving you to notice.
+	reportPrinted atomic.Bool
 }
 
-// drainSignal broadcasts that shutdown has started, before the HTTP drain.
+// shutdownSignal tells long-lived responses to stop. Released before the HTTP
+// drain, so an event stream — which never ends on its own — ends now rather than
+// holding the drain open for its full timeout.
 //
 // A context, not a channel: Run's teardown and a deferred Close can both release
 // it, and a second cancel is a no-op where a second close panics.
-type drainSignal struct {
+type shutdownSignal struct {
 	ctx     context.Context
 	release context.CancelFunc
 }
 
-func newDrainSignal() *drainSignal {
+func newShutdownSignal() *shutdownSignal {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &drainSignal{ctx: ctx, release: cancel}
+	return &shutdownSignal{ctx: ctx, release: cancel}
 }
 
 // New performs the boot sequence and returns the constructed application.
@@ -197,13 +208,13 @@ func New(o Options) (*App, error) {
 
 	a := &App{
 		Name: o.Name, Version: o.Version, Cfg: o.Base,
-		Log:       log,
-		Errors:    &fiberx.Errors{Log: log},
-		Shutdown:  &lifecycle.Stack{Log: log},
-		readiness: &health.Registry{Log: log},
-		ctx:       ctx,
-		cancel:    cancel,
-		drain:     newDrainSignal(),
+		Log:          log,
+		Errors:       &fiberx.Errors{Log: log},
+		Shutdown:     &lifecycle.Stack{Log: log},
+		checks:       &health.Registry{Log: log},
+		ctx:          ctx,
+		cancel:       cancel,
+		shuttingDown: newShutdownSignal(),
 	}
 
 	// Tracing and metrics export are both opt-in on the standard OTEL env vars
@@ -345,7 +356,7 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 	// Recover is above this line, so a readiness check that panics is still a 500
 	// rather than a dead process. TestProbesBypassTheRequestLog pins the ordering.
 	f.Get(LivePath, adaptor.HTTPHandler(health.LiveHandler()))
-	f.Get(ReadyPath, adaptor.HTTPHandler(a.readiness.ReadyHandler()))
+	f.Get(ReadyPath, adaptor.HTTPHandler(a.checks.ReadyHandler()))
 
 	// The scrape belongs up here for the same reasons and one more: measured by
 	// the middleware below, every scrape would add a data point about the act of
@@ -389,7 +400,7 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 // Returning the handler rather than the [health.Registry] is deliberate: the
 // registry can also register checks, and those must go through [App.Declare] so
 // the boot report and the sweep cannot disagree about what this process is.
-func (a *App) ReadyDetail() http.Handler { return a.readiness.DetailHandler() }
+func (a *App) ReadyDetail() http.Handler { return a.checks.DetailHandler() }
 
 // Context is the application's lifetime. Start background work from it: it is
 // cancelled once the HTTP server has drained, not when shutdown begins, so a
@@ -428,11 +439,12 @@ func (a *App) StreamContext(c fiber.Ctx) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(c.Context())
 	// stop() matters: nothing cancels a Fiber request context, so an unreleased
 	// registration accumulates once per stream ever served.
-	stop := context.AfterFunc(a.drain.ctx, cancel)
+	stop := context.AfterFunc(a.shuttingDown.ctx, cancel)
 	return ctx, func() {
 		stop()
 		cancel()
 	}
 }
 
-func (a *App) closeDraining() { a.drain.release() }
+// signalShutdown releases shuttingDown, ending every long-lived response.
+func (a *App) signalShutdown() { a.shuttingDown.release() }

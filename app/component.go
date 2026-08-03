@@ -59,7 +59,7 @@ func (a *App) Declare(s Component) {
 	if strings.TrimSpace(s.Name) == "" {
 		panic("app: Component.Name is required")
 	}
-	if a.booted.Load() {
+	if a.reportPrinted.Load() {
 		a.Log.Warn("component declared after the boot report; it will not appear there",
 			"component", s.Name)
 	}
@@ -74,7 +74,7 @@ func (a *App) Declare(s Component) {
 	a.components = append(a.components, s)
 
 	if s.On && s.Ready != nil {
-		a.readiness.Register(s.Name, s.Ready)
+		a.checks.Register(s.Name, s.Ready)
 	}
 	// Pushed here rather than at Run, so it unwinds among the caller's own steps
 	// in the order they were declared.

@@ -71,7 +71,7 @@ func TestCloseReleasesTheDrainSignal(t *testing.T) {
 	}
 
 	select {
-	case <-a.drain.ctx.Done():
+	case <-a.shuttingDown.ctx.Done():
 		t.Fatal("the drain signal must stay open while the app runs")
 	default:
 	}
@@ -80,12 +80,12 @@ func TestCloseReleasesTheDrainSignal(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	select {
-	case <-a.drain.ctx.Done():
+	case <-a.shuttingDown.ctx.Done():
 	default:
 		t.Error("Close must release the drain signal")
 	}
 
 	// Run's "streams" step and a caller's deferred Close both reach
-	// closeDraining. The old channel-close needed a sync.Once to survive this.
-	a.closeDraining()
+	// signalShutdown. The old channel-close needed a sync.Once to survive this.
+	a.signalShutdown()
 }

@@ -55,8 +55,8 @@ func TestDeclareRegistersAReadinessCheck(t *testing.T) {
 		Ready: func(context.Context) error { return nil },
 	})
 
-	if a.readiness.Len() != 1 {
-		t.Errorf("readiness has %d checks, want the declared one", a.readiness.Len())
+	if a.checks.Len() != 1 {
+		t.Errorf("readiness has %d checks, want the declared one", a.checks.Len())
 	}
 	got, ok := declared(a, "database")
 	if !ok {
@@ -77,10 +77,10 @@ func TestAnOffComponentRegistersNoCheck(t *testing.T) {
 		Ready: func(context.Context) error { return errors.New("never called") },
 	})
 
-	if a.readiness.Len() != 0 {
+	if a.checks.Len() != 0 {
 		t.Error("an off component must contribute no readiness check")
 	}
-	if got := a.readiness.Check(context.Background()); !got.Ready {
+	if got := a.checks.Check(context.Background()); !got.Ready {
 		t.Error("an off component must not make the app unready")
 	}
 }
@@ -100,7 +100,7 @@ func TestDeclareAfterTheBootReportWarns(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = a.Close() })
 
-	a.booted.Store(true) // what Run does before it prints the report
+	a.reportPrinted.Store(true) // what Run does before it prints the report
 	a.Declare(Component{Name: "late", On: true, Detail: "declared after Run started"})
 
 	if !strings.Contains(logged.String(), "boot report") {
@@ -113,7 +113,7 @@ func TestDeclareWithoutACheckIsFine(t *testing.T) {
 	a := newInternalApp(t)
 	a.Declare(Component{Name: "web push", On: true, Detail: "vapid key persisted"})
 
-	if a.readiness.Len() != 0 {
+	if a.checks.Len() != 0 {
 		t.Error("a component with no Ready must register no check")
 	}
 	if _, ok := declared(a, "web push"); !ok {

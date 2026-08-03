@@ -45,7 +45,7 @@ func (a *App) Run() error {
 	// Here rather than in New: the report is only complete once the caller has
 	// finished declaring its components. Declaring after this point is warned
 	// about, since the report has already been rendered without it.
-	a.booted.Store(true)
+	a.reportPrinted.Store(true)
 	fmt.Println(a.Report())
 
 	// Buffered, so the listener goroutine cannot leak when Run returns on a
@@ -105,10 +105,10 @@ func (a *App) pushRunSteps() {
 		return a.HTTP.ShutdownWithTimeout(httpDrainTimeout)
 	})
 
-	// Released first of all, so the drain does not wait its full timeout on a
+	// Released first of all, so the HTTP drain does not wait its full timeout on a
 	// stream that would never end on its own.
 	a.Shutdown.Push("streams", func(context.Context) error {
-		a.closeDraining()
+		a.signalShutdown()
 		return nil
 	})
 }
@@ -125,7 +125,7 @@ func (a *App) Close() error {
 	// Belt and braces for the paths that never reached Run: without its steps on
 	// the stack, nothing else would cancel the context or release the streams.
 	a.cancel()
-	a.closeDraining()
+	a.signalShutdown()
 	return err
 }
 
