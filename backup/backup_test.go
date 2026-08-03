@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/neodata-io/neokit/backup"
+	"github.com/neodata-io/neokit/declare"
 )
 
 // fakeSnap writes a recognisable file wherever it is pointed.
@@ -24,7 +25,7 @@ func (f *fakeSnap) SnapshotTo(_ context.Context, dst string) error {
 func TestWriteDailyIsIdempotentWithinADay(t *testing.T) {
 	dir := t.TempDir()
 	snap := &fakeSnap{}
-	s := backup.New(snap, backup.Options{Dir: dir, Retention: 7})
+	s := backup.New(&declRec{}, snap, backup.Options{Dir: dir, Retention: 7})
 
 	for range 3 {
 		if err := s.WriteDaily(context.Background()); err != nil {
@@ -45,7 +46,7 @@ func TestRetentionKeepsTheNewest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 3})
+	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 3})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestRetentionKeepsTheNewest(t *testing.T) {
 // written, which is the one outcome a backup system must never have.
 func TestRetentionIsClampedToAtLeastOne(t *testing.T) {
 	dir := t.TempDir()
-	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 0})
+	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 0})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestRetentionIsClampedToAtLeastOne(t *testing.T) {
 // working directory.
 func TestEmptyDirDisablesScheduledBackups(t *testing.T) {
 	snap := &fakeSnap{}
-	s := backup.New(snap, backup.Options{Dir: "", Retention: 7})
+	s := backup.New(&declRec{}, snap, backup.Options{Dir: "", Retention: 7})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("a disabled backup must not be an error: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestEmptyDirDisablesScheduledBackups(t *testing.T) {
 // reflect the database now, not whenever the scheduler last ran.
 func TestBackupStreamsAFreshSnapshot(t *testing.T) {
 	snap := &fakeSnap{}
-	s := backup.New(snap, backup.Options{Dir: t.TempDir(), Retention: 7})
+	s := backup.New(&declRec{}, snap, backup.Options{Dir: t.TempDir(), Retention: 7})
 
 	var buf writeCounter
 	if err := s.Backup(context.Background(), &buf); err != nil {
@@ -128,7 +129,7 @@ func TestListIsNewestFirst(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 10})
+	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 10})
 	got, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -144,7 +145,7 @@ func TestListIsNewestFirst(t *testing.T) {
 func TestCustomPrefixIsUsedForWritingAndReading(t *testing.T) {
 	dir := t.TempDir()
 	snap := &fakeSnap{}
-	s := backup.New(snap, backup.Options{Dir: dir, Retention: 7, Prefix: "neogate-"})
+	s := backup.New(&declRec{}, snap, backup.Options{Dir: dir, Retention: 7, Prefix: "neogate-"})
 
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
@@ -168,7 +169,7 @@ func TestAForeignPrefixIsIgnoredEntirely(t *testing.T) {
 	if err := os.WriteFile(foreign, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 1, Prefix: "backup-"})
+	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 1, Prefix: "backup-"})
 
 	// Write enough of our own that pruning is guaranteed to run.
 	if err := s.WriteDaily(context.Background()); err != nil {
@@ -190,12 +191,37 @@ func TestAForeignPrefixIsIgnoredEntirely(t *testing.T) {
 
 func TestEmptyPrefixFallsBackToTheDefault(t *testing.T) {
 	dir := t.TempDir()
-	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
+	s := backup.New(&declRec{}, &fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
 	if err := s.WriteDaily(context.Background()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
 	got, _ := s.List(context.Background())
 	if len(got) != 1 || !strings.HasPrefix(got[0].Name, backup.DefaultPrefix) {
 		t.Errorf("List = %+v, want the default prefix", got)
+	}
+}
+
+// declRec captures what New declares.
+type declRec struct{ got []declare.Component }
+
+func (r *declRec) Declare(c declare.Component) { r.got = append(r.got, c) }
+
+// New declares the backups line itself: on with the retention when a directory
+// is configured, off with the reason when not.
+func TestNewDeclaresBackups(t *testing.T) {
+	var r declRec
+	backup.New(&r, &fakeSnap{}, backup.Options{Dir: t.TempDir(), Retention: 7})
+	if len(r.got) != 1 {
+		t.Fatalf("declared %d components, want 1", len(r.got))
+	}
+	c := r.got[0]
+	if c.Name != "backups" || !c.On || !strings.Contains(c.Detail, "keep 7") {
+		t.Errorf("component = %+v", c)
+	}
+
+	var r2 declRec
+	backup.New(&r2, &fakeSnap{}, backup.Options{})
+	if c := r2.got[0]; c.On || c.Detail == "" {
+		t.Errorf("no Dir must declare off with a reason, got %+v", c)
 	}
 }
