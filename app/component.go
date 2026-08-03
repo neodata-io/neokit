@@ -1,12 +1,33 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/neodata-io/neokit/declare"
 )
+
+// ClosesOnShutdown registers close to run during teardown — after the HTTP
+// drain, in reverse declaration order — and adds name to the boot report. For a
+// dependency you built; neokit's own packages register themselves.
+func (a *App) ClosesOnShutdown(name, detail string, close func(ctx context.Context) error) {
+	if close == nil {
+		panic("app: ClosesOnShutdown requires a close function")
+	}
+	declare.Add(a, name, declare.Detail(detail), declare.Close(close))
+}
+
+// ChecksReadiness registers ready as a /readyz check and adds name to the boot
+// report. The check and the line travel together on purpose — a check that can
+// fail readiness while appearing nowhere in the report is invisible.
+func (a *App) ChecksReadiness(name, detail string, ready func(ctx context.Context) error) {
+	if ready == nil {
+		panic("app: ChecksReadiness requires a ready function")
+	}
+	declare.Add(a, name, declare.Detail(detail), declare.Ready(ready))
+}
 
 // Component is one optional part of the process: whether it is on, a line for
 // the boot report, a readiness check when it has a dependency worth probing, and
