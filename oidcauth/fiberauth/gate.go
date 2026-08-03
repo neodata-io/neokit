@@ -180,8 +180,8 @@ type Gate struct {
 // The expired-session sweep is discovered here too, in [Gate.Run] — a store
 // that can prune is pruned without a second call to remember, including when
 // the gate is off, since the rows an earlier configuration created outlive it.
-// Start it with safe.Go(a.Context(), "session sweep", gate.Run); it's the
-// caller's job now, not New's.
+// Start it with safe.Go(a.Context(), "session sweep", func() { gate.Run(a.Context()) });
+// it's the caller's job now, not New's.
 func New(a *app.App, o Options) *Gate {
 	prefix := strings.TrimSpace(o.CookiePrefix)
 	if prefix == "" {
@@ -225,7 +225,7 @@ func New(a *app.App, o Options) *Gate {
 // Run runs the session-expiry sweep job until ctx is done, if the session store
 // supports pruning in bulk (see [oidcauth.SweepJob]); it's a no-op that returns
 // immediately otherwise. Start it unconditionally with
-// safe.Go(a.Context(), "session sweep", gate.Run) — the sweep is independent of
+// safe.Go(a.Context(), "session sweep", func() { gate.Run(a.Context()) }) — independent of
 // whether a login is configured.
 func (g *Gate) Run(ctx context.Context) {
 	if !g.hasSweep {

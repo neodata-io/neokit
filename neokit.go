@@ -19,17 +19,19 @@
 package neokit
 
 import (
+	"context"
 	"database/sql"
 
 	"github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/backup"
 	"github.com/neodata-io/neokit/notify"
 	"github.com/neodata-io/neokit/oidcauth/fiberauth"
+	"github.com/neodata-io/neokit/safe"
 	"github.com/neodata-io/neokit/sqlitex"
 )
 
 // App is [app.App] plus one method per neokit feature. Everything the embedded
-// app exports — HTTP, Shutdown, Run, ClosesOnShutdown — is reachable unchanged.
+// app exports — HTTP, Shutdown, Run — is reachable unchanged.
 type App struct{ *app.App }
 
 // New builds the application. See [app.New] for the boot sequence.
@@ -41,34 +43,44 @@ func New(o app.Options) (*App, error) {
 	return &App{App: a}, nil
 }
 
-// Database opens the service's SQLite database and registers it: boot report,
-// readiness check, shutdown step. See [sqlitex.Open].
+// Database opens the service's SQLite database and registers its teardown. See
+// [sqlitex.Open].
 func (a *App) Database(path string, migrate func(*sql.DB) error) (*sql.DB, error) {
-	return sqlitex.Open(a.App, path, migrate)
+	db, err := sqlitex.Open(path, migrate)
+	if err != nil {
+		return nil, err
+	}
+	a.Shutdown.Push("database", func(context.Context) error { return db.Close() })
+	return db, nil
 }
 
-// Login builds the OIDC login gate, mounts its routes and registers it. See
-// [fiberauth.New].
+// Login builds the OIDC login gate, mounts its routes, and starts the
+// expired-session sweep. See [fiberauth.New].
 func (a *App) Login(o fiberauth.Options) *fiberauth.Gate {
-	return fiberauth.New(a.App, o)
+	gate := fiberauth.New(a.App, o)
+	safe.Go(a.Context(), "session sweep", func() { gate.Run(a.Context()) })
+	return gate
 }
 
-// Backups wires scheduled database backups and registers them. See [backup.New].
+// Backups wires scheduled database backups and starts the daily schedule. See
+// [backup.New].
 func (a *App) Backups(s backup.Snapshotter, o backup.Options) *backup.Service {
-	return backup.New(a.App, s, o)
+	svc := backup.New(s, o)
+	safe.Go(a.Context(), "backups", func() { svc.Run(a.Context()) })
+	return svc
 }
 
-// Webhook builds a signed-webhook notification sender and registers it.
+// Webhook builds a signed-webhook notification sender.
 func (a *App) Webhook(url, secret string, o notify.Options) *notify.Webhook {
-	return notify.NewWebhook(a.App, url, secret, o)
+	return notify.NewWebhook(url, secret, o)
 }
 
-// Ntfy builds an ntfy notification sender and registers it.
+// Ntfy builds an ntfy notification sender.
 func (a *App) Ntfy(topicURL, token string, o notify.Options) *notify.Ntfy {
-	return notify.NewNtfy(a.App, topicURL, token, o)
+	return notify.NewNtfy(topicURL, token, o)
 }
 
-// Apprise builds an Apprise notification sender and registers it.
+// Apprise builds an Apprise notification sender.
 func (a *App) Apprise(url string, o notify.Options) *notify.Apprise {
-	return notify.NewApprise(a.App, url, o)
+	return notify.NewApprise(url, o)
 }

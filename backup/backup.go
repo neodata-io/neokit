@@ -126,7 +126,7 @@ func New(s Snapshotter, o Options) *Service {
 
 // Run drives the daily backup schedule until ctx is done. It's a no-op that
 // returns immediately when no backup directory is configured — start it
-// unconditionally with safe.Go(a.Context(), "backups", svc.Run).
+// unconditionally with safe.Go(a.Context(), "backups", func() { svc.Run(a.Context()) }).
 func (s *Service) Run(ctx context.Context) {
 	if strings.TrimSpace(s.dir) == "" {
 		return
