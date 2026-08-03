@@ -262,6 +262,27 @@ func TestSignalsReturnsALiveContext(t *testing.T) {
 	<-ctx.Done() // stop cancels, restoring the default disposition
 }
 
+// Closer is the bridge between closerFunc's shape and a Step, which takes a context.
+// The error has to survive the trip, or a failed close is silently a success.
+func TestCloserAdaptsAnIoCloser(t *testing.T) {
+	want := errors.New("boom")
+	step := Closer(closerFunc(func() error { return want }))
+	if step == nil {
+		t.Fatal("Closer returned nil for a non-nil closer")
+	}
+	if err := step(context.Background()); !errors.Is(err, want) {
+		t.Errorf("err = %v, want %v", err, want)
+	}
+}
+
+// A nil closer yields a nil Step, which Push already ignores — the same
+// tolerance for a wiring mistake that PushCloser has.
+func TestCloserOfNilIsNil(t *testing.T) {
+	if Closer(nil) != nil {
+		t.Error("Closer(nil) must be nil so Push ignores it")
+	}
+}
+
 func BenchmarkShutdown(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {

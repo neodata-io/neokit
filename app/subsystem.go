@@ -8,11 +8,12 @@ import (
 )
 
 // Subsystem is one optional part of the process: whether it is on, a line for
-// the boot report, and — when it has a dependency worth probing — a readiness
-// check.
+// the boot report, a readiness check when it has a dependency worth probing, and
+// a teardown step when it holds something.
 //
-// One declaration produces both outputs, so a subsystem is named once and cannot
-// appear in the report under one name and in /readyz under another.
+// One declaration produces all of them, so a subsystem is named once and cannot
+// appear in the report under one name and in /readyz or the shutdown log under
+// another.
 type Subsystem struct {
 	// Name is the label in the boot report and the readiness check's name.
 	Name string
@@ -30,10 +31,15 @@ type Subsystem struct {
 	// make a container look unready, which would take a working instance out of
 	// rotation for a feature nobody asked for.
 	Ready func(ctx context.Context) error
+
+	// Close releases what this subsystem holds; [App.Declare] pushes it onto
+	// [App.Shutdown]. Unlike Ready it runs even when On is false — a non-nil
+	// Close means something was allocated and would otherwise leak.
+	Close func(ctx context.Context) error
 }
 
-// Declare records a subsystem for the boot report and, when it is on and has a
-// check, for readiness.
+// Declare records a subsystem for the boot report, for readiness when it is on
+// and has a check, and for teardown when it has a Close.
 //
 // Call it during boot, before [App.Run], from one goroutine: the report renders
 // at the top of Run, so a later declaration would miss it anyway.
@@ -42,6 +48,11 @@ func (a *App) Declare(s Subsystem) {
 
 	if s.On && s.Ready != nil {
 		a.health.Register(s.Name, s.Ready)
+	}
+	// Pushed here rather than at Run, so it unwinds among the caller's own steps
+	// in the order they were declared.
+	if s.Close != nil {
+		a.Shutdown.Push(s.Name, s.Close)
 	}
 }
 

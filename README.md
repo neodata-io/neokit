@@ -5,6 +5,10 @@ standard library or a web framework; it is the operational layer around them —
 safe HTTP clients, structured errors and logs, health checks, ordered shutdown,
 observability, caching, and optional integrations.
 
+neokit builds on [Fiber v3](https://github.com/gofiber/fiber). `app.HTTP` is a
+`*fiber.App` and handlers are ordinary Fiber handlers — a deliberate choice, not
+an implementation detail waiting to be abstracted away.
+
 Take one package at a time, or start with `app` when a service wants the whole
 boot sequence from one constructor. There is no service container and no lookup
 by string: every dependency `app` builds is an exported field on it, and a
@@ -118,6 +122,17 @@ production-service 1.4.0 · :8080
 
 That block is generated from the same `app.Subsystem` declarations that register
 the `/readyz` checks, so it cannot drift from what the process actually is.
+
+Give a declaration a `Close` and it is the teardown step too, so a dependency is
+named once rather than once per concern:
+
+```go
+a.Declare(app.Subsystem{
+    Name: "database", On: true, Detail: cfg.DatabasePath,
+    Ready: store.Ping,
+    Close: lifecycle.Closer(store),
+})
+```
 
 ## Login gate in ten lines
 

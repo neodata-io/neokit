@@ -1,6 +1,10 @@
 // Package app is neokit's application builder: the boot sequence every service
 // would otherwise retype, performed once in a documented order.
 //
+// neokit builds on Fiber v3. [App.HTTP] is a *fiber.App and handlers are
+// ordinary Fiber handlers — a deliberate choice, not an implementation detail
+// waiting to be abstracted away.
+//
 // It is deliberately *not* a container. What it constructs is an exported field
 // on [App], and a handler still receives what it needs through its own
 // constructor. There is no lookup, no reflection, and no bespoke handler
@@ -18,8 +22,10 @@
 //	defer a.Close()
 //
 //	store, err := sqlitex.Open(cfg.DatabasePath, migrate)
-//	a.Shutdown.PushCloser("database", store)
-//	a.Declare(app.Subsystem{Name: "database", On: true, Detail: cfg.DatabasePath, Ready: store.PingContext})
+//	a.Declare(app.Subsystem{
+//		Name: "database", On: true, Detail: cfg.DatabasePath,
+//		Ready: store.PingContext, Close: lifecycle.Closer(store),
+//	})
 //
 //	return a.Run()
 package app
