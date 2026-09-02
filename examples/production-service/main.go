@@ -1,6 +1,6 @@
 // Production-service is the batteries-included layer: neokit.New, then one call
-// per feature. a.Database is the handle, the report line, the /readyz check and
-// the shutdown step — without a service container.
+// per feature. a.Database is the handle and the shutdown step at once — without
+// a service container.
 package main
 
 import (
@@ -41,10 +41,9 @@ func run() error {
 	}
 	defer service.Close()
 
-	// One call, four outputs: the handle, a line in the boot report, a /readyz
-	// check, and a place in the shutdown order — before Run adds its own steps,
-	// so the database closes after the HTTP drain rather than out from under
-	// requests still in flight.
+	// One call, two outputs: the handle, and a place in the shutdown order —
+	// taken before Run adds its own steps, so the database closes after the HTTP
+	// drain rather than out from under requests still in flight.
 	db, err := service.Database(cfg.DatabasePath, nil)
 	if err != nil {
 		return err

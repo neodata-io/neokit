@@ -120,8 +120,8 @@ type Options struct {
 	// anonymous process is anonymous in three systems at once.
 	Name string
 
-	// Version is stamped alongside Name in the boot report, every log line,
-	// every span and the metrics resource.
+	// Version is stamped alongside Name in every log line, every span and the
+	// metrics resource.
 	//
 	// Leave it empty and it fills itself in. `go build` embeds VCS metadata in any
 	// binary built from a work tree, so an unset version becomes

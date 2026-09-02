@@ -50,12 +50,13 @@ actually uses; they compose identically.
 That is the whole boot, and it is already a production shape. `Load`, `New`,
 `Close`, `Run` — four calls — get you structured logging, a request log with
 trace ids, the `{"error": …}` envelope, panic recovery, CORS, compression,
-request/idle timeouts, `/healthz`, `/readyz`, `/metrics`, OTLP export when you
-point it somewhere, an ordered SIGTERM drain, and a boot report describing all of
-it. You did not configure any of it and you can override all of it.
+request/idle timeouts, `/healthz`, `/metrics`, OTLP export when you point it
+somewhere, and an ordered SIGTERM drain. You did not configure any of it and you
+can override all of it. Readiness is the one thing `app` does not decide for
+you — see below.
 
-Even the version fills itself in — `go build` embeds the commit, so the report
-and every log line say `okstables dev (a1b2c3d, dirty)` without a Makefile.
+Even the version fills itself in — `go build` embeds the commit, so every log
+line says `okstables dev (a1b2c3d, dirty)` without a Makefile.
 
 Add your own settings by embedding `config.Base` in a struct of your own, and
 your own version once you have release builds to stamp:
@@ -95,53 +96,50 @@ so a metric you add anywhere shows up on both without being touched again.
 **The endpoint is unauthenticated by default**, which is what Grafana and Traefik
 do and is fine on a private network. Set `METRICS_TOKEN` and it requires
 `Authorization: Bearer …` — the same header Prometheus sends from `authorization:`
-in a scrape config. The boot report says which of the two you are running, because
-nothing else will.
+in a scrape config. Nothing announces which of the two you are running, so treat
+the empty default as a decision rather than a leftover.
 
-`/healthz` and `/readyz` are on the same listener. Probes and scrapes are all
-registered above the middleware chain, so none of them are logged or counted: a
-ten-second liveness interval is 8 640 log lines a day, and metering a scrape means
-recording a data point about the act of collecting data points.
+`/healthz` is mounted for you and answers 200 unconditionally — a liveness probe
+that consulted a dependency would have Kubernetes restart a healthy process
+because its database blinked. Probes and scrapes are registered above the
+middleware chain, so none of them are logged or counted: a ten-second liveness
+interval is 8 640 log lines a day, and metering a scrape means recording a data
+point about the act of collecting data points.
 
-Readiness answers with the verdict and nothing else — `{"ready":false}` — because
-the audience on a public port is an orchestrator that reads only the status code,
-and naming your dependencies there would give away a map of your infrastructure
-to buy nothing. The detail is not lost:
+**Readiness is yours to mount**, because only you know what "ready" means for
+this service and where the answer may safely be read. `health` is the registry:
+
+```go
+ready := &health.Registry{Log: a.Log}
+ready.Register("database", func(ctx context.Context) error { return db.PingContext(ctx) })
+
+a.HTTP.Get("/readyz", adaptor.HTTPHandler(ready.ReadyHandler()))     // {"ready":false}
+admin.Get("/readyz", adaptor.HTTPHandler(ready.DetailHandler()))     // the full sweep
+```
+
+`ReadyHandler` answers with the verdict and nothing else, because the audience on
+a public port is an orchestrator that reads only the status code, and naming your
+dependencies there would give away a map of your infrastructure to buy nothing.
+The detail is not lost:
 
 - it goes to the **log**, once per transition rather than once per probe:
   `WARN not ready failing="database: connection refused"`, then `INFO ready`;
-- `app.ReadyDetail()` is the same sweep in full, for a route you mount behind
-  your own authentication:
+- `DetailHandler` is the same sweep in full, for a route behind your own
+  authentication:
+
+```json
+{"ready":false,"checks":[{"name":"database","ok":false,
+                          "error":"connection refused","tookMs":3}]}
+```
+
+Shutdown is the same shape — a name and a function, in one place:
 
 ```go
-admin.Get("/readyz", adaptor.HTTPHandler(a.ReadyDetail()))
-// {"ready":false,"checks":[{"name":"database","ok":false,
-//                           "error":"connection refused","tookMs":3}]}
+a.Shutdown.Push("plugins", func(context.Context) error { return manager.Close() })
 ```
 
-The report states all of it before the listener comes up:
-
-```text
-production-service 1.4.0 · :8080
-  ✓ database          ./data/app.db
-  ✓ health            /healthz, /readyz
-  ✓ metrics endpoint  /metrics · unauthenticated · set METRICS_TOKEN to require a bearer token
-  ✗ metrics export    OTEL_EXPORTER_OTLP_ENDPOINT unset
-  ✗ tracing           OTEL_EXPORTER_OTLP_ENDPOINT unset
-```
-
-That block, the `/readyz` checks and the shutdown steps all come from one
-registration, so they cannot drift from what the process actually is. neokit's
-own features register themselves — `a.Database` is the database line, the ping
-and the close. For a dependency you built, say what you need by name:
-
-```go
-a.ClosesOnShutdown("plugins", "3 loaded", manager.Close)   // report line + teardown
-a.ChecksReadiness("cache", addr, client.Ping)              // report line + /readyz
-```
-
-Named once, so the report, `/readyz` and the shutdown log cannot call one thing
-by two names.
+The stack unwinds LIFO after the HTTP drain, so a dependency closes after the
+requests still using it have finished.
 
 ## Login gate in ten lines
 

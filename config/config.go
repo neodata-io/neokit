@@ -57,7 +57,7 @@ type Base struct {
 	// self-hosted software do and is fine on a private network. Set it when the
 	// application port is reachable from anywhere you would not hand a traffic
 	// profile to; Prometheus sends it with `authorization:` in the scrape config.
-	// The boot report says which of the two you are running.
+	// Nothing announces which of the two you are running, so choose it on purpose.
 	MetricsToken string `env:"METRICS_TOKEN"`
 
 	// DatabasePath is passed through to whatever store the application opens.
