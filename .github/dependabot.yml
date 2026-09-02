@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # One module at the root, and its go.mod is neokit's public dependency surface
+  # — every consumer inherits it, so these PRs are read, not merged on green.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
