@@ -2,10 +2,11 @@
 // handling: generating a VAPID keypair (RFC 8292) and normalising the `sub`
 // contact that rides in every VAPID JWT.
 //
-// It deliberately does **not** send pushes. Encryption and delivery need a real
-// implementation with its own opinions, and there are good ones — this package
-// is what sits in front of them, because key generation is the part every
-// project reimplements and the part that has to survive a restart.
+// It deliberately does **not** send pushes; [github.com/neodata-io/neokit/webpush/delivery]
+// does, in a subpackage, so that the dependency a real Web Push implementation
+// brings lands only on the callers that actually deliver. Key generation is the
+// part every project reimplements and the part that has to survive a restart,
+// and it needs nothing.
 //
 // # No dependencies
 //
@@ -133,4 +134,23 @@ func NormalizeSubject(subject string) (string, error) {
 		return "", fmt.Errorf("webpush: VAPID subject %q is neither an https URL nor an email address", subject)
 	}
 	return s, nil
+}
+
+// Subscription is one browser's Web Push registration: the endpoint the push
+// service assigned it, and the two keys its PushSubscription.getKey() returned.
+//
+// It lives here, next to the keys, rather than in the delivery subpackage,
+// because it is vocabulary rather than mechanism — a store persists these, a
+// handler receives them from the browser, and neither of those should have to
+// import a package that pulls in a Web Push implementation to name the type it
+// is already holding.
+type Subscription struct {
+	// Endpoint is the push service URL to POST to. It identifies the
+	// subscription: it is what a store keys on and what a 410 retires.
+	Endpoint string
+	// Auth is the base64url authentication secret (16 bytes).
+	Auth string
+	// P256DH is the base64url uncompressed P-256 public key (65 bytes) the
+	// payload is encrypted to.
+	P256DH string
 }
