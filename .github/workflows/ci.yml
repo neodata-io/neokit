@@ -11,11 +11,20 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      # Both, not one: 1.25.0 is go.mod's floor and the oldest toolchain a
+      # consumer may still be on, while stable is where the stdlib advisories
+      # are actually fixed. Testing only the floor ships known-vulnerable
+      # builds; testing only stable lets the floor rot unnoticed.
+      fail-fast: false
+      matrix:
+        go: ["1.25.0", "stable"]
+    name: test (go ${{ matrix.go }})
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
       - run: go vet ./...
       - run: go build ./...
       - run: go test -race ./...
