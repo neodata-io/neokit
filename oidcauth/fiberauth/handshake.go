@@ -51,8 +51,8 @@ const (
 	ReasonServer Reason = "server"
 )
 
-// Register mounts the login gate: the three handshake routes, whoami, and the
-// owner-only session list.
+// register mounts the login gate: the three handshake routes, whoami, and the
+// owner-only session list and revoke.
 //
 // Login, callback and the session routes 404 when no login is configured.
 // Logout is the deliberate exception — it must keep working after an
@@ -238,6 +238,11 @@ func (g *Gate) callbackHandler() fiber.Handler {
 
 // issueSession mints the session token, persists the session, and sets the cookie.
 func (g *Gate) issueSession(c fiber.Ctx, id oidcauth.Identity, secure bool) error {
+	// Named, because the alternative is a nil-interface panic three lines down
+	// that a recover middleware turns into an unexplained 500.
+	if g.sessions == nil {
+		return errors.New("no session store configured (Options.Sessions)")
+	}
 	token, err := oidcauth.RandomToken(32)
 	if err != nil {
 		return err

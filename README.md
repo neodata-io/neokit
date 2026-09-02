@@ -151,7 +151,7 @@ authn, ok := oidcauth.New(oidcauth.Config{
     BaseURL:  os.Getenv("OIDC_BASE_URL"), ClientSecret: os.Getenv("OIDC_CLIENT_SECRET"),
 })
 sessions, err := session.NewSQLite(db)   // creates its own table; or bring your own store
-gate := fiberauth.New(a, fiberauth.Options{
+gate := a.Login(fiberauth.Options{
     Provider:     func() *oidcauth.Provider { if !ok { return nil }; return authn },
     Sessions:     sessions,
     CookiePrefix: "myapp",
@@ -159,18 +159,18 @@ gate := fiberauth.New(a, fiberauth.Options{
 admin := a.API.Group("/admin", gate.RequireOwner())
 ```
 
-`New` mounts the identity middleware, then the handshake routes, then adds the
-`login` line to the boot report — in that order, which is the one a caller cannot
-arrange by hand: you need the gate to obtain the middleware, and by then the
-routes would already be mounted.
+`Login` mounts the identity middleware, then the handshake routes — in that
+order, which is the one a caller cannot arrange by hand: you need the gate to
+obtain the middleware, and by then the routes would already be mounted.
 
 `ok == false` (no credentials configured) means the gate is off: the middleware
 returns immediately, the guards pass through, and the handshake routes 404 — so
 an app can ship open and close later without a second feature flag.
 
-The expired-session sweep comes with it. A store that can prune in one statement
-is pruned daily, joined at shutdown, and named on the same `login` line — nothing
-to start and nothing to remember.
+The expired-session sweep comes with it: a store that can prune in one statement
+is swept daily for as long as the app runs. Building the gate directly with
+`fiberauth.New(a.App, …)` skips only that step — start it yourself with
+`safe.Go(a.Context(), "session sweep", func() { gate.Run(a.Context()) })`.
 
 ## Runnable examples
 

@@ -36,7 +36,6 @@ func newTestApp(t *testing.T) *neoapp.App {
 	return a
 }
 
-
 // ── Test doubles ────────────────────────────────────────────────────────────
 
 // memStore is a deliberately naive SessionStore: it returns rows verbatim, with
@@ -319,6 +318,30 @@ func TestDefaultFailureHandlerWithoutAPathAnswersJSON(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	if strings.Contains(string(raw), "hunter2") {
 		t.Errorf("the cause leaked into the body: %s", raw)
+	}
+}
+
+// A configured login with no session store reached a nil-interface method call
+// in issueSession: a recovered panic and an unexplained 500 for the one person
+// who was trying to sign in. It is a named error now.
+func TestIssueSessionWithoutAStoreFailsInsteadOfPanicking(t *testing.T) {
+	a := newTestApp(t)
+	g := newGate(t, a, testProvider(t, "http://app.test"), nil)
+
+	var got error
+	app := fiber.New()
+	app.Get("/issue", func(c fiber.Ctx) error {
+		got = g.issueSession(c, oidcauth.Identity{Subject: "u-1"}, false)
+		return c.SendStatus(fiber.StatusOK)
+	})
+	resp := do(t, app, httptest.NewRequest(http.MethodGet, "/issue", nil))
+	defer resp.Body.Close()
+
+	if got == nil {
+		t.Fatal("issueSession returned nil with no session store")
+	}
+	if !strings.Contains(got.Error(), "Options.Sessions") {
+		t.Errorf("error = %q, want it to name Options.Sessions", got)
 	}
 }
 

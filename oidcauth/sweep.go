@@ -21,9 +21,10 @@ const (
 // [ExpiredSweeper]. ok is false when the store cannot sweep, so a caller can skip
 // scheduling it rather than run a job that does nothing.
 //
-// For a service mounting a Gate this is already done: fiberauth.New declares the
-// sweep whether or not a login is configured. Use this directly only when you
-// are not mounting one.
+// For a service mounting a Gate this is already done: fiberauth.New finds the
+// sweep whether or not a login is configured, and fiberauth.Gate.Run runs it
+// (neokit.App.Login starts that for you). Use this directly only when you are
+// not mounting a Gate.
 //
 // It sweeps once at start, because a restart is exactly when a backlog has
 // accumulated.

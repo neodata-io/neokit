@@ -3,7 +3,7 @@
 // and back again.
 //
 // It is deliberately separate from oidcauth so the protocol half carries no web
-// framework, and it is deliberately small: [Gate] mounts five routes, resolves an
+// framework, and it is deliberately small: [Gate] mounts six routes, resolves an
 // identity per request, and guards the ones you point at it. It stores nothing
 // itself — pass the store neokit ships,
 // [github.com/neodata-io/neokit/session.NewSQLite], or your own
@@ -88,8 +88,9 @@ type Options struct {
 	Provider func() *oidcauth.Provider
 
 	// Sessions persists signed-in browsers. Required when Provider can return
-	// non-nil. [github.com/neodata-io/neokit/session.NewSQLite] is the store
-	// neokit ships; any [oidcauth.SessionStore] does.
+	// non-nil — without it a sign-in fails with [ReasonServer], since there is
+	// nowhere to put the session. [github.com/neodata-io/neokit/session.NewSQLite]
+	// is the store neokit ships; any [oidcauth.SessionStore] does.
 	Sessions oidcauth.SessionStore
 
 	// CookiePrefix namespaces the two cookies: "{prefix}_session" and
@@ -196,6 +197,12 @@ func New(a *app.App, o Options) *Gate {
 		g.onFailure = defaultFailureHandler(o.LoginFailurePath, orDefault(o.ReasonParam, "reason"))
 	}
 
+	// A configured login with nowhere to store sessions is a dead gate, and the
+	// symptom otherwise arrives at someone's first sign-in, not at boot.
+	if g.sessions == nil && g.Enabled() {
+		g.logger().Error("login is configured but Options.Sessions is nil; sign-in will fail")
+	}
+
 	// Middleware first, then routes: whoami and the session endpoints call
 	// IdentityFrom, which reads what ResolveIdentity puts in Locals, and Fiber
 	// only runs middleware registered ahead of a route.
@@ -254,10 +261,9 @@ func (g *Gate) Enabled() bool { return g.Provider() != nil }
 func (g *Gate) LoginPath() string { return g.handshakeBase + "/login" }
 
 // CallbackPath is the OIDC redirect URI's path. It must agree with the
-// provider's [oidcauth.Config.CallbackPath] — and nothing here enforces that, so
-// a caller that overrides one without the other gets a redirect URI the identity
-// provider rejects. (An earlier version of this comment claimed Register checked
-// it. Register mounts the routes and returns; it never did.)
+// provider's [oidcauth.Config.CallbackPath], and nothing here enforces that: a
+// caller that overrides one without the other gets a redirect URI the identity
+// provider rejects.
 func (g *Gate) CallbackPath() string { return g.handshakeBase + "/callback" }
 
 // LogoutPath ends the local session.
