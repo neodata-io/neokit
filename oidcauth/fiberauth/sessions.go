@@ -83,10 +83,14 @@ func (g *Gate) listSessions() fiber.Handler {
 				}
 			}
 		}
+		provider := g.Provider()
 		out := make([]SessionView, 0, len(list))
 		for _, s := range list {
+			// The same derivation the guard applies (see resolveSession), so the
+			// list never labels someone an owner whom the guard turns away.
+			owner := provider != nil && provider.IsOwner(s.Groups)
 			out = append(out, SessionView{
-				ID: s.ID, Name: s.Name, Email: s.Email, Owner: s.Owner,
+				ID: s.ID, Name: s.Name, Email: s.Email, Owner: owner,
 				UserAgent:  s.UserAgent,
 				CreatedAt:  s.CreatedAt.UTC().Format(time.RFC3339),
 				LastSeenAt: s.LastSeenAt.UTC().Format(time.RFC3339),

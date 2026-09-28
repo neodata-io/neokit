@@ -31,7 +31,7 @@ func (g *Gate) ResolveIdentity() fiber.Handler {
 		// The cookie's name depends on the deployment scheme, and the provider is
 		// what knows the scheme — the same source the callback used when it wrote
 		// the cookie, so the two can never disagree.
-		if id := g.resolveSession(c, provider.CookieSecure()); id != nil {
+		if id := g.resolveSession(c, provider); id != nil {
 			c.Locals(localIdentityKey, id)
 		}
 		return c.Next()
@@ -41,8 +41,8 @@ func (g *Gate) ResolveIdentity() fiber.Handler {
 // resolveSession turns the session cookie into an identity, rolling the session
 // forward when it has not been touched recently. It returns nil for an absent,
 // unknown, or expired cookie.
-func (g *Gate) resolveSession(c fiber.Ctx, secure bool) *oidcauth.Identity {
-	token := c.Cookies(g.sessionCookieName(secure))
+func (g *Gate) resolveSession(c fiber.Ctx, provider *oidcauth.Provider) *oidcauth.Identity {
+	token := c.Cookies(g.sessionCookieName(provider.CookieSecure()))
 	if token == "" || g.sessions == nil {
 		return nil // the overwhelmingly common path: no cookie, no database read
 	}
@@ -76,6 +76,14 @@ func (g *Gate) resolveSession(c fiber.Ctx, secure bool) *oidcauth.Identity {
 	}
 
 	id := sess.Identity()
+	// Ownership is re-derived from the groups under the owner group configured
+	// *now*, not read from the flag stored at sign-in. The stored flag reflects
+	// the rule of the day the session was minted: tightening the owner group
+	// would otherwise leave every existing session with the old rights until it
+	// expired, and revoking sessions one by one is not a fix anyone remembers.
+	// The groups themselves are still the sign-in snapshot — a change at the
+	// provider takes effect on the next login, as with any OIDC relying party.
+	id.Owner = provider.IsOwner(id.Groups)
 	return &id
 }
 

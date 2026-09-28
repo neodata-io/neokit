@@ -2,6 +2,7 @@ package fiberauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -370,12 +371,18 @@ func newGate(t *testing.T, a *neoapp.App, p *oidcauth.Provider, store oidcauth.S
 	})
 }
 
-// liveSession is a session that has not expired and is well inside the cap.
+// liveSession is a session that has not expired and is well inside the cap. Its
+// groups agree with owner under testProvider's owner group, because the gate
+// derives ownership from the groups rather than trusting the stored flag.
 func liveSession(owner bool) oidcauth.Session {
 	now := time.Now().UTC()
+	groups := []string{"family"}
+	if owner {
+		groups = []string{"family", "admins"}
+	}
 	return oidcauth.Session{
 		ID: "sess-1", Subject: "u-1", Name: "Alex", Email: "alex@example.com",
-		Groups: []string{"admins"}, Owner: owner,
+		Groups: groups, Owner: owner,
 		CreatedAt: now.Add(-time.Minute), LastSeenAt: now, ExpiresAt: now.Add(time.Hour),
 	}
 }
@@ -553,6 +560,43 @@ func TestGuardsDistinguishAnonymousFromNonOwner(t *testing.T) {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tc.want)
 			}
 		})
+	}
+}
+
+// Ownership is derived from the session's groups under the *current* owner
+// group on every request, not read from the flag stored at sign-in. Otherwise
+// tightening the owner group leaves every existing session with the rights the
+// old rule granted until it expires — the exact window in which someone who
+// should not be an owner keeps changing things.
+func TestOwnershipFollowsTheCurrentOwnerGroupNotTheStoredFlag(t *testing.T) {
+	store := newMemStore()
+	stale := liveSession(false)
+	stale.ID, stale.Owner = "sess-stale", true // minted when every signed-in user was an owner
+	store.put("stale", stale)
+	promoted := liveSession(true)
+	promoted.ID, promoted.Owner = "sess-promoted", false // minted before the owner group named their group
+	store.put("promoted", promoted)
+	a := newTestApp(t)
+	g := newGate(t, a, testProvider(t, "http://app.test"), store)
+	app := probeApp(g)
+
+	for token, want := range map[string]int{"stale": http.StatusForbidden, "promoted": http.StatusOK} {
+		req := withCookie(httptest.NewRequest(http.MethodGet, "/admin", nil), "myapp_session", token)
+		if resp := do(t, app, req); resp.StatusCode != want {
+			t.Errorf("%s session on admin: status = %d, want %d", token, resp.StatusCode, want)
+		}
+	}
+
+	// The session list reports the same answer the guard acts on.
+	resp := do(t, a.HTTP, withCookie(httptest.NewRequest(http.MethodGet, g.SessionsPath(), nil), "myapp_session", "promoted"))
+	var list []SessionView
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode session list: %v", err)
+	}
+	for _, s := range list {
+		if want := s.Current; s.Owner != want {
+			t.Errorf("session list: current=%v owner=%v, want owner to follow the groups", s.Current, s.Owner)
+		}
 	}
 }
 

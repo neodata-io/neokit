@@ -41,11 +41,14 @@ func (i Identity) Authenticated() bool { return i.Subject != "" }
 // [HashToken]), so a database leak yields nothing that can be replayed as a
 // session.
 type Session struct {
-	ID         string
-	Subject    string
-	Name       string
-	Email      string
-	Groups     []string
+	ID      string
+	Subject string
+	Name    string
+	Email   string
+	Groups  []string
+	// Owner is the ownership granted at sign-in. It is kept for the record, but
+	// oidcauth/fiberauth does not trust it: ownership is re-derived from Groups
+	// on every request, so a change to the owner group applies at once.
 	Owner      bool
 	UserAgent  string
 	CreatedAt  time.Time
