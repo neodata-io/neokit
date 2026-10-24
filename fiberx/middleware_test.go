@@ -2,7 +2,6 @@ package fiberx
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"net/http/httptest"
 	"testing"
@@ -46,7 +45,7 @@ func observations(t *testing.T, reader *sdkmetric.ManualReader, attrs ...attribu
 	t.Helper()
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
+	if err := reader.Collect(t.Context(), &rm); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
 

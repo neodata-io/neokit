@@ -122,14 +122,12 @@ func (e *APIError) Unwrap() error { return fiber.NewError(e.Status, e.Message) }
 // NewError, or Fail's return), or any other error — crosses the wire as the same
 // {"error","code"} envelope. The app's ErrorHandler delegates here.
 func (e *Errors) Render(c fiber.Ctx, err error) error {
-	var ae *APIError
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[*APIError](err); ok {
 		out := *ae // copy: rendering must not mutate the caller's error
 		normalized(&out)
 		return c.Status(out.Status).JSON(out)
 	}
-	var fe *fiber.Error
-	if errors.As(err, &fe) {
+	if fe, ok := errors.AsType[*fiber.Error](err); ok {
 		// A bare fiber.Error carries a deliberate status + public message but no
 		// code; derive one from the status so the machine-readable field is never
 		// absent. The cause (if any) was already logged by Fail; a hand-rolled
@@ -147,8 +145,7 @@ func (e *Errors) Render(c fiber.Ctx, err error) error {
 func (e *Errors) WriteError(c fiber.Ctx, err error) error {
 	// An APIError already carries its own rendered shape (status/code/fields);
 	// honor it rather than flattening it through the mapper/status switch.
-	var ae *APIError
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[*APIError](err); ok {
 		e.logCause(c, ae.Status, err)
 		return c.Status(ae.Status).JSON(ae)
 	}
@@ -200,14 +197,12 @@ func (e *Errors) logger() *slog.Logger {
 // needs this because it runs *before* the ErrorHandler writes the status, so
 // reading c.Response().StatusCode() for a returned error would see the default 200.
 func (e *Errors) StatusForError(err error) int {
-	var ae *APIError
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[*APIError](err); ok {
 		out := *ae
 		normalized(&out) // a zero Status must not be recorded as 0 in the metrics
 		return out.Status
 	}
-	var fe *fiber.Error
-	if errors.As(err, &fe) {
+	if fe, ok := errors.AsType[*fiber.Error](err); ok {
 		return fe.Code
 	}
 	status, _, _ := e.mapError(err)
@@ -226,8 +221,7 @@ func (e *Errors) mapError(err error) (status int, msg, code string) {
 	// keeps this in step with StatusForError, which already reads fe.Code — before
 	// this, the status on the log line and the status the client received could
 	// disagree for the same error.
-	var fe *fiber.Error
-	if errors.As(err, &fe) {
+	if fe, ok := errors.AsType[*fiber.Error](err); ok {
 		return fe.Code, fe.Message, CodeForStatus(fe.Code)
 	}
 	if e.Mapper != nil {

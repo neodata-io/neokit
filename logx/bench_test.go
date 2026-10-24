@@ -44,7 +44,7 @@ var sink slog.Attr
 // case, and the floor this decorator can possibly cost.
 func BenchmarkContextHandler_Handle_Bare(b *testing.B) {
 	h := NewContextHandler(discardHandler{})
-	ctx := context.Background()
+	ctx := b.Context()
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = h.Handle(ctx, benchRecord())
@@ -55,7 +55,7 @@ func BenchmarkContextHandler_Handle_Bare(b *testing.B) {
 // case: an ID on the context, no active span.
 func BenchmarkContextHandler_Handle_RequestID(b *testing.B) {
 	h := NewContextHandler(discardHandler{})
-	ctx := WithRequestID(context.Background(), "01J0000000000000000000")
+	ctx := WithRequestID(b.Context(), "01J0000000000000000000")
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = h.Handle(ctx, benchRecord())
@@ -73,7 +73,7 @@ func BenchmarkContextHandler_Handle_Traced(b *testing.B) {
 		TraceFlags: trace.FlagsSampled,
 	})
 	ctx := trace.ContextWithSpanContext(
-		WithRequestID(context.Background(), "01J0000000000000000000"), sc)
+		WithRequestID(b.Context(), "01J0000000000000000000"), sc)
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = h.Handle(ctx, benchRecord())
@@ -85,7 +85,7 @@ func BenchmarkContextHandler_Handle_Traced(b *testing.B) {
 // in production without paying for them.
 func BenchmarkContextHandler_Disabled(b *testing.B) {
 	log := slog.New(NewContextHandler(discardHandler{level: slog.LevelError}))
-	ctx := WithRequestID(context.Background(), "01J0000000000000000000")
+	ctx := WithRequestID(b.Context(), "01J0000000000000000000")
 	err := io.EOF
 	b.ReportAllocs()
 	for b.Loop() {
@@ -95,7 +95,7 @@ func BenchmarkContextHandler_Disabled(b *testing.B) {
 
 // BenchmarkRequestID measures the context lookup on its own.
 func BenchmarkRequestID(b *testing.B) {
-	ctx := WithRequestID(context.Background(), "01J0000000000000000000")
+	ctx := WithRequestID(b.Context(), "01J0000000000000000000")
 	b.ReportAllocs()
 	for b.Loop() {
 		strSink = RequestID(ctx)
@@ -108,7 +108,7 @@ var strSink string
 // enabled level with an error attached, through the real JSON handler.
 func BenchmarkEndToEnd_Info(b *testing.B) {
 	log := slog.New(NewContextHandler(slog.NewJSONHandler(io.Discard, nil)))
-	ctx := WithRequestID(context.Background(), "01J0000000000000000000")
+	ctx := WithRequestID(b.Context(), "01J0000000000000000000")
 	err := io.EOF
 	b.ReportAllocs()
 	for b.Loop() {

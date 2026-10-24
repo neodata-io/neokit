@@ -1,7 +1,6 @@
 package sqlitex_test
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -12,7 +11,7 @@ import (
 )
 
 func TestSnapshotToProducesAStandaloneDatabaseWithThePointInTimeRows(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	src := openMem(t)
 	if _, err := src.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)"); err != nil {
 		t.Fatalf("create table: %v", err)

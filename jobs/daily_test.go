@@ -126,8 +126,7 @@ func TestDelayIsMeasuredOnTheInjectedClock(t *testing.T) {
 // five morning digests.
 func TestRunAtStartIsOffByDefault(t *testing.T) {
 	var runs atomic.Int64
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go Daily{
 		Name: "digest", Hour: 8, Log: quiet(),
@@ -142,8 +141,7 @@ func TestRunAtStartIsOffByDefault(t *testing.T) {
 
 func TestRunAtStartFiresImmediatelyWhenSet(t *testing.T) {
 	var runs atomic.Int64
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go Daily{
 		Name: "compact", Hour: 3, RunAtStart: true, Log: quiet(),
@@ -154,7 +152,7 @@ func TestRunAtStartFiresImmediatelyWhenSet(t *testing.T) {
 }
 
 func TestDailyReturnsOnCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -184,7 +182,7 @@ func TestDailyPanicsOnAnUnusableSchedule(t *testing.T) {
 					t.Error("Run must panic on an unusable schedule")
 				}
 			}()
-			d.Run(context.Background())
+			d.Run(t.Context())
 		})
 	}
 }

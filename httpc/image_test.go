@@ -26,7 +26,7 @@ func TestImage_SuccessAndContentType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	blob, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0)
+	blob, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 0)
 	if err != nil {
 		t.Fatalf("Image: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestImage_DefaultsContentType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	blob, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0)
+	blob, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 0)
 	if err != nil {
 		t.Fatalf("Image: %v", err)
 	}
@@ -65,12 +65,12 @@ func TestImage_AppliesAuth(t *testing.T) {
 	defer srv.Close()
 
 	// Without auth → 403 → error.
-	if _, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0); err == nil {
+	if _, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 0); err == nil {
 		t.Fatal("expected error without auth")
 	}
 	// With the auth hook → 200.
 	blob, err := artClient(srv.Client(), HeaderAuth("X-Token", "sekret")).
-		Image(context.Background(), srv.URL, 0)
+		Image(t.Context(), srv.URL, 0)
 	if err != nil {
 		t.Fatalf("Image with auth: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestImage_EnforcesSizeLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 10); err == nil {
+	if _, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 10); err == nil {
 		t.Fatal("expected an error when the body exceeds maxBytes")
 	}
 }
@@ -96,7 +96,7 @@ func TestImage_Non2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0); err == nil {
+	if _, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 0); err == nil {
 		t.Fatal("expected an error for a 404")
 	}
 }
@@ -115,7 +115,7 @@ func TestImage_ClassifiableError(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(c.status)
 		}))
-		_, err := artClient(srv.Client(), nil).Image(context.Background(), srv.URL, 0)
+		_, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 0)
 		srv.Close()
 		if err == nil {
 			t.Fatalf("status %d: expected an error", c.status)
@@ -138,7 +138,7 @@ func TestBaseClientImage_AppliesAuth(t *testing.T) {
 	defer srv.Close()
 
 	bc := NewBaseClient(srv.URL, "svc", HeaderAuth("X-Api-Key", "k"))
-	blob, err := bc.Image(context.Background(), bc.URL("/art"), 0)
+	blob, err := bc.Image(t.Context(), bc.URL("/art"), 0)
 	if err != nil {
 		t.Fatalf("Image: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestBaseClientBytes_RetriesOn401(t *testing.T) {
 		return fmt.Sprintf("token-%d", logins), time.Hour, nil
 	})
 
-	data, _, err := bc.Bytes(context.Background(), http.MethodGet, bc.URL("/art"), 0)
+	data, _, err := bc.Bytes(t.Context(), http.MethodGet, bc.URL("/art"), 0)
 	if err != nil {
 		t.Fatalf("Bytes: %v", err)
 	}

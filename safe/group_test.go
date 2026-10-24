@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -19,7 +20,7 @@ func quietLogger() *slog.Logger {
 // budget is the drain window a shutdown step hands to Wait.
 func budget(t *testing.T, d time.Duration) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), d)
+	ctx, cancel := context.WithTimeout(t.Context(), d)
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -47,7 +48,7 @@ func TestGroup_SpawnDuringDrainDoesNotPanic(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				g.Go(context.Background(), "worker", func() {})
+				g.Go(t.Context(), "worker", func() {})
 			}
 		}
 	}()
@@ -61,7 +62,7 @@ func TestGroup_SpawnDuringDrainDoesNotPanic(t *testing.T) {
 				// Built inline rather than through budget: this loop runs
 				// hundreds of thousands of times, and a t.Cleanup per iteration
 				// is its own leak.
-				ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+				ctx, cancel := context.WithTimeout(t.Context(), time.Millisecond)
 				_ = g.Wait(ctx)
 				cancel()
 			}
@@ -79,7 +80,7 @@ func TestGroup_WaitJoinsItsGoroutines(t *testing.T) {
 
 	release := make(chan struct{})
 	done := make(chan struct{})
-	g.Go(context.Background(), "job", func() {
+	g.Go(t.Context(), "job", func() {
 		<-release
 		close(done)
 	})
@@ -99,13 +100,15 @@ func TestGroup_WaitJoinsItsGoroutines(t *testing.T) {
 // still using, silently reintroducing the race the drain exists to prevent.
 func TestGroup_WaitReportsATimeout(t *testing.T) {
 	t.Parallel()
-	g := &Group{Log: quietLogger()}
+	synctest.Test(t, func(t *testing.T) {
+		g := &Group{Log: quietLogger()}
 
-	block := make(chan struct{})
-	defer close(block)
-	g.Go(context.Background(), "stuck", func() { <-block })
+		block := make(chan struct{})
+		defer close(block)
+		g.Go(t.Context(), "stuck", func() { <-block })
 
-	require.ErrorIs(t, g.Wait(budget(t, 50*time.Millisecond)), ErrDrainTimeout)
+		require.ErrorIs(t, g.Wait(budget(t, 50*time.Millisecond)), ErrDrainTimeout)
+	})
 }
 
 // Wait is not terminal: a drained group stays usable. The previous design
@@ -114,11 +117,11 @@ func TestGroup_IsReusableAfterADrain(t *testing.T) {
 	t.Parallel()
 	g := &Group{Log: quietLogger()}
 
-	g.Go(context.Background(), "first", func() {})
+	g.Go(t.Context(), "first", func() {})
 	require.NoError(t, g.Wait(budget(t, 5*time.Second)))
 
 	done := make(chan struct{})
-	g.Go(context.Background(), "second", func() { close(done) })
+	g.Go(t.Context(), "second", func() { close(done) })
 	require.NoError(t, g.Wait(budget(t, 5*time.Second)))
 
 	select {
@@ -144,8 +147,8 @@ func TestGroup_IsIndependentOfOtherGroups(t *testing.T) {
 
 	blockB := make(chan struct{})
 	defer close(blockB)
-	b.Go(context.Background(), "b-long-lived", func() { <-blockB })
-	a.Go(context.Background(), "a-quick", func() {})
+	b.Go(t.Context(), "b-long-lived", func() { <-blockB })
+	a.Go(t.Context(), "a-quick", func() {})
 
 	assert.NoError(t, a.Wait(budget(t, 2*time.Second)),
 		"group A must drain without waiting on group B's goroutine")
@@ -192,7 +195,7 @@ func TestGroup_GoStopsRespawningOnceTheContextIsDone(t *testing.T) {
 	t.Parallel()
 	g := &Group{Log: quietLogger()}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	g.Go(ctx, "always-panics", func() { panic("boom") })
 
@@ -201,29 +204,32 @@ func TestGroup_GoStopsRespawningOnceTheContextIsDone(t *testing.T) {
 	assert.Zero(t, g.Len())
 }
 
+// Fake time: the real restartBackoff would make this a five-second test.
 func TestGroup_RestartsAPanickingGoroutine(t *testing.T) {
 	t.Parallel()
-	g := &Group{Log: quietLogger()}
+	synctest.Test(t, func(t *testing.T) {
+		g := &Group{Log: quietLogger()}
 
-	var mu sync.Mutex
-	calls := 0
-	done := make(chan struct{})
-	g.Go(context.Background(), "flaky", func() {
-		mu.Lock()
-		calls++
-		n := calls
-		mu.Unlock()
-		if n == 1 {
-			panic("boom")
+		var mu sync.Mutex
+		calls := 0
+		done := make(chan struct{})
+		g.Go(t.Context(), "flaky", func() {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n == 1 {
+				panic("boom")
+			}
+			close(done)
+		})
+
+		select {
+		case <-done:
+		case <-time.After(restartBackoff + time.Second):
+			t.Fatal("a panicking goroutine was not restarted")
 		}
-		close(done)
 	})
-
-	select {
-	case <-done:
-	case <-time.After(restartBackoff + 5*time.Second):
-		t.Fatal("a panicking goroutine was not restarted")
-	}
 }
 
 func TestDo_GuardsAPanicAndReportsIt(t *testing.T) {

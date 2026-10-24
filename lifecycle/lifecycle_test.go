@@ -25,7 +25,7 @@ func TestShutdownRunsStepsInReverseOrder(t *testing.T) {
 		})
 	}
 
-	if err := s.Shutdown(context.Background(), time.Second); err != nil {
+	if err := s.Shutdown(t.Context(), time.Second); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	want := []string{"metrics", "http", "store"}
@@ -54,7 +54,7 @@ func TestShutdownIsSequential(t *testing.T) {
 			return nil
 		})
 	}
-	_ = s.Shutdown(context.Background(), time.Second)
+	_ = s.Shutdown(t.Context(), time.Second)
 
 	if maxInFlight != 1 {
 		t.Errorf("max concurrent steps = %d, want 1", maxInFlight)
@@ -71,7 +71,7 @@ func TestShutdownJoinsEveryError(t *testing.T) {
 	s.Push("store", func(context.Context) error { return second })
 	s.Push("http", func(context.Context) error { return first })
 
-	err := s.Shutdown(context.Background(), time.Second)
+	err := s.Shutdown(t.Context(), time.Second)
 	if !errors.Is(err, first) || !errors.Is(err, second) {
 		t.Errorf("Shutdown err = %v, want both causes", err)
 	}
@@ -94,7 +94,7 @@ func TestASlowStepDoesNotStopTheRest(t *testing.T) {
 	})
 
 	start := time.Now()
-	err := s.Shutdown(context.Background(), 20*time.Millisecond)
+	err := s.Shutdown(t.Context(), 20*time.Millisecond)
 	if took := time.Since(start); took > time.Second {
 		t.Errorf("Shutdown took %v — the per-step budget was not applied", took)
 	}
@@ -115,7 +115,7 @@ func TestAPanickingStepDoesNotSkipTheStepsBelowIt(t *testing.T) {
 	s.Push("store", func(context.Context) error { reached = true; return nil })
 	s.Push("bad", func(context.Context) error { panic("boom") })
 
-	err := s.Shutdown(context.Background(), time.Second)
+	err := s.Shutdown(t.Context(), time.Second)
 	if !reached {
 		t.Error("a panicking step skipped the steps below it")
 	}
@@ -130,8 +130,8 @@ func TestShutdownIsIdempotent(t *testing.T) {
 	s := &Stack{Log: quiet()}
 	s.Push("once", func(context.Context) error { runs++; return nil })
 
-	_ = s.Shutdown(context.Background(), time.Second)
-	if err := s.Shutdown(context.Background(), time.Second); err != nil {
+	_ = s.Shutdown(t.Context(), time.Second)
+	if err := s.Shutdown(t.Context(), time.Second); err != nil {
 		t.Errorf("a second Shutdown must be a no-op, got %v", err)
 	}
 	if runs != 1 {
@@ -143,12 +143,12 @@ func TestShutdownIsIdempotent(t *testing.T) {
 // leave a resource open with nothing to say so.
 func TestPushAfterShutdownIsRefused(t *testing.T) {
 	s := &Stack{Log: quiet()}
-	_ = s.Shutdown(context.Background(), time.Second)
+	_ = s.Shutdown(t.Context(), time.Second)
 	s.Push("late", func(context.Context) error { t.Error("a late step must not run"); return nil })
 	if s.Len() != 0 {
 		t.Errorf("Len = %d, want 0", s.Len())
 	}
-	_ = s.Shutdown(context.Background(), time.Second)
+	_ = s.Shutdown(t.Context(), time.Second)
 }
 
 // `stack.Push("store", store.Close)` on a store that turned out to be nil is a
@@ -161,7 +161,7 @@ func TestNilStepIsIgnored(t *testing.T) {
 	if s.Len() != 0 {
 		t.Errorf("Len = %d, want 0", s.Len())
 	}
-	if err := s.Shutdown(context.Background(), time.Second); err != nil {
+	if err := s.Shutdown(t.Context(), time.Second); err != nil {
 		t.Errorf("Shutdown: %v", err)
 	}
 }
@@ -205,7 +205,7 @@ func TestPushCloserAdaptsAnOrdinaryCloser(t *testing.T) {
 	s := &Stack{Log: quiet()}
 	s.PushCloser("thing", closerFunc(func() error { closed = true; return nil }))
 
-	if err := s.Shutdown(context.Background(), time.Second); err != nil {
+	if err := s.Shutdown(t.Context(), time.Second); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	if !closed {
@@ -222,7 +222,7 @@ func TestZeroBudgetMeansOnlyTheContextBounds(t *testing.T) {
 		ran = true
 		return ctx.Err()
 	})
-	if err := s.Shutdown(context.Background(), 0); err != nil {
+	if err := s.Shutdown(t.Context(), 0); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	if !ran {
@@ -235,23 +235,21 @@ func TestPushIsRaceFree(t *testing.T) {
 	s := &Stack{Log: quiet()}
 	var wg sync.WaitGroup
 	for range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			s.Push("s", func(context.Context) error { return nil })
-		}()
+		})
 	}
 	wg.Wait()
 	if s.Len() != 16 {
 		t.Errorf("Len = %d, want 16", s.Len())
 	}
-	_ = s.Shutdown(context.Background(), time.Second)
+	_ = s.Shutdown(t.Context(), time.Second)
 }
 
 // A process that handles SIGINT but not SIGTERM shuts down cleanly on ^C and is
 // killed uncleanly by every orchestrator — the default set is the value here.
 func TestSignalsReturnsALiveContext(t *testing.T) {
-	ctx, stop := Signals(context.Background())
+	ctx, stop := Signals(t.Context())
 	defer stop()
 	select {
 	case <-ctx.Done():
@@ -270,7 +268,7 @@ func TestCloserAdaptsAnIoCloser(t *testing.T) {
 	if step == nil {
 		t.Fatal("Closer returned nil for a non-nil closer")
 	}
-	if err := step(context.Background()); !errors.Is(err, want) {
+	if err := step(t.Context()); !errors.Is(err, want) {
 		t.Errorf("err = %v, want %v", err, want)
 	}
 }
@@ -290,6 +288,6 @@ func BenchmarkShutdown(b *testing.B) {
 		for range 8 {
 			s.Push("step", func(context.Context) error { return nil })
 		}
-		_ = s.Shutdown(context.Background(), time.Second)
+		_ = s.Shutdown(b.Context(), time.Second)
 	}
 }

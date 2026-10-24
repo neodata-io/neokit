@@ -18,8 +18,6 @@ import (
 	"github.com/neodata-io/neokit/webpush/delivery"
 )
 
-var bg = context.Background()
-
 // vapidKeys is a real generated keypair. The tests that came before this package
 // used placeholder strings, which made webpush-go fail during signing — so every
 // assertion past that point was vacuous and the fan-out was never exercised at
@@ -106,7 +104,7 @@ func TestSendDeliversToEverySubscriber(t *testing.T) {
 	}}
 	sender := newSender(t, store, delivery.Options{})
 
-	delivered, err := sender.Send(bg, "downloads", []byte(`{"title":"hi"}`))
+	delivered, err := sender.Send(t.Context(), "downloads", []byte(`{"title":"hi"}`))
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -132,7 +130,7 @@ func TestSendPrunesASubscriptionReportedGone(t *testing.T) {
 	store := &fakeStore{subs: []webpush.Subscription{browserSub(t, srv.URL)}}
 	sender := newSender(t, store, delivery.Options{})
 
-	delivered, err := sender.Send(bg, "downloads", []byte(`{}`))
+	delivered, err := sender.Send(t.Context(), "downloads", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -153,7 +151,7 @@ func TestSendPrunesASubscriptionReportedNotFound(t *testing.T) {
 	store := &fakeStore{subs: []webpush.Subscription{browserSub(t, srv.URL)}}
 	sender := newSender(t, store, delivery.Options{})
 
-	if _, err := sender.Send(bg, "downloads", []byte(`{}`)); err != nil {
+	if _, err := sender.Send(t.Context(), "downloads", []byte(`{}`)); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if got := store.deletedEndpoints(); len(got) != 1 {
@@ -173,7 +171,7 @@ func TestARejectedDeliveryIsNotPruned(t *testing.T) {
 	store := &fakeStore{subs: []webpush.Subscription{browserSub(t, srv.URL)}}
 	sender := newSender(t, store, delivery.Options{})
 
-	delivered, err := sender.Send(bg, "downloads", []byte(`{}`))
+	delivered, err := sender.Send(t.Context(), "downloads", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -201,7 +199,7 @@ func TestOneFailingEndpointDoesNotStopTheRest(t *testing.T) {
 	}}
 	sender := newSender(t, store, delivery.Options{})
 
-	delivered, err := sender.Send(bg, "downloads", []byte(`{}`))
+	delivered, err := sender.Send(t.Context(), "downloads", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("a single failed delivery must not fail the fan-out: %v", err)
 	}
@@ -214,7 +212,7 @@ func TestSendReportsAStoreFailure(t *testing.T) {
 	sentinel := errors.New("database is locked")
 	sender := newSender(t, &fakeStore{listErr: sentinel}, delivery.Options{})
 
-	if _, err := sender.Send(bg, "downloads", []byte(`{}`)); !errors.Is(err, sentinel) {
+	if _, err := sender.Send(t.Context(), "downloads", []byte(`{}`)); !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want it to wrap %v", err, sentinel)
 	}
 }
@@ -222,7 +220,7 @@ func TestSendReportsAStoreFailure(t *testing.T) {
 func TestSendWithNoSubscribersTouchesNothing(t *testing.T) {
 	sender := newSender(t, &fakeStore{}, delivery.Options{})
 
-	delivered, err := sender.Send(bg, "downloads", []byte(`{}`))
+	delivered, err := sender.Send(t.Context(), "downloads", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -259,7 +257,7 @@ func TestConcurrencyIsBounded(t *testing.T) {
 	}
 	sender := newSender(t, &fakeStore{subs: subs}, delivery.Options{Concurrency: 2})
 
-	delivered, err := sender.Send(bg, "downloads", []byte(`{}`))
+	delivered, err := sender.Send(t.Context(), "downloads", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -290,7 +288,7 @@ func TestASilentEndpointIsBoundedByTheTimeout(t *testing.T) {
 
 	done := make(chan int, 1)
 	go func() {
-		n, _ := sender.Send(bg, "downloads", []byte(`{}`))
+		n, _ := sender.Send(t.Context(), "downloads", []byte(`{}`))
 		done <- n
 	}()
 
@@ -322,7 +320,7 @@ func TestAPrefixedSubjectProducesExactlyOneMailtoInTheJWT(t *testing.T) {
 	store := &fakeStore{subs: []webpush.Subscription{browserSub(t, srv.URL)}}
 	sender := newSender(t, store, delivery.Options{Subject: "mailto:ops@example.com"})
 
-	if _, err := sender.Send(bg, "downloads", []byte(`{}`)); err != nil {
+	if _, err := sender.Send(t.Context(), "downloads", []byte(`{}`)); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 

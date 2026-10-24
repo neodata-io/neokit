@@ -91,8 +91,7 @@ func Classify(err error) Fault {
 		return FaultConflict
 	}
 
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return faultForStatus(apiErr.StatusCode)
 	}
 
@@ -105,8 +104,7 @@ func Classify(err error) Fault {
 
 	// Anything that never reached the service: a dial refusal, DNS, a TLS failure, a
 	// transport timeout.
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return FaultUnavailable
 	}
 

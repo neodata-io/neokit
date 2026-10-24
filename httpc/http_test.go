@@ -1,7 +1,6 @@
 package httpc
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -50,7 +49,7 @@ func TestNewHTTPClient_CustomTimeoutAndTransport(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	defer srv.Close()
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
 	if _, err := c.Transport.RoundTrip(req); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}

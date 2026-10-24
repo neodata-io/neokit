@@ -68,7 +68,7 @@ func (s *Set[E]) Len() int { return len(s.items) }
 
 // keyOf names capability C for the memo. C is an interface type, so reflect must
 // be handed a *C: TypeOf on a nil interface value would report nothing at all.
-func keyOf[C any]() reflect.Type { return reflect.TypeOf((*C)(nil)).Elem() }
+func keyOf[C any]() reflect.Type { return reflect.TypeFor[C]() }
 
 // All returns every component implementing capability C, in registration order.
 // Registration order is stable and load-bearing for [First].

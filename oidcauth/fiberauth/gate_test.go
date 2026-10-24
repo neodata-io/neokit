@@ -151,7 +151,7 @@ func TestNewRunsTheSessionSweep(t *testing.T) {
 	store := &sweepingStore{memStore: newMemStore(), swept: make(chan struct{}, 1)}
 	g := newGate(t, a, testProvider(t, "http://app.test"), store)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	stopped := make(chan struct{})
 	go func() { defer close(stopped); g.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-stopped })
@@ -170,7 +170,7 @@ func TestTheSweepRunsEvenWithNoLoginConfigured(t *testing.T) {
 	store := &sweepingStore{memStore: newMemStore(), swept: make(chan struct{}, 1)}
 	g := newGate(t, a, nil, store)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	stopped := make(chan struct{})
 	go func() { defer close(stopped); g.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-stopped })
@@ -189,7 +189,7 @@ func TestRunIsANoopWhenTheStoreCannotSweep(t *testing.T) {
 	g := newGate(t, a, nil, newMemStore())
 
 	done := make(chan struct{})
-	go func() { defer close(done); g.Run(context.Background()) }()
+	go func() { defer close(done); g.Run(t.Context()) }()
 
 	select {
 	case <-done:
@@ -484,7 +484,7 @@ func TestLogoutKeepsWorkingAfterLoginIsDisabled(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("logout = %d, want 204", resp.StatusCode)
 	}
-	if _, ok, _ := store.SessionByToken(context.Background(), oidcauth.HashToken("tok")); ok {
+	if _, ok, _ := store.SessionByToken(t.Context(), oidcauth.HashToken("tok")); ok {
 		t.Error("logout must delete the session even with no provider configured")
 	}
 	if !clearsCookie(resp, "myapp_session") {
@@ -948,11 +948,9 @@ func TestResolveIdentityIsRaceFree(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 24 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			do(t, app, withCookie(httptest.NewRequest(http.MethodGet, "/open", nil), "myapp_session", "tok"))
-		}()
+		})
 	}
 	wg.Wait()
 }

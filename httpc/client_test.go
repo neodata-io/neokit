@@ -29,7 +29,7 @@ func TestDoJSON_SuccessSendsAndDecodes(t *testing.T) {
 
 	bc := NewBaseClient(srv.URL, "test", nil)
 	var out map[string]string
-	if err := bc.DoJSON(context.Background(), http.MethodPost, bc.URL("/x"), map[string]string{"ping": "pong"}, &out); err != nil {
+	if err := bc.DoJSON(t.Context(), http.MethodPost, bc.URL("/x"), map[string]string{"ping": "pong"}, &out); err != nil {
 		t.Fatalf("DoJSON: %v", err)
 	}
 	if out["ok"] != "yes" {
@@ -45,7 +45,7 @@ func TestDoJSON_Non2xxReturnsAPIError(t *testing.T) {
 	defer srv.Close()
 
 	bc := NewBaseClient(srv.URL, "svc", nil)
-	err := bc.DoJSON(context.Background(), http.MethodGet, bc.URL("/x"), nil, nil)
+	err := bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/x"), nil, nil)
 
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
@@ -71,7 +71,7 @@ func TestDoJSON_NoRetryWithoutTokenSource(t *testing.T) {
 	defer srv.Close()
 
 	bc := NewBaseClient(srv.URL, "test", nil)
-	if err := bc.DoJSON(context.Background(), http.MethodGet, bc.URL("/x"), nil, nil); err == nil {
+	if err := bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/x"), nil, nil); err == nil {
 		t.Fatal("expected an error on 401")
 	}
 	if calls != 1 {
@@ -100,7 +100,7 @@ func TestDoJSON_RefreshesAndRetriesOnce_On401(t *testing.T) {
 	})
 
 	var out map[string]string
-	if err := bc.DoJSON(context.Background(), http.MethodGet, bc.URL("/x"), nil, &out); err != nil {
+	if err := bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/x"), nil, &out); err != nil {
 		t.Fatalf("DoJSON: %v", err)
 	}
 	if calls != 2 {
@@ -151,7 +151,7 @@ func TestDoWithTokenRetry_RetriesOn401(t *testing.T) {
 		return fmt.Sprintf("token-%d", atomic.AddInt32(&logins, 1)), time.Hour, nil
 	})
 
-	status, body, err := bearerGet(context.Background(), srv.Client(), ts, srv.URL)
+	status, body, err := bearerGet(t.Context(), srv.Client(), ts, srv.URL)
 	if err != nil {
 		t.Fatalf("bearerGet: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestDoWithTokenRetry_PassesThrough204(t *testing.T) {
 		return fmt.Sprintf("token-%d", atomic.AddInt32(&logins, 1)), time.Hour, nil
 	})
 
-	status, _, err := bearerGet(context.Background(), srv.Client(), ts, srv.URL)
+	status, _, err := bearerGet(t.Context(), srv.Client(), ts, srv.URL)
 	if err != nil {
 		t.Fatalf("bearerGet: %v", err)
 	}
@@ -213,12 +213,12 @@ func TestBaseClient_DebugRingOneEntryPerCall(t *testing.T) {
 		bc.Debug = NewDebugRing(10)
 
 		code = http.StatusOK
-		_ = bc.DoJSON(context.Background(), http.MethodGet, bc.URL("/x"), nil, nil)
+		_ = bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/x"), nil, nil)
 		if n := len(bc.Debug.Entries()); n != 1 {
 			t.Fatalf("after one 200 DoJSON, debug entries = %d, want 1", n)
 		}
 		code = http.StatusInternalServerError
-		_ = bc.DoJSON(context.Background(), http.MethodGet, bc.URL("/x"), nil, nil)
+		_ = bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/x"), nil, nil)
 		if n := len(bc.Debug.Entries()); n != 2 {
 			t.Fatalf("after a second (500) DoJSON, debug entries = %d, want 2", n)
 		}
@@ -236,12 +236,12 @@ func TestBaseClient_DebugRingOneEntryPerCall(t *testing.T) {
 		bc.Debug = NewDebugRing(10)
 
 		code = http.StatusOK
-		_, _, _ = bc.Bytes(context.Background(), http.MethodGet, bc.URL("/art"), 0)
+		_, _, _ = bc.Bytes(t.Context(), http.MethodGet, bc.URL("/art"), 0)
 		if n := len(bc.Debug.Entries()); n != 1 {
 			t.Fatalf("after one 200 Bytes, debug entries = %d, want 1", n)
 		}
 		code = http.StatusNotFound
-		_, _, _ = bc.Bytes(context.Background(), http.MethodGet, bc.URL("/art"), 0)
+		_, _, _ = bc.Bytes(t.Context(), http.MethodGet, bc.URL("/art"), 0)
 		if n := len(bc.Debug.Entries()); n != 2 {
 			t.Fatalf("after a second (404) Bytes, debug entries = %d, want 2", n)
 		}
@@ -250,7 +250,7 @@ func TestBaseClient_DebugRingOneEntryPerCall(t *testing.T) {
 
 func TestDoJSON_MarshalError(t *testing.T) {
 	bc := NewBaseClient("http://example.invalid", "test", nil)
-	err := bc.DoJSON(context.Background(), http.MethodPost, bc.URL("/x"), make(chan int), nil)
+	err := bc.DoJSON(t.Context(), http.MethodPost, bc.URL("/x"), make(chan int), nil)
 	if err == nil {
 		t.Fatal("expected a marshal error")
 	}
@@ -264,7 +264,7 @@ func TestDoJSON_DecodeError(t *testing.T) {
 
 	bc := NewBaseClient(srv.URL, "test", nil)
 	var out map[string]string
-	if err := bc.DoJSON(context.Background(), http.MethodGet, bc.URL("/x"), nil, &out); err == nil {
+	if err := bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/x"), nil, &out); err == nil {
 		t.Fatal("expected a decode error")
 	}
 }
@@ -301,9 +301,9 @@ func TestCachingTokenSource_CachesUntilForced(t *testing.T) {
 	ts := NewCachingTokenSource(func(context.Context) (string, time.Duration, error) {
 		return fmt.Sprintf("t%d", atomic.AddInt32(&logins, 1)), time.Hour, nil
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if tok, _ := ts.Token(ctx, ""); tok != "t1" {
 			t.Fatalf("call %d token = %q, want t1 (cached)", i, tok)
 		}
@@ -322,11 +322,11 @@ func TestCachingTokenSource_CachesUntilForced(t *testing.T) {
 }
 
 func TestCachingTokenSource_RefreshesAfterExpiry(t *testing.T) {
-	var logins int32
+	var logins atomic.Int32
 	ts := NewCachingTokenSource(func(context.Context) (string, time.Duration, error) {
-		return fmt.Sprintf("t%d", atomic.AddInt32(&logins, 1)), 20 * time.Millisecond, nil
+		return fmt.Sprintf("t%d", logins.Add(1)), 20 * time.Millisecond, nil
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if tok, _ := ts.Token(ctx, ""); tok != "t1" {
 		t.Fatalf("first token = %q, want t1", tok)
@@ -344,7 +344,7 @@ func TestCachingTokenSource_UnknownTTLReusesUntilForced(t *testing.T) {
 	ts := NewCachingTokenSource(func(context.Context) (string, time.Duration, error) {
 		return fmt.Sprintf("t%d", atomic.AddInt32(&logins, 1)), 0, nil // ttl<=0 → unknown lifetime
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	ts.Token(ctx, "")
 	ts.Token(ctx, "")
@@ -361,7 +361,7 @@ func TestCachingTokenSource_PropagatesLoginError(t *testing.T) {
 	ts := NewCachingTokenSource(func(context.Context) (string, time.Duration, error) {
 		return "", 0, errors.New("login failed")
 	})
-	if _, err := ts.Token(context.Background(), ""); err == nil {
+	if _, err := ts.Token(t.Context(), ""); err == nil {
 		t.Fatal("expected the login error to propagate")
 	}
 }
@@ -375,16 +375,14 @@ func TestCachingTokenSource_DedupesConcurrentForcedRefresh(t *testing.T) {
 	ts := NewCachingTokenSource(func(context.Context) (string, time.Duration, error) {
 		return fmt.Sprintf("t%d", atomic.AddInt32(&logins, 1)), time.Hour, nil
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	stale, _ := ts.Token(ctx, "") // everyone observed "t1", then all get a 401
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 20 {
+		wg.Go(func() {
 			_, _ = ts.Token(ctx, stale)
-		}()
+		})
 	}
 	wg.Wait()
 

@@ -42,7 +42,7 @@ func CheckIfMatch(c fiber.Ctx, currentVersion int) error {
 		return nil
 	}
 	want := strconv.Itoa(currentVersion)
-	for _, cand := range strings.Split(header, ",") {
+	for cand := range strings.SplitSeq(header, ",") {
 		cand = strings.TrimSpace(cand)
 		if cand == "*" {
 			return nil

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -156,8 +157,8 @@ func (s *Stack) Shutdown(ctx context.Context, each time.Duration) error {
 
 	log := s.logger()
 	var errs []error
-	for i := len(steps) - 1; i >= 0; i-- {
-		st := steps[i]
+	for _, st := range slices.Backward(steps) {
+
 		start := time.Now()
 		err := runStep(ctx, st, each)
 		took := time.Since(start)

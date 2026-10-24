@@ -163,8 +163,7 @@ func (p *Provider) Exchange(ctx context.Context, code, nonce, verifier string) (
 		// Expiry is worth naming because it is usually nobody's fault — a drifted
 		// container clock rejects every token, and "check the clock" is the whole
 		// fix. TokenExpiredError is typed and body-free, so lifting it is safe.
-		var expired *gooidc.TokenExpiredError
-		if errors.As(err, &expired) {
+		if _, ok := errors.AsType[*gooidc.TokenExpiredError](err); ok {
 			return Identity{}, fmt.Errorf("%w: the id_token was already expired on arrival — check the server clock", ErrTokenInvalid)
 		}
 		return Identity{}, ErrTokenInvalid
@@ -333,8 +332,7 @@ func (p *Provider) verifyClientCredentials(ctx context.Context, prov *gooidc.Pro
 	if err == nil {
 		return nil // absurd, but a success is not a credential failure
 	}
-	var re *oauth2.RetrieveError
-	if errors.As(err, &re) {
+	if re, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
 		if clientWasRejected(re) {
 			// The sentinel, not the raw error: its body can carry provider detail.
 			return ErrClientRejected
@@ -370,21 +368,18 @@ func discoveryErr(err error) error {
 	// The DNS failure never reached the service, so it carries no response body —
 	// nothing to redact — and wrapping the *net.DNSError keeps the cause
 	// credential-free while Classify still maps net.Error to FaultUnavailable.
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if dnsErr, ok := errors.AsType[*net.DNSError](err); ok {
 		return fmt.Errorf("%w: %w", ErrUnresolved, dnsErr)
 	}
 	// A reachable issuer whose certificate does not verify is a distinct,
 	// actionable failure — "use a trusted certificate", not "unreachable". A cert
 	// error carries no response body either.
-	var certErr *tls.CertificateVerificationError
-	if errors.As(err, &certErr) {
+	if certErr, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
 		return fmt.Errorf("%w: %w", ErrUntrusted, certErr)
 	}
 	// A transport failure carries no response body, but its URL may carry
 	// credentials — precisely Redact's case.
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
+	if _, ok := errors.AsType[*url.Error](err); ok {
 		return fmt.Errorf("%w: %w", ErrDiscoveryFailed, httpc.Redact(err))
 	}
 	// Anything else is go-oidc's own "status: body". Keep the diagnosis, drop the
@@ -432,8 +427,7 @@ func exchangeErr(err error) error {
 		// A transport failure carries no response body, but its URL may carry
 		// credentials — Redact's case, and it preserves the wrapped cause so a
 		// cancelled or timed-out request still matches its context sentinel.
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
+		if _, ok := errors.AsType[*url.Error](err); ok {
 			return fmt.Errorf("%w: %w", ErrTokenEndpointUnreachable, httpc.Redact(err))
 		}
 		// What is left is oauth2's own parse failure over a 2xx body ("cannot parse

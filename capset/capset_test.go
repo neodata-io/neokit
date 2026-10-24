@@ -141,15 +141,13 @@ func TestConcurrentResolutionIsRaceFree(t *testing.T) {
 	s := fixture()
 	var wg sync.WaitGroup
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = All[Charger](s)
 			_ = All[Meter](s)
 			_ = Of[Charger](s, "tesla")
 			_ = First[Meter](s)
 			_ = Any[Player](s)
-		}()
+		})
 	}
 	wg.Wait()
 }

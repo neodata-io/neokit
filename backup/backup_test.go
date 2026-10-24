@@ -27,7 +27,7 @@ func TestWriteDailyIsIdempotentWithinADay(t *testing.T) {
 	s := backup.New(snap, backup.Options{Dir: dir, Retention: 7})
 
 	for range 3 {
-		if err := s.WriteDaily(context.Background()); err != nil {
+		if err := s.WriteDaily(t.Context()); err != nil {
 			t.Fatalf("WriteDaily: %v", err)
 		}
 	}
@@ -46,11 +46,11 @@ func TestRetentionKeepsTheNewest(t *testing.T) {
 		}
 	}
 	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 3})
-	if err := s.WriteDaily(context.Background()); err != nil {
+	if err := s.WriteDaily(t.Context()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
 
-	got, err := s.List(context.Background())
+	got, err := s.List(t.Context())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -70,10 +70,10 @@ func TestRetentionKeepsTheNewest(t *testing.T) {
 func TestRetentionIsClampedToAtLeastOne(t *testing.T) {
 	dir := t.TempDir()
 	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 0})
-	if err := s.WriteDaily(context.Background()); err != nil {
+	if err := s.WriteDaily(t.Context()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
-	got, err := s.List(context.Background())
+	got, err := s.List(t.Context())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestRetentionIsClampedToAtLeastOne(t *testing.T) {
 func TestEmptyDirDisablesScheduledBackups(t *testing.T) {
 	snap := &fakeSnap{}
 	s := backup.New(snap, backup.Options{Dir: "", Retention: 7})
-	if err := s.WriteDaily(context.Background()); err != nil {
+	if err := s.WriteDaily(t.Context()); err != nil {
 		t.Fatalf("a disabled backup must not be an error: %v", err)
 	}
 	if snap.calls != 0 {
@@ -102,7 +102,7 @@ func TestBackupStreamsAFreshSnapshot(t *testing.T) {
 	s := backup.New(snap, backup.Options{Dir: t.TempDir(), Retention: 7})
 
 	var buf writeCounter
-	if err := s.Backup(context.Background(), &buf); err != nil {
+	if err := s.Backup(t.Context(), &buf); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 	if snap.calls != 1 {
@@ -129,7 +129,7 @@ func TestListIsNewestFirst(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 10})
-	got, err := s.List(context.Background())
+	got, err := s.List(t.Context())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -146,10 +146,10 @@ func TestCustomPrefixIsUsedForWritingAndReading(t *testing.T) {
 	snap := &fakeSnap{}
 	s := backup.New(snap, backup.Options{Dir: dir, Retention: 7, Prefix: "neogate-"})
 
-	if err := s.WriteDaily(context.Background()); err != nil {
+	if err := s.WriteDaily(t.Context()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
-	got, err := s.List(context.Background())
+	got, err := s.List(t.Context())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -171,10 +171,10 @@ func TestAForeignPrefixIsIgnoredEntirely(t *testing.T) {
 	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 1, Prefix: "backup-"})
 
 	// Write enough of our own that pruning is guaranteed to run.
-	if err := s.WriteDaily(context.Background()); err != nil {
+	if err := s.WriteDaily(t.Context()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
-	got, err := s.List(context.Background())
+	got, err := s.List(t.Context())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -191,10 +191,10 @@ func TestAForeignPrefixIsIgnoredEntirely(t *testing.T) {
 func TestEmptyPrefixFallsBackToTheDefault(t *testing.T) {
 	dir := t.TempDir()
 	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
-	if err := s.WriteDaily(context.Background()); err != nil {
+	if err := s.WriteDaily(t.Context()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
-	got, _ := s.List(context.Background())
+	got, _ := s.List(t.Context())
 	if len(got) != 1 || !strings.HasPrefix(got[0].Name, backup.DefaultPrefix) {
 		t.Errorf("List = %+v, want the default prefix", got)
 	}
@@ -206,7 +206,7 @@ func TestRunWritesABackup(t *testing.T) {
 	dir := t.TempDir()
 	svc := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 7})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	stopped := make(chan struct{})
 	go func() { defer close(stopped); svc.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-stopped })
@@ -250,7 +250,7 @@ func TestRunIsANoopWhenNoDirIsConfigured(t *testing.T) {
 	svc := backup.New(&fakeSnap{}, backup.Options{})
 
 	done := make(chan struct{})
-	go func() { defer close(done); svc.Run(context.Background()) }()
+	go func() { defer close(done); svc.Run(t.Context()) }()
 
 	select {
 	case <-done:

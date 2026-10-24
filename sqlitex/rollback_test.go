@@ -102,7 +102,7 @@ func TestMigrateContext_HonoursCancellation(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	if err := MigrateContext(ctx, db, []Migration{step("one", "CREATE TABLE a(x)")}); err == nil {

@@ -38,7 +38,7 @@ func TestDatabaseRegistersItsTeardown(t *testing.T) {
 		t.Fatalf("Database: %v", err)
 	}
 
-	if err := db.PingContext(context.Background()); err != nil {
+	if err := db.PingContext(t.Context()); err != nil {
 		t.Errorf("the returned handle must work: %v", err)
 	}
 	if got := a.Shutdown.Len(); got != before+1 {
@@ -73,7 +73,7 @@ func TestBackupsReturnsAUsableService(t *testing.T) {
 	if svc == nil {
 		t.Fatal("Backups returned nil")
 	}
-	if _, err := svc.List(context.Background()); err != nil {
+	if _, err := svc.List(t.Context()); err != nil {
 		t.Errorf("List: %v", err)
 	}
 }

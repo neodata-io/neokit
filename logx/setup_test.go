@@ -151,7 +151,7 @@ func TestRootLoggerDoesNotShadowPluginServiceKey(t *testing.T) {
 func rawLine(t *testing.T, out, msg string) string {
 	t.Helper()
 
-	for _, line := range bytes.Split([]byte(out), []byte("\n")) {
+	for line := range bytes.SplitSeq([]byte(out), []byte("\n")) {
 		if bytes.Contains(line, []byte(`"msg":"`+msg+`"`)) {
 			return string(line)
 		}

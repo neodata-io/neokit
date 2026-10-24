@@ -1,7 +1,6 @@
 package session_test
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -76,11 +75,11 @@ func newStore(t *testing.T) *session.SQLite {
 func TestCreateAndResolveByToken(t *testing.T) {
 	store := newStore(t)
 	want := aSession()
-	if err := store.CreateSession(context.Background(), want, session.HashToken("raw-token")); err != nil {
+	if err := store.CreateSession(t.Context(), want, session.HashToken("raw-token")); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	got, ok, err := store.SessionByToken(context.Background(), session.HashToken("raw-token"))
+	got, ok, err := store.SessionByToken(t.Context(), session.HashToken("raw-token"))
 	if err != nil || !ok {
 		t.Fatalf("SessionByToken = (_, %v, %v), want (_, true, nil)", ok, err)
 	}
@@ -107,7 +106,7 @@ func TestTheRawTokenNeverReachesTheDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	const raw = "a-very-distinctive-raw-token"
-	if err := store.CreateSession(context.Background(), aSession(), session.HashToken(raw)); err != nil {
+	if err := store.CreateSession(t.Context(), aSession(), session.HashToken(raw)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,7 +144,7 @@ func TestTheRawTokenNeverReachesTheDatabase(t *testing.T) {
 func TestAnUnknownTokenIsNotAnError(t *testing.T) {
 	store := newStore(t)
 
-	got, ok, err := store.SessionByToken(context.Background(), session.HashToken("never-issued"))
+	got, ok, err := store.SessionByToken(t.Context(), session.HashToken("never-issued"))
 	if err != nil {
 		t.Fatalf("SessionByToken error = %v, want nil", err)
 	}
@@ -160,11 +159,11 @@ func TestAnExpiredRowIsReturnedAndRejectedByPolicy(t *testing.T) {
 	store := newStore(t)
 	dead := aSession()
 	dead.ExpiresAt = dead.CreatedAt.Add(-time.Hour)
-	if err := store.CreateSession(context.Background(), dead, session.HashToken("t")); err != nil {
+	if err := store.CreateSession(t.Context(), dead, session.HashToken("t")); err != nil {
 		t.Fatal(err)
 	}
 
-	got, ok, err := store.SessionByToken(context.Background(), session.HashToken("t"))
+	got, ok, err := store.SessionByToken(t.Context(), session.HashToken("t"))
 	if err != nil || !ok {
 		t.Fatalf("the store must return the row, got (_, %v, %v)", ok, err)
 	}
@@ -179,17 +178,17 @@ func TestAnExpiredRowIsReturnedAndRejectedByPolicy(t *testing.T) {
 func TestTouchMovesOnlyTheTimestamps(t *testing.T) {
 	store := newStore(t)
 	orig := aSession()
-	if err := store.CreateSession(context.Background(), orig, session.HashToken("t")); err != nil {
+	if err := store.CreateSession(t.Context(), orig, session.HashToken("t")); err != nil {
 		t.Fatal(err)
 	}
 
 	seen := orig.LastSeenAt.Add(2 * time.Hour)
 	exp := orig.ExpiresAt.Add(2 * time.Hour)
-	if err := store.TouchSession(context.Background(), orig.ID, seen, exp); err != nil {
+	if err := store.TouchSession(t.Context(), orig.ID, seen, exp); err != nil {
 		t.Fatalf("TouchSession: %v", err)
 	}
 
-	got, _, err := store.SessionByToken(context.Background(), session.HashToken("t"))
+	got, _, err := store.SessionByToken(t.Context(), session.HashToken("t"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,27 +205,27 @@ func TestDeleteByIDAndByToken(t *testing.T) {
 	store := newStore(t)
 	first, second := aSession(), aSession()
 	second.ID = "sess-2"
-	if err := store.CreateSession(context.Background(), first, session.HashToken("t1")); err != nil {
+	if err := store.CreateSession(t.Context(), first, session.HashToken("t1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateSession(context.Background(), second, session.HashToken("t2")); err != nil {
+	if err := store.CreateSession(t.Context(), second, session.HashToken("t2")); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := store.DeleteSession(context.Background(), first.ID); err != nil {
+	if err := store.DeleteSession(t.Context(), first.ID); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
-	if _, ok, _ := store.SessionByToken(context.Background(), session.HashToken("t1")); ok {
+	if _, ok, _ := store.SessionByToken(t.Context(), session.HashToken("t1")); ok {
 		t.Error("DeleteSession left the row")
 	}
-	if _, ok, _ := store.SessionByToken(context.Background(), session.HashToken("t2")); !ok {
+	if _, ok, _ := store.SessionByToken(t.Context(), session.HashToken("t2")); !ok {
 		t.Error("DeleteSession removed the wrong row")
 	}
 
-	if err := store.DeleteSessionByToken(context.Background(), session.HashToken("t2")); err != nil {
+	if err := store.DeleteSessionByToken(t.Context(), session.HashToken("t2")); err != nil {
 		t.Fatalf("DeleteSessionByToken: %v", err)
 	}
-	if _, ok, _ := store.SessionByToken(context.Background(), session.HashToken("t2")); ok {
+	if _, ok, _ := store.SessionByToken(t.Context(), session.HashToken("t2")); ok {
 		t.Error("DeleteSessionByToken left the row")
 	}
 }
@@ -236,10 +235,10 @@ func TestDeleteByIDAndByToken(t *testing.T) {
 func TestDeletingAnAbsentSessionSucceeds(t *testing.T) {
 	store := newStore(t)
 
-	if err := store.DeleteSession(context.Background(), "no-such-id"); err != nil {
+	if err := store.DeleteSession(t.Context(), "no-such-id"); err != nil {
 		t.Errorf("DeleteSession on an absent row = %v, want nil", err)
 	}
-	if err := store.DeleteSessionByToken(context.Background(), session.HashToken("nope")); err != nil {
+	if err := store.DeleteSessionByToken(t.Context(), session.HashToken("nope")); err != nil {
 		t.Errorf("DeleteSessionByToken on an absent row = %v, want nil", err)
 	}
 }
@@ -251,14 +250,14 @@ func TestListReturnsEveryRowIncludingExpired(t *testing.T) {
 	live := aSession()
 	dead := aSession()
 	dead.ID, dead.ExpiresAt = "sess-dead", live.CreatedAt.Add(-time.Hour)
-	if err := store.CreateSession(context.Background(), live, session.HashToken("t1")); err != nil {
+	if err := store.CreateSession(t.Context(), live, session.HashToken("t1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateSession(context.Background(), dead, session.HashToken("t2")); err != nil {
+	if err := store.CreateSession(t.Context(), dead, session.HashToken("t2")); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := store.ListSessions(context.Background())
+	got, err := store.ListSessions(t.Context())
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -270,7 +269,7 @@ func TestListReturnsEveryRowIncludingExpired(t *testing.T) {
 // An empty table is an empty slice, not a nil one: the caller renders it as
 // JSON, where nil is `null` and an empty slice is `[]`.
 func TestListOfNothingIsAnEmptySlice(t *testing.T) {
-	got, err := newStore(t).ListSessions(context.Background())
+	got, err := newStore(t).ListSessions(t.Context())
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -303,13 +302,13 @@ func TestDeleteExpiredRemovesOnlyDeadRows(t *testing.T) {
 	onTheLine.ID, onTheLine.ExpiresAt = "sess-edge", now
 
 	for i, s := range []session.Session{live, dead, onTheLine} {
-		if err := store.CreateSession(context.Background(), s, session.HashToken(string(rune('a'+i)))); err != nil {
+		if err := store.CreateSession(t.Context(), s, session.HashToken(string(rune('a'+i)))); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// A session expiring exactly now is spent, so it goes with the dead one.
-	n, err := store.DeleteExpiredSessions(context.Background(), now)
+	n, err := store.DeleteExpiredSessions(t.Context(), now)
 	if err != nil {
 		t.Fatalf("DeleteExpiredSessions: %v", err)
 	}
@@ -317,7 +316,7 @@ func TestDeleteExpiredRemovesOnlyDeadRows(t *testing.T) {
 		t.Errorf("swept %d rows, want 2", n)
 	}
 
-	left, err := store.ListSessions(context.Background())
+	left, err := store.ListSessions(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -31,19 +31,19 @@ func eventually(t *testing.T, within time.Duration, cond func() bool, msg string
 
 func TestGetOrFetch_CachesWithinTTL(t *testing.T) {
 	c := cache.New()
-	var calls int32
+	var calls atomic.Int32
 
 	fetch := func(context.Context) (int, error) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		return 42, nil
 	}
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
 		require.NoError(t, err)
 		assert.Equal(t, 42, v)
 	}
-	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "fn should run once within the TTL")
+	assert.Equal(t, int32(1), calls.Load(), "fn should run once within the TTL")
 }
 
 // Invalidate is the one path that must still make the caller wait: it is used
@@ -51,9 +51,9 @@ func TestGetOrFetch_CachesWithinTTL(t *testing.T) {
 // would show the household the state it just changed away from.
 func TestGetOrFetch_RefetchesSynchronouslyAfterInvalidate(t *testing.T) {
 	c := cache.New()
-	var calls int32
+	var calls atomic.Int32
 	fetch := func(context.Context) (int, error) {
-		return int(atomic.AddInt32(&calls, 1)), nil
+		return int(calls.Add(1)), nil
 	}
 
 	v1, _ := cache.GetOrFetch(c, "k", time.Minute, fetch)
@@ -70,9 +70,9 @@ func TestGetOrFetch_RefetchesSynchronouslyAfterInvalidate(t *testing.T) {
 // an off television stall every home screen for 5s every 3 minutes.
 func TestGetOrFetch_ServesStaleThenRevalidates(t *testing.T) {
 	c := cache.New()
-	var calls int32
+	var calls atomic.Int32
 	fetch := func(context.Context) (int, error) {
-		return int(atomic.AddInt32(&calls, 1)), nil
+		return int(calls.Add(1)), nil
 	}
 
 	v1, _ := cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
@@ -95,10 +95,10 @@ func TestGetOrFetch_ServesStaleThenRevalidates(t *testing.T) {
 func TestGetOrFetch_StaleReadDoesNotWaitOnASlowFetch(t *testing.T) {
 	c := cache.New()
 	const fetchCost = 300 * time.Millisecond
-	var calls int32
+	var calls atomic.Int32
 
 	fetch := func(context.Context) (int, error) {
-		n := atomic.AddInt32(&calls, 1)
+		n := calls.Add(1)
 		if n > 1 { // the refresh, not the initial load
 			time.Sleep(fetchCost)
 		}
@@ -122,9 +122,9 @@ func TestGetOrFetch_StaleReadDoesNotWaitOnASlowFetch(t *testing.T) {
 // cache would amplify load precisely when the upstream is already slow.
 func TestGetOrFetch_StaleBurstStartsOneRefresh(t *testing.T) {
 	c := cache.New()
-	var calls int32
+	var calls atomic.Int32
 	fetch := func(context.Context) (int, error) {
-		n := atomic.AddInt32(&calls, 1)
+		n := calls.Add(1)
 		if n > 1 {
 			time.Sleep(50 * time.Millisecond) // hold the refresh open so readers pile up
 		}
@@ -135,19 +135,17 @@ func TestGetOrFetch_StaleBurstStartsOneRefresh(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch)
-		}()
+		})
 	}
 	wg.Wait()
 
-	eventually(t, time.Second, func() bool { return atomic.LoadInt32(&calls) == 2 },
+	eventually(t, time.Second, func() bool { return calls.Load() == 2 },
 		"expected exactly one refresh behind the burst")
 	time.Sleep(50 * time.Millisecond) // give any extra refresh a chance to show up
-	assert.Equal(t, int32(2), atomic.LoadInt32(&calls), "a stale burst must collapse to one refresh")
+	assert.Equal(t, int32(2), calls.Load(), "a stale burst must collapse to one refresh")
 }
 
 // A failed revalidation must not blank the tile: the last good value keeps being
@@ -155,9 +153,9 @@ func TestGetOrFetch_StaleBurstStartsOneRefresh(t *testing.T) {
 // into a load amplifier against an upstream that is already down.
 func TestGetOrFetch_FailedRevalidationKeepsLastGoodAndBacksOff(t *testing.T) {
 	c := cache.New()
-	var calls int32
+	var calls atomic.Int32
 	fetch := func(context.Context) (int, error) {
-		if n := atomic.AddInt32(&calls, 1); n == 1 {
+		if n := calls.Add(1); n == 1 {
 			return 99, nil
 		}
 		return 0, assert.AnError
@@ -168,14 +166,14 @@ func TestGetOrFetch_FailedRevalidationKeepsLastGoodAndBacksOff(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch) // triggers the failing refresh
-	eventually(t, time.Second, func() bool { return atomic.LoadInt32(&calls) >= 2 }, "refresh should have run")
+	eventually(t, time.Second, func() bool { return calls.Load() >= 2 }, "refresh should have run")
 
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
 		require.NoError(t, err, "a failed revalidation must not surface as a caller error")
 		assert.Equal(t, 99, v, "the last good value must keep being served")
 	}
-	assert.Equal(t, int32(2), atomic.LoadInt32(&calls),
+	assert.Equal(t, int32(2), calls.Load(),
 		"a failed refresh must back off, not re-dial on every read")
 }
 
@@ -185,10 +183,10 @@ func TestGetOrFetch_FailedRevalidationKeepsLastGoodAndBacksOff(t *testing.T) {
 func TestGetOrFetch_InvalidateDiscardsAnInFlightRefresh(t *testing.T) {
 	c := cache.New()
 	release := make(chan struct{})
-	var calls int32
+	var calls atomic.Int32
 
 	fetch := func(context.Context) (int, error) {
-		n := atomic.AddInt32(&calls, 1)
+		n := calls.Add(1)
 		if n == 2 { // the background refresh: hold it open
 			<-release
 		}
@@ -198,7 +196,7 @@ func TestGetOrFetch_InvalidateDiscardsAnInFlightRefresh(t *testing.T) {
 	_, _ = cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
 	time.Sleep(20 * time.Millisecond)
 	_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch) // starts the held refresh
-	eventually(t, time.Second, func() bool { return atomic.LoadInt32(&calls) == 2 }, "refresh should have started")
+	eventually(t, time.Second, func() bool { return calls.Load() == 2 }, "refresh should have started")
 
 	c.Invalidate("k") // the mutation lands mid-refresh
 	close(release)    // now let the stale refresh finish and try to publish
@@ -210,32 +208,30 @@ func TestGetOrFetch_InvalidateDiscardsAnInFlightRefresh(t *testing.T) {
 
 func TestGetOrFetch_SingleFlight(t *testing.T) {
 	c := cache.New()
-	var calls int32
+	var calls atomic.Int32
 	fetch := func(context.Context) (int, error) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		time.Sleep(30 * time.Millisecond) // hold so callers pile up
 		return 7, nil
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 20 {
+		wg.Go(func() {
 			v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
 			assert.NoError(t, err)
 			assert.Equal(t, 7, v)
-		}()
+		})
 	}
 	wg.Wait()
-	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "concurrent misses should collapse to one fetch")
+	assert.Equal(t, int32(1), calls.Load(), "concurrent misses should collapse to one fetch")
 }
 
 func TestGetOrFetch_DoesNotCacheErrors(t *testing.T) {
 	c := cache.New()
-	var calls int32
+	var calls atomic.Int32
 	fetch := func(context.Context) (int, error) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		return 0, assert.AnError
 	}
 
@@ -243,7 +239,7 @@ func TestGetOrFetch_DoesNotCacheErrors(t *testing.T) {
 	_, err2 := cache.GetOrFetch(c, "k", time.Minute, fetch)
 	require.Error(t, err1)
 	require.Error(t, err2)
-	assert.Equal(t, int32(2), atomic.LoadInt32(&calls), "errors must not be cached")
+	assert.Equal(t, int32(2), calls.Load(), "errors must not be cached")
 }
 
 // fn must never receive a request-scoped context. A revalidation outlives the
@@ -280,10 +276,10 @@ func TestGetOrFetch_FetchContextIsNotTheCallers(t *testing.T) {
 func TestGetOrFetch_RevalidationContextIsLive(t *testing.T) {
 	c := cache.New()
 	seen := make(chan error, 1)
-	var calls int32
+	var calls atomic.Int32
 
 	fetch := func(ctx context.Context) (int, error) {
-		if atomic.AddInt32(&calls, 1) > 1 { // the background revalidation
+		if calls.Add(1) > 1 { // the background revalidation
 			seen <- ctx.Err()
 		}
 		return 1, nil

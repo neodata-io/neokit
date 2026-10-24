@@ -38,7 +38,7 @@ func TestWebhookPostsTheDocumentedPayload(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
 	s := NewWebhook(srv.URL, "sh4red", Options{})
 
-	err := s.Send(context.Background(), Notification{
+	err := s.Send(t.Context(), Notification{
 		Title: "Backup complete", Body: "3 files", Level: LevelSuccess,
 		URL: "https://app.test/backups", Tags: []string{"backup"},
 		Data: map[string]any{"files": 3},
@@ -73,7 +73,7 @@ func TestWebhookPostsTheDocumentedPayload(t *testing.T) {
 // receiver might compare against.
 func TestWebhookOmitsTheSecretHeaderWhenUnset(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
-	if err := NewWebhook(srv.URL, "", Options{}).Send(context.Background(), Notification{Title: "t"}); err != nil {
+	if err := NewWebhook(srv.URL, "", Options{}).Send(t.Context(), Notification{Title: "t"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if _, present := got.header["X-Webhook-Secret"]; present {
@@ -85,7 +85,7 @@ func TestNtfySendsTitleAndBodySeparately(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
 	s := NewNtfy(srv.URL+"/my-topic", "t0ken", Options{})
 
-	err := s.Send(context.Background(), Notification{
+	err := s.Send(t.Context(), Notification{
 		Title: "Disk almost full", Body: "92% used", Level: LevelWarning,
 		URL: "https://app.test/storage",
 	})
@@ -118,7 +118,7 @@ func TestNtfyStripsControlCharactersFromHeaders(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
 	s := NewNtfy(srv.URL, "", Options{})
 
-	err := s.Send(context.Background(), Notification{
+	err := s.Send(t.Context(), Notification{
 		Title: "line one\r\nX-Injected: yes",
 		Tags:  []string{"tag\none", "a,b"},
 	})
@@ -146,7 +146,7 @@ func TestNtfyFallsBackToALevelTag(t *testing.T) {
 		LevelInfo:    "bell",
 	} {
 		srv, got := recorder(t, http.StatusOK)
-		if err := NewNtfy(srv.URL, "", Options{}).Send(context.Background(),
+		if err := NewNtfy(srv.URL, "", Options{}).Send(t.Context(),
 			Notification{Title: "t", Level: level}); err != nil {
 			t.Fatalf("Send: %v", err)
 		}
@@ -160,7 +160,7 @@ func TestAppriseUsesItsOwnTypeVocabulary(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
 	s := NewApprise(srv.URL+"/notify/", Options{})
 
-	if err := s.Send(context.Background(), Notification{
+	if err := s.Send(t.Context(), Notification{
 		Title: "Build failed", Body: "step 3", Level: LevelFailure, Tags: []string{"ci"},
 	}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -181,7 +181,7 @@ func TestAppriseUsesItsOwnTypeVocabulary(t *testing.T) {
 // is best-effort, and dropping one over a typo'd severity is the wrong trade.
 func TestAnUnknownLevelDegradesToInfo(t *testing.T) {
 	srv, got := recorder(t, http.StatusOK)
-	if err := NewApprise(srv.URL, Options{}).Send(context.Background(),
+	if err := NewApprise(srv.URL, Options{}).Send(t.Context(),
 		Notification{Title: "t", Level: Level("shouty")}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -199,12 +199,11 @@ func TestAFailedDeliveryClassifiesAsAnAPIError(t *testing.T) {
 	}
 	for status, wantFault := range cases {
 		srv, _ := recorder(t, status)
-		err := NewWebhook(srv.URL, "", Options{}).Send(context.Background(), Notification{Title: "t"})
+		err := NewWebhook(srv.URL, "", Options{}).Send(t.Context(), Notification{Title: "t"})
 		if err == nil {
 			t.Fatalf("status %d: want an error", status)
 		}
-		var apiErr *httpc.APIError
-		if !errors.As(err, &apiErr) {
+		if _, ok := errors.AsType[*httpc.APIError](err); !ok {
 			t.Errorf("status %d: err = %v, want an *httpc.APIError", status, err)
 			continue
 		}
@@ -225,7 +224,7 @@ func TestMultiSendsToEveryBackendAndJoinsErrors(t *testing.T) {
 		NewApprise(bad.URL, Options{}),
 		nil, // a nil sender is skipped rather than panicking
 	}
-	err := m.Send(context.Background(), Notification{Title: "t", Body: "b"})
+	err := m.Send(t.Context(), Notification{Title: "t", Body: "b"})
 	if err == nil {
 		t.Fatal("want the failing backend's error")
 	}
@@ -240,7 +239,7 @@ func TestMultiSendsToEveryBackendAndJoinsErrors(t *testing.T) {
 func TestMultiWithNoFailuresReturnsNil(t *testing.T) {
 	ok, _ := recorder(t, http.StatusOK)
 	m := Multi{NewWebhook(ok.URL, "", Options{})}
-	if err := m.Send(context.Background(), Notification{Title: "t"}); err != nil {
+	if err := m.Send(t.Context(), Notification{Title: "t"}); err != nil {
 		t.Errorf("Send: %v", err)
 	}
 }
@@ -253,7 +252,7 @@ func TestATransportFailureDoesNotLeakTheURLCredential(t *testing.T) {
 	dead.Close()
 
 	err := NewWebhook(url+"/hook?token=s3cret-token", "", Options{}).
-		Send(context.Background(), Notification{Title: "t"})
+		Send(t.Context(), Notification{Title: "t"})
 	if err == nil {
 		t.Fatal("want a transport error")
 	}
@@ -265,7 +264,7 @@ func TestATransportFailureDoesNotLeakTheURLCredential(t *testing.T) {
 // A cancelled context must abort the send rather than run to its own timeout.
 func TestSendHonoursContextCancellation(t *testing.T) {
 	srv, _ := recorder(t, http.StatusOK)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	err := NewWebhook(srv.URL, "", Options{}).Send(ctx, Notification{Title: "t"})
@@ -279,10 +278,9 @@ func BenchmarkWebhookMarshal(b *testing.B) {
 	defer srv.Close()
 	s := NewWebhook(srv.URL, "secret", Options{})
 	n := Notification{Title: "Backup complete", Body: "3 files", Level: LevelSuccess}
-	ctx := context.Background()
+	ctx := b.Context()
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = s.Send(ctx, n)
 	}
 }
-

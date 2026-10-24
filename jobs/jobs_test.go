@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 // out a full interval first.
 func TestRunAtStartRunsBeforeTheFirstTick(t *testing.T) {
 	var runs atomic.Int64
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan struct{})
 	go func() {
@@ -48,8 +48,7 @@ func TestRunAtStartRunsBeforeTheFirstTick(t *testing.T) {
 
 func TestWithoutRunAtStartNothingRunsImmediately(t *testing.T) {
 	var runs atomic.Int64
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go Job{
 		Name: "t", Every: time.Hour, Log: quiet(),
@@ -64,7 +63,7 @@ func TestWithoutRunAtStartNothingRunsImmediately(t *testing.T) {
 
 func TestTicksRepeatedlyUntilCancelled(t *testing.T) {
 	var runs atomic.Int64
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan struct{})
 	go func() {
@@ -92,8 +91,7 @@ func TestTicksRepeatedlyUntilCancelled(t *testing.T) {
 func TestTimeoutBoundsOneRunWithoutEndingTheLoop(t *testing.T) {
 	var runs atomic.Int64
 	var deadlines atomic.Int64
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go Job{
 		Name: "t", Every: 5 * time.Millisecond, Timeout: 10 * time.Millisecond, Log: quiet(),
@@ -119,8 +117,7 @@ func TestTimeoutBoundsOneRunWithoutEndingTheLoop(t *testing.T) {
 // ticker phase.
 func TestPanicInDoDoesNotEndTheLoop(t *testing.T) {
 	var runs atomic.Int64
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go Job{
 		Name: "t", Every: time.Millisecond, Log: quiet(),
@@ -138,8 +135,7 @@ func TestPanicInDoDoesNotEndTheLoop(t *testing.T) {
 func TestOnErrorReceivesTheFailure(t *testing.T) {
 	want := errors.New("upstream down")
 	got := make(chan error, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go Job{
 		Name: "t", Every: time.Hour, RunAtStart: true, Log: quiet(),
@@ -173,7 +169,7 @@ func TestRunPanicsOnAnUnusableJob(t *testing.T) {
 					t.Error("Run must panic on an unusable job")
 				}
 			}()
-			j.Run(context.Background())
+			j.Run(t.Context())
 		})
 	}
 }
@@ -181,7 +177,7 @@ func TestRunPanicsOnAnUnusableJob(t *testing.T) {
 // A cancelled context must stop the loop promptly even mid-run.
 func TestCancellationStopsAJobAlreadyRunning(t *testing.T) {
 	started := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan struct{})
 	go func() {
@@ -211,19 +207,17 @@ func TestCancellationStopsAJobAlreadyRunning(t *testing.T) {
 
 // Concurrent jobs sharing nothing must be race-free under -race.
 func TestConcurrentJobsAreRaceFree(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var wg sync.WaitGroup
 	var runs atomic.Int64
 
 	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			Job{
 				Name: "j", Every: time.Millisecond, RunAtStart: true, Log: quiet(),
 				Do: func(context.Context) error { runs.Add(1); return nil },
 			}.Run(ctx)
-		}()
+		})
 		_ = i
 	}
 	waitFor(t, func() bool { return runs.Load() >= 16 }, "runs across all jobs")
@@ -250,7 +244,7 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 func BenchmarkTickBounded(b *testing.B) {
 	j := Job{Name: "b", Every: time.Hour, Timeout: time.Second, Log: quiet(),
 		Do: func(context.Context) error { return nil }}
-	ctx := context.Background()
+	ctx := b.Context()
 	b.ReportAllocs()
 	for b.Loop() {
 		j.tick(ctx)
@@ -260,7 +254,7 @@ func BenchmarkTickBounded(b *testing.B) {
 func BenchmarkTickUnbounded(b *testing.B) {
 	j := Job{Name: "b", Every: time.Hour, Log: quiet(),
 		Do: func(context.Context) error { return nil }}
-	ctx := context.Background()
+	ctx := b.Context()
 	b.ReportAllocs()
 	for b.Loop() {
 		j.tick(ctx)

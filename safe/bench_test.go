@@ -1,7 +1,6 @@
 package safe
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"sync"
@@ -49,7 +48,7 @@ func BenchmarkGo_SpawnAndReturn(b *testing.B) {
 	for b.Loop() {
 		var wg sync.WaitGroup
 		wg.Add(1)
-		Go(context.Background(), "job", func() { wg.Done() })
+		Go(b.Context(), "job", func() { wg.Done() })
 		wg.Wait()
 	}
 }
@@ -63,7 +62,7 @@ func BenchmarkGo_SpawnParallel(b *testing.B) {
 		for pb.Next() {
 			var wg sync.WaitGroup
 			wg.Add(1)
-			Go(context.Background(), "job", func() { wg.Done() })
+			Go(b.Context(), "job", func() { wg.Done() })
 			wg.Wait()
 		}
 	})

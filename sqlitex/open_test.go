@@ -29,9 +29,7 @@ func TestPragmasApplyToEveryPooledConnection(t *testing.T) {
 	errs := make(chan error, conns)
 
 	for range conns {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			c, err := db.Conn(t.Context())
 			if err != nil {
 				errs <- err
@@ -49,7 +47,7 @@ func TestPragmasApplyToEveryPooledConnection(t *testing.T) {
 				return
 			}
 			<-release
-		}()
+		})
 	}
 	close(release)
 	wg.Wait()

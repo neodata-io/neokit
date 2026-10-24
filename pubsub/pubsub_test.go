@@ -137,9 +137,7 @@ func TestConcurrentPublishSubscribeIsRaceFree(t *testing.T) {
 	stop := make(chan struct{})
 
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -148,12 +146,10 @@ func TestConcurrentPublishSubscribeIsRaceFree(t *testing.T) {
 					b.Publish("room-1", event{Kind: "tick"})
 				}
 			}
-		}()
+		})
 	}
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 50 {
 				ch, unsub := b.Subscribe("room-1")
 				select {
@@ -162,7 +158,7 @@ func TestConcurrentPublishSubscribeIsRaceFree(t *testing.T) {
 				}
 				unsub()
 			}
-		}()
+		})
 	}
 
 	time.Sleep(50 * time.Millisecond)

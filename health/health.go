@@ -143,11 +143,9 @@ func (r *Registry) Check(ctx context.Context) Result {
 	results := make([]CheckResult, len(checks))
 	var wg sync.WaitGroup
 	for i, c := range checks {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			results[i] = runBounded(ctx, c)
-		}()
+		})
 	}
 	wg.Wait()
 

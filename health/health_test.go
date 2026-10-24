@@ -156,7 +156,7 @@ func TestReadyHandlerIs200WhenEverythingPasses(t *testing.T) {
 func TestEmptyRegistryIsReady(t *testing.T) {
 	// health.New is the same thing without the literal; exercised here so the
 	// convenience constructor is covered by something.
-	if got := health.New().Check(context.Background()); !got.Ready {
+	if got := health.New().Check(t.Context()); !got.Ready {
 		t.Error("a registry with no checks must report ready")
 	}
 }
@@ -179,7 +179,7 @@ func TestChecksRunConcurrently(t *testing.T) {
 	}
 
 	start := time.Now()
-	got := r.Check(context.Background())
+	got := r.Check(t.Context())
 	took := time.Since(start)
 
 	if !got.Ready {
@@ -198,7 +198,7 @@ func TestASlowCheckIsBounded(t *testing.T) {
 	r.Register("wedged", func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
 
 	start := time.Now()
-	got := r.Check(context.Background())
+	got := r.Check(t.Context())
 	if took := time.Since(start); took > 2*time.Second {
 		t.Errorf("Check took %v — the timeout was not applied", took)
 	}
@@ -221,7 +221,7 @@ func TestANonCooperativeCheckIsBounded(t *testing.T) {
 	})
 
 	start := time.Now()
-	got := r.Check(context.Background())
+	got := r.Check(t.Context())
 	if took := time.Since(start); took > time.Second {
 		t.Errorf("Check took %v — a context-ignoring check held readiness open", took)
 	}
@@ -251,7 +251,7 @@ func TestAWedgedCheckIsEnteredOnceNoMatterHowOftenReadinessIsPolled(t *testing.T
 	const sweeps = 5
 	var last health.Result
 	for range sweeps {
-		last = r.Check(context.Background())
+		last = r.Check(t.Context())
 	}
 
 	if n := entered.Load(); n != 1 {
@@ -272,7 +272,7 @@ func TestAPanickingCheckIsReportedNotPropagated(t *testing.T) {
 	r := &health.Registry{Log: discard()}
 	r.Register("bad", func(context.Context) error { panic("boom") })
 
-	got := r.Check(context.Background())
+	got := r.Check(t.Context())
 	if got.Ready {
 		t.Error("a panicking check must count as failed")
 	}
@@ -288,7 +288,7 @@ func TestDuplicateNamesAreBothReported(t *testing.T) {
 	r.Register("db", func(context.Context) error { return nil })
 	r.Register("db", func(context.Context) error { return errors.New("nope") })
 
-	got := r.Check(context.Background())
+	got := r.Check(t.Context())
 	if len(got.Checks) != 2 {
 		t.Errorf("got %d checks, want both retained: %+v", len(got.Checks), got.Checks)
 	}

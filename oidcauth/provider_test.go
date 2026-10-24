@@ -18,7 +18,7 @@ import (
 
 func TestAuthorizeURLCarriesStateNoncePKCE(t *testing.T) {
 	p := newTestProvider(t, newIDP())
-	got, err := p.AuthorizeURL(context.Background(), "st4te", "n0nce", "verifier-verifier-verifier-verifier-1234")
+	got, err := p.AuthorizeURL(t.Context(), "st4te", "n0nce", "verifier-verifier-verifier-verifier-1234")
 	if err != nil {
 		t.Fatalf("AuthorizeURL: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestExchangeMapsClaimsToIdentity(t *testing.T) {
 	p := newTestProvider(t, i)
 	i.claims = goodClaims(i.url, "app", "n0nce")
 
-	id, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	id, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestExchangeOwnerOnlyWhenInGroup(t *testing.T) {
 	i.claims = goodClaims(i.url, "app", "n0nce")
 	i.claims["groups"] = []string{"guests"}
 
-	id, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	id, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestExchangeBlankOwnerGroupMakesEveryoneOwner(t *testing.T) {
 	i.claims = goodClaims(i.url, "app", "n0nce")
 	i.claims["groups"] = []string{"nobody-special"}
 
-	id, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	id, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestExchangeReadsTheConfiguredGroupsClaim(t *testing.T) {
 	delete(i.claims, "groups")
 	i.claims["roles"] = []string{"admins"}
 
-	id, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	id, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestExchangeAcceptsBothGroupsEncodings(t *testing.T) {
 			i.claims = goodClaims(i.url, "app", "n0nce")
 			i.claims["groups"] = groups
 
-			id, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+			id, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 			if err != nil {
 				t.Fatalf("Exchange: %v", err)
 			}
@@ -161,7 +161,7 @@ func TestExchangeRejectsBadTokens(t *testing.T) {
 			p := newTestProvider(t, i)
 			i.claims = goodClaims(i.url, "app", "n0nce")
 			tc.spoil(i) // exactly one field is now a forgery
-			if _, err := p.Exchange(context.Background(), "code", tc.nonce, "verifier"); err == nil {
+			if _, err := p.Exchange(t.Context(), "code", tc.nonce, "verifier"); err == nil {
 				t.Fatal("Exchange accepted a token it must reject")
 			}
 		})
@@ -190,7 +190,7 @@ func TestExchangeFailuresCarryASentinel(t *testing.T) {
 			p := newTestProvider(t, i)
 			i.claims = goodClaims(i.url, "app", "n0nce")
 			tc.spoil(i)
-			_, err := p.Exchange(context.Background(), "code", tc.nonce, "verifier")
+			_, err := p.Exchange(t.Context(), "code", tc.nonce, "verifier")
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Exchange error = %v, want it to wrap %v", err, tc.want)
 			}
@@ -254,7 +254,7 @@ func TestExchangeSeparatesARejectedClientFromARejectedCode(t *testing.T) {
 			i.tokenFail = tc.fail
 			p := newTestProvider(t, i)
 
-			_, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+			_, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Exchange error = %v, want it to wrap %v", err, tc.want)
 			}
@@ -278,7 +278,7 @@ func TestExchangeUnreachableTokenEndpointDoesNotClaimARejection(t *testing.T) {
 	i.tokenEndpoint = deadURL + "/token" // discovery still succeeds; the exchange cannot
 	p := newTestProvider(t, i)
 
-	_, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	_, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if err == nil {
 		t.Fatal("want an error when the token endpoint refuses the connection")
 	}
@@ -299,7 +299,7 @@ func TestExchangeNamesTheRFCCodeWithoutLeakingTheBody(t *testing.T) {
 		`{"error":"invalid_grant","error_description":"`+secret+`"}`)
 	p := newTestProvider(t, i)
 
-	_, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	_, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if err == nil {
 		t.Fatal("want an error from a rejected exchange")
 	}
@@ -319,7 +319,7 @@ func TestExchangeDoesNotEchoAnUnregisteredErrorCode(t *testing.T) {
 	i.tokenFail = rejectWith(http.StatusBadRequest, `{"error":"`+injected+`"}`)
 	p := newTestProvider(t, i)
 
-	_, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	_, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if err == nil {
 		t.Fatal("want an error from a rejected exchange")
 	}
@@ -340,7 +340,7 @@ func TestExchangeTokenErrorCarriesNoUpstreamDetail(t *testing.T) {
 	i.claims = goodClaims(i.url, "app", "n0nce")
 	i.claims["aud"] = "another-app"
 
-	_, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	_, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("Exchange error = %v, want ErrTokenInvalid", err)
 	}
@@ -360,7 +360,7 @@ func TestExchangeNamesAnExpiredTokenSoTheClockIsSuspected(t *testing.T) {
 	i.claims = goodClaims(i.url, "app", "n0nce")
 	i.claims["exp"] = 1 // 1970
 
-	_, err := p.Exchange(context.Background(), "code", "n0nce", "verifier")
+	_, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("Exchange error = %v, want ErrTokenInvalid", err)
 	}
@@ -384,7 +384,7 @@ func TestDiscoveryErrorDoesNotLeakTheResponseBody(t *testing.T) {
 		t.Fatal("New should build with a full config")
 	}
 
-	err := p.CheckHealth(context.Background())
+	err := p.CheckHealth(t.Context())
 	if err == nil {
 		t.Fatal("want an error from a 500 discovery response")
 	}
@@ -445,7 +445,7 @@ func TestCheckHealthVerifiesClientCredentials(t *testing.T) {
 			if !ok {
 				t.Fatal("New declined a full config")
 			}
-			err := p.CheckHealth(context.Background())
+			err := p.CheckHealth(t.Context())
 			if tc.wantErr && err == nil {
 				t.Error("want CheckHealth to fail on a rejected client secret")
 			}
@@ -518,7 +518,7 @@ func TestEndSessionURLCarriesClientAndReturn(t *testing.T) {
 	i.endSession = "https://id.test/logout"
 	p := newTestProvider(t, i)
 
-	got, err := p.EndSessionURL(context.Background())
+	got, err := p.EndSessionURL(t.Context())
 	if err != nil {
 		t.Fatalf("EndSessionURL: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestEndSessionURLCarriesClientAndReturn(t *testing.T) {
 // A provider that advertises no end-session endpoint is ordinary, not broken.
 func TestEndSessionURLIsEmptyWhenUnsupported(t *testing.T) {
 	p := newTestProvider(t, newIDP()) // discovery omits end_session_endpoint
-	got, err := p.EndSessionURL(context.Background())
+	got, err := p.EndSessionURL(t.Context())
 	if err != nil {
 		t.Fatalf("an unsupported endpoint must not be an error: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestDiscoveryIsFetchedOnce(t *testing.T) {
 	p, _ := New(Config{Issuer: srv.URL, ClientID: "app", ClientSecret: "s", BaseURL: "https://a.test"})
 
 	for range 5 {
-		if _, err := p.AuthorizeURL(context.Background(), "s", "n", "v"); err != nil {
+		if _, err := p.AuthorizeURL(t.Context(), "s", "n", "v"); err != nil {
 			t.Fatalf("AuthorizeURL: %v", err)
 		}
 	}
@@ -592,7 +592,7 @@ func TestCheckHealthBypassesTheDiscoveryCache(t *testing.T) {
 	p, _ := New(Config{Issuer: srv.URL, ClientID: "app", ClientSecret: "s", BaseURL: "https://a.test"})
 
 	for range 3 {
-		if err := p.CheckHealth(context.Background()); err != nil {
+		if err := p.CheckHealth(t.Context()); err != nil {
 			t.Fatalf("CheckHealth: %v", err)
 		}
 	}
@@ -609,7 +609,7 @@ func TestDiscoveryIsRaceFree(t *testing.T) {
 	done := make(chan error, 8)
 	for range 8 {
 		go func() {
-			_, err := p.AuthorizeURL(context.Background(), "s", "n", "v")
+			_, err := p.AuthorizeURL(t.Context(), "s", "n", "v")
 			done <- err
 		}()
 	}

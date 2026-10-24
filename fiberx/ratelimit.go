@@ -69,8 +69,8 @@ func RateLimiterByPeer(maxPerMinute int) fiber.Handler {
 // construction — see [RateLimiterByPeer] for where that disqualifies it.
 func clientIP(c fiber.Ctx) string {
 	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+		if before, _, ok := strings.Cut(xff, ","); ok {
+			return strings.TrimSpace(before)
 		}
 		return strings.TrimSpace(xff)
 	}

@@ -136,7 +136,7 @@ func TestRetryTransport_BackoffRespectsContextCancel(t *testing.T) {
 
 	// A long backoff so the cancel lands during the wait, not between requests.
 	cfg := RetryConfig{MaxRetries: 5, BaseDelay: time.Second, MaxDelay: time.Second}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)

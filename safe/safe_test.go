@@ -12,7 +12,7 @@ import (
 // drainCtx is the shutdown budget a caller of WaitGo actually holds.
 func drainCtx(t *testing.T, d time.Duration) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), d)
+	ctx, cancel := context.WithTimeout(t.Context(), d)
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -26,7 +26,7 @@ func drainCtx(t *testing.T, d time.Duration) context.Context {
 // assertion about its own work instead.
 func TestGoAndWaitGoShareTheDefaultGroup(t *testing.T) {
 	ran := make(chan struct{})
-	safe.Go(context.Background(), "worker", func() { close(ran) })
+	safe.Go(t.Context(), "worker", func() { close(ran) })
 
 	if err := safe.WaitGo(drainCtx(t, 5*time.Second)); err != nil {
 		t.Fatalf("WaitGo: %v", err)
@@ -45,7 +45,7 @@ func TestWaitGoReportsATimeout(t *testing.T) {
 	// Drain the straggler before leaving, or the next test's WaitGo waits on it.
 	t.Cleanup(func() { close(release); safe.WaitGo(drainCtx(t, 5*time.Second)) })
 
-	safe.Go(context.Background(), "straggler", func() { <-release })
+	safe.Go(t.Context(), "straggler", func() { <-release })
 
 	if err := safe.WaitGo(drainCtx(t, 50*time.Millisecond)); !errors.Is(err, safe.ErrDrainTimeout) {
 		t.Errorf("WaitGo err = %v, want %v", err, safe.ErrDrainTimeout)
@@ -59,9 +59,9 @@ func TestWaitGoStopsOnACancelledContext(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release); safe.WaitGo(drainCtx(t, 5*time.Second)) })
 
-	safe.Go(context.Background(), "straggler", func() { <-release })
+	safe.Go(t.Context(), "straggler", func() { <-release })
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := safe.WaitGo(ctx); !errors.Is(err, safe.ErrDrainTimeout) {
 		t.Errorf("WaitGo err = %v, want %v", err, safe.ErrDrainTimeout)
@@ -75,7 +75,7 @@ func TestGoRecoversAPanicAndKeepsTheCountBalanced(t *testing.T) {
 	// An already-done context is what keeps the goroutine out of the shared
 	// default group afterwards: this fn panics on every call, so under a live
 	// context it would respawn for the rest of the binary's life.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	safe.Go(ctx, "panicking-worker", func() { panic("boom") })
 	safe.WaitGo(drainCtx(t, 5*time.Second))
@@ -84,7 +84,7 @@ func TestGoRecoversAPanicAndKeepsTheCountBalanced(t *testing.T) {
 	// leave() would leave the group's count unbalanced, and every later WaitGo
 	// would block until its budget ran out.
 	ran := make(chan struct{})
-	safe.Go(context.Background(), "second-worker", func() { close(ran) })
+	safe.Go(t.Context(), "second-worker", func() { close(ran) })
 	safe.WaitGo(drainCtx(t, 5*time.Second))
 
 	select {

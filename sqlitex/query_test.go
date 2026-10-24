@@ -1,7 +1,6 @@
 package sqlitex_test
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"path/filepath"
@@ -43,7 +42,7 @@ func linksDB(t *testing.T, n int) *sql.DB {
 func TestQueryCollectsEveryRow(t *testing.T) {
 	db := linksDB(t, 3)
 
-	got, err := sqlitex.Query(context.Background(), db,
+	got, err := sqlitex.Query(t.Context(), db,
 		`SELECT id, name FROM links ORDER BY id`, nil, scanLink)
 	if err != nil {
 		t.Fatalf("Query: %v", err)
@@ -58,7 +57,7 @@ func TestQueryCollectsEveryRow(t *testing.T) {
 func TestQueryReturnsNilForNoRows(t *testing.T) {
 	db := linksDB(t, 0)
 
-	got, err := sqlitex.Query(context.Background(), db,
+	got, err := sqlitex.Query(t.Context(), db,
 		`SELECT id, name FROM links`, nil, scanLink)
 	if err != nil {
 		t.Fatalf("Query: %v", err)
@@ -74,7 +73,7 @@ func TestQueryPropagatesAScanError(t *testing.T) {
 	db := linksDB(t, 3)
 	boom := errors.New("scan exploded")
 
-	_, err := sqlitex.Query(context.Background(), db,
+	_, err := sqlitex.Query(t.Context(), db,
 		`SELECT id, name FROM links`, nil,
 		func(*sql.Rows) (link, error) { return link{}, boom })
 	if !errors.Is(err, boom) {
@@ -87,7 +86,7 @@ func TestQueryPropagatesAScanError(t *testing.T) {
 func TestQueryOneReportsSQLErrNoRows(t *testing.T) {
 	db := linksDB(t, 0)
 
-	_, err := sqlitex.QueryOne(context.Background(), db,
+	_, err := sqlitex.QueryOne(t.Context(), db,
 		`SELECT id, name FROM links`, nil, scanLink)
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("err = %v, want sql.ErrNoRows", err)
@@ -97,7 +96,7 @@ func TestQueryOneReportsSQLErrNoRows(t *testing.T) {
 func TestQueryOneReturnsTheFirstRow(t *testing.T) {
 	db := linksDB(t, 3)
 
-	got, err := sqlitex.QueryOne(context.Background(), db,
+	got, err := sqlitex.QueryOne(t.Context(), db,
 		`SELECT id, name FROM links ORDER BY id DESC`, nil, scanLink)
 	if err != nil {
 		t.Fatalf("QueryOne: %v", err)
@@ -113,7 +112,7 @@ func TestEachBuildsANonSliceResult(t *testing.T) {
 	db := linksDB(t, 3)
 
 	byID := map[int]string{}
-	err := sqlitex.Each(context.Background(), db,
+	err := sqlitex.Each(t.Context(), db,
 		`SELECT id, name FROM links`, nil,
 		func(r *sql.Rows) error {
 			var id int
@@ -137,7 +136,7 @@ func TestEachBuildsANonSliceResult(t *testing.T) {
 // Compare against BenchmarkHandRolledScanLoop.
 func BenchmarkQuery(b *testing.B) {
 	db := benchDB(b)
-	ctx := context.Background()
+	ctx := b.Context()
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -150,7 +149,7 @@ func BenchmarkQuery(b *testing.B) {
 
 func BenchmarkHandRolledScanLoop(b *testing.B) {
 	db := benchDB(b)
-	ctx := context.Background()
+	ctx := b.Context()
 
 	b.ReportAllocs()
 	for b.Loop() {
