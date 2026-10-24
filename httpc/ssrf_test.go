@@ -46,14 +46,14 @@ func TestIsPrivateAddr(t *testing.T) {
 // The guard's whole value is that it blocks at dial time, so exercise it
 // through a real client against a real loopback listener rather than asserting
 // on the predicate alone.
-func TestSSRFGuardedTransportRefusesLoopback(t *testing.T) {
+func TestGuardedTransportRefusesLoopback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("secret"))
 	}))
 	defer srv.Close()
 
 	client := httpc.NewHTTPClient(httpc.HTTPOptions{
-		Transport: httpc.SSRFGuardedTransport(),
+		Transport: httpc.GuardedTransport(httpc.IsPrivateAddr),
 		Retry:     &httpc.RetryConfig{},
 	})
 

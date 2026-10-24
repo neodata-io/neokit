@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -125,18 +126,27 @@ func TestDelayIsMeasuredOnTheInjectedClock(t *testing.T) {
 // Off by default: a process restarting five times in an afternoon must not send
 // five morning digests.
 func TestRunAtStartIsOffByDefault(t *testing.T) {
-	var runs atomic.Int64
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		var runs atomic.Int64
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
 
-	go Daily{
-		Name: "digest", Hour: 8, Log: quiet(),
-		Do: func(context.Context) error { runs.Add(1); return nil },
-	}.Run(ctx)
+		// Starts at 07:00 on the bubble's fake clock, so the next 08:00 is an hour off.
+		start := time.Now()
+		now := func() time.Time {
+			return time.Date(2026, 3, 1, 7, 0, 0, 0, time.UTC).Add(time.Since(start))
+		}
+		go Daily{
+			Name: "digest", Hour: 8, Log: quiet(), Now: now,
+			Do: func(context.Context) error { runs.Add(1); return nil },
+		}.Run(ctx)
 
-	time.Sleep(50 * time.Millisecond)
-	if runs.Load() != 0 {
-		t.Errorf("runs = %d, want 0 — a daily job must not fire on boot by default", runs.Load())
-	}
+		time.Sleep(time.Hour - time.Second)
+		synctest.Wait()
+		if runs.Load() != 0 {
+			t.Errorf("runs = %d, want 0 — a daily job must not fire on boot by default", runs.Load())
+		}
+	})
 }
 
 func TestRunAtStartFiresImmediatelyWhenSet(t *testing.T) {
@@ -152,20 +162,23 @@ func TestRunAtStartFiresImmediatelyWhenSet(t *testing.T) {
 }
 
 func TestDailyReturnsOnCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		Daily{Name: "d", Hour: 8, Log: quiet(), Do: func(context.Context) error { return nil }}.Run(ctx)
-	}()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			Daily{Name: "d", Hour: 8, Log: quiet(), Do: func(context.Context) error { return nil }}.Run(ctx)
+		}()
 
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Run did not return on cancellation — the timer is not being selected on")
-	}
+		synctest.Wait() // Run is parked on its timer
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return on cancellation — the timer is not being selected on")
+		}
+	})
 }
 
 func TestDailyPanicsOnAnUnusableSchedule(t *testing.T) {

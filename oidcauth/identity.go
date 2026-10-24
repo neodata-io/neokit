@@ -20,13 +20,6 @@ type (
 // activity recorded at most hourly. See [session.DefaultPolicy].
 func DefaultPolicy() Policy { return session.DefaultPolicy() }
 
-// HashToken is the one-way transform between the cookie's token and what the
-// store holds. See [session.HashToken].
-func HashToken(token string) string { return session.HashToken(token) }
-
-// RandomToken returns n bytes of URL-safe randomness. See [session.RandomToken].
-func RandomToken(n int) (string, error) { return session.RandomToken(n) }
-
 // Handshake is the three per-login secrets: the CSRF state, the ID-token nonce,
 // and the PKCE verifier.
 //
@@ -41,25 +34,14 @@ type Handshake struct {
 }
 
 // NewHandshake mints a fresh set of login secrets.
-//
-// A failure is returned, never swallowed. Falling back to anything predictable
-// would make the state and nonce guessable, which is precisely the forgery the
-// two exist to prevent.
-func NewHandshake() (Handshake, error) {
-	var h Handshake
-	var err error
-	if h.State, err = RandomToken(32); err != nil {
-		return Handshake{}, err
-	}
-	if h.Nonce, err = RandomToken(32); err != nil {
-		return Handshake{}, err
-	}
+func NewHandshake() Handshake {
 	// 32 random bytes is 43 base64url characters — a valid PKCE verifier, which
 	// RFC 7636 §4.1 requires to be 43–128 characters.
-	if h.Verifier, err = RandomToken(32); err != nil {
-		return Handshake{}, err
+	return Handshake{
+		State:    session.RandomToken(32),
+		Nonce:    session.RandomToken(32),
+		Verifier: session.RandomToken(32),
 	}
-	return h, nil
 }
 
 // Valid reports whether all three secrets are present.

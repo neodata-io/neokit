@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -47,18 +48,28 @@ func TestRunAtStartRunsBeforeTheFirstTick(t *testing.T) {
 }
 
 func TestWithoutRunAtStartNothingRunsImmediately(t *testing.T) {
-	var runs atomic.Int64
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		var runs atomic.Int64
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
 
-	go Job{
-		Name: "t", Every: time.Hour, Log: quiet(),
-		Do: func(context.Context) error { runs.Add(1); return nil },
-	}.Run(ctx)
+		go Job{
+			Name: "t", Every: time.Hour, Log: quiet(),
+			Do: func(context.Context) error { runs.Add(1); return nil },
+		}.Run(ctx)
 
-	time.Sleep(50 * time.Millisecond)
-	if got := runs.Load(); got != 0 {
-		t.Errorf("runs = %d, want 0 without RunAtStart", got)
-	}
+		time.Sleep(time.Hour - time.Second)
+		synctest.Wait()
+		if got := runs.Load(); got != 0 {
+			t.Errorf("runs = %d, want 0 before the first tick", got)
+		}
+
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if got := runs.Load(); got != 1 {
+			t.Errorf("runs = %d, want 1 at the first tick", got)
+		}
+	})
 }
 
 func TestTicksRepeatedlyUntilCancelled(t *testing.T) {

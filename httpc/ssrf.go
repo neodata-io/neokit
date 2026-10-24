@@ -71,11 +71,6 @@ func IsInternalAddr(ip netip.Addr) bool {
 		ip.IsMulticast()
 }
 
-// SSRFGuardedTransport returns a base RoundTripper that refuses to connect to a
-// private or otherwise internal address. It is [GuardedTransport] with the
-// strict [IsPrivateAddr] policy.
-func SSRFGuardedTransport() *http.Transport { return GuardedTransport(IsPrivateAddr) }
-
 // GuardedTransport returns a base RoundTripper that refuses to connect to any
 // address deny reports as off-limits. A nil deny falls back to [IsPrivateAddr]:
 // a caller who forgot to choose gets the strict policy, never an unguarded
@@ -97,7 +92,7 @@ func SSRFGuardedTransport() *http.Transport { return GuardedTransport(IsPrivateA
 //
 // Pass it as [HTTPOptions.Transport] so the retry and otel layers still wrap it:
 //
-//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Transport: httpc.SSRFGuardedTransport()})
+//	http: httpc.NewHTTPClient(httpc.HTTPOptions{Transport: httpc.GuardedTransport(httpc.IsPrivateAddr)})
 func GuardedTransport(deny Policy) *http.Transport {
 	if deny == nil {
 		deny = IsPrivateAddr
@@ -124,7 +119,7 @@ func GuardedTransport(deny Policy) *http.Transport {
 // SafeAbsoluteURL reports whether raw is an absolute URL worth handing to an
 // SSRF-guarded client: http or https, with a host, and no embedded
 // credentials. It is a shape check only — it says nothing about where the host
-// resolves, which is [SSRFGuardedTransport]'s job and cannot be answered here
+// resolves, which is [GuardedTransport]'s job and cannot be answered here
 // without reintroducing the rebinding gap this package is careful to avoid.
 //
 // Reject-by-shape first anyway: it costs nothing and it keeps schemes like

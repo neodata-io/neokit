@@ -19,6 +19,7 @@ import (
 	neoapp "github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/config"
 	"github.com/neodata-io/neokit/oidcauth"
+	"github.com/neodata-io/neokit/session"
 )
 
 // newTestApp builds the app a gate mounts itself on. Aliased to neoapp because
@@ -121,7 +122,7 @@ func (m *memStore) ListSessions(context.Context) ([]oidcauth.Session, error) {
 func (m *memStore) put(token string, s oidcauth.Session) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.byHash[oidcauth.HashToken(token)] = s
+	m.byHash[session.HashToken(token)] = s
 	return token
 }
 
@@ -484,7 +485,7 @@ func TestLogoutKeepsWorkingAfterLoginIsDisabled(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("logout = %d, want 204", resp.StatusCode)
 	}
-	if _, ok, _ := store.SessionByToken(t.Context(), oidcauth.HashToken("tok")); ok {
+	if _, ok, _ := store.SessionByToken(t.Context(), session.HashToken("tok")); ok {
 		t.Error("logout must delete the session even with no provider configured")
 	}
 	if !clearsCookie(resp, "myapp_session") {
@@ -896,7 +897,7 @@ func TestSessionListNeverExposesTheTokenHash(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if strings.Contains(string(body), oidcauth.HashToken(token)) || strings.Contains(string(body), token) {
+	if strings.Contains(string(body), session.HashToken(token)) || strings.Contains(string(body), token) {
 		t.Errorf("session list leaked the credential: %s", body)
 	}
 	// The caller's own row is marked so a client can label it and refuse to

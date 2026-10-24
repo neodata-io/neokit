@@ -12,6 +12,7 @@ import (
 	"github.com/neodata-io/neokit/fiberx"
 	"github.com/neodata-io/neokit/logx"
 	"github.com/neodata-io/neokit/oidcauth"
+	"github.com/neodata-io/neokit/session"
 )
 
 // Reason is the closed set of causes a sign-in can fail for, and the contract
@@ -147,10 +148,7 @@ func (g *Gate) loginHandler() fiber.Handler {
 		if provider == nil {
 			return fiber.NewError(fiber.StatusNotFound, "login is not configured")
 		}
-		hs, err := oidcauth.NewHandshake()
-		if err != nil {
-			return g.fail(c, ReasonServer, err)
-		}
+		hs := oidcauth.NewHandshake()
 		authorizeURL, err := provider.AuthorizeURL(c.Context(), hs.State, hs.Nonce, hs.Verifier)
 		if err != nil {
 			return g.fail(c, ReasonUnreachable, err)
@@ -243,10 +241,7 @@ func (g *Gate) issueSession(c fiber.Ctx, id oidcauth.Identity, secure bool) erro
 	if g.sessions == nil {
 		return errors.New("no session store configured (Options.Sessions)")
 	}
-	token, err := oidcauth.RandomToken(32)
-	if err != nil {
-		return err
-	}
+	token := session.RandomToken(32)
 	now := g.now().UTC()
 	sess := oidcauth.Session{
 		ID: uuid.NewString(), Subject: id.Subject, Name: id.Name, Email: id.Email,
@@ -256,7 +251,7 @@ func (g *Gate) issueSession(c fiber.Ctx, id oidcauth.Identity, secure bool) erro
 		LastSeenAt: now,
 		ExpiresAt:  g.policy.ExpiryFor(now, now),
 	}
-	if err := g.sessions.CreateSession(c.Context(), sess, oidcauth.HashToken(token)); err != nil {
+	if err := g.sessions.CreateSession(c.Context(), sess, session.HashToken(token)); err != nil {
 		return err
 	}
 	g.logger().InfoContext(c.Context(), "signed in", "subject", id.Subject, "owner", id.Owner)
@@ -331,7 +326,7 @@ func (g *Gate) logoutHandler() fiber.Handler {
 			if token == "" || g.sessions == nil {
 				continue
 			}
-			if err := g.sessions.DeleteSessionByToken(c.Context(), oidcauth.HashToken(token)); err != nil {
+			if err := g.sessions.DeleteSessionByToken(c.Context(), session.HashToken(token)); err != nil {
 				// The cookie is cleared regardless: the browser must end up signed out
 				// even if the row outlives it, which a sweeper collects later.
 				g.logger().WarnContext(c.Context(), "session delete failed", logx.Err(err))

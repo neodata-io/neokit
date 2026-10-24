@@ -44,7 +44,7 @@ type check struct {
 }
 
 // Registry holds the readiness checks. The zero value is ready to use and safe
-// for concurrent use; [New] only saves you naming the field.
+// for concurrent use.
 type Registry struct {
 	// Timeout bounds one full Check. Zero means [DefaultTimeout].
 	Timeout time.Duration
@@ -68,11 +68,6 @@ type Registry struct {
 	// two probes overlap.
 	state atomic.Int32
 }
-
-// New returns an empty registry. It is a convenience for `&Registry{}` — set
-// [Registry.Log] and [Registry.Timeout] on the result, or write the struct
-// literal, whichever reads better where you are.
-func New() *Registry { return &Registry{} }
 
 // Register adds a readiness check.
 //

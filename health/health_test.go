@@ -154,9 +154,7 @@ func TestReadyHandlerIs200WhenEverythingPasses(t *testing.T) {
 // An empty registry is ready. A service with no dependencies must not be
 // permanently unready just because nobody registered anything.
 func TestEmptyRegistryIsReady(t *testing.T) {
-	// health.New is the same thing without the literal; exercised here so the
-	// convenience constructor is covered by something.
-	if got := health.New().Check(t.Context()); !got.Ready {
+	if got := (&health.Registry{}).Check(t.Context()); !got.Ready {
 		t.Error("a registry with no checks must report ready")
 	}
 }

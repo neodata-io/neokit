@@ -25,8 +25,4 @@ func TestOIDCNamesAreTheSessionTypes(t *testing.T) {
 
 	var sweeper session.ExpiredSweeper
 	var _ oidcauth.ExpiredSweeper = sweeper
-
-	if oidcauth.HashToken("t") != session.HashToken("t") {
-		t.Error("oidcauth.HashToken must be session.HashToken")
-	}
 }

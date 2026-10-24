@@ -38,18 +38,8 @@ func TestErrAlreadyExists_Wrapped(t *testing.T) {
 	if !errors.Is(err, ErrAlreadyExists) {
 		t.Error("wrapped error should match ErrAlreadyExists via errors.Is")
 	}
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, errs.ErrNotFound) {
 		t.Error("ErrAlreadyExists must not be confused with ErrNotFound")
-	}
-}
-
-// The two must be the same value, not two errors with the same text. A consumer
-// whose domain sentinel reaches this one (NeoGate's domain.ErrNotFound does, via
-// neogate.ErrNotFound) relies on that identity: if this were a copy, fiberx's
-// standard mapper would never match it and every 404 would render as a 500.
-func TestErrNotFoundIsTheErrsValue(t *testing.T) {
-	if ErrNotFound != errs.ErrNotFound {
-		t.Fatal("httpc.ErrNotFound is a copy, not errs.ErrNotFound — errors.Is will not match across the boundary")
 	}
 }
 

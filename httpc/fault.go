@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
+
+	"github.com/neodata-io/neokit/errs"
 )
 
 // Fault classifies *why* a call failed, so a caller can decide what to do about
@@ -24,7 +26,7 @@ const (
 	// The admin has to act. Retrying will not help and only burns rate limit.
 	FaultAuth Fault = "auth"
 
-	// FaultNotFound: the resource does not exist (404, or a wrapped ErrNotFound).
+	// FaultNotFound: the resource does not exist (404, or a wrapped errs.ErrNotFound).
 	// Often a normal answer rather than a failure — "this user has no account here".
 	FaultNotFound Fault = "not_found"
 
@@ -85,7 +87,7 @@ func Classify(err error) Fault {
 	// Sentinels first: a client that means "no such resource" says so explicitly, and
 	// that is more precise than any status code it happened to arrive on.
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, errs.ErrNotFound):
 		return FaultNotFound
 	case errors.Is(err, ErrAlreadyExists):
 		return FaultConflict

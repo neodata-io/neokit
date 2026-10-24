@@ -68,16 +68,16 @@ func TestHashTokenIsStableAndNotTheToken(t *testing.T) {
 	if session.HashToken("abc") == session.HashToken("abd") {
 		t.Error("HashToken must distinguish different tokens")
 	}
+	if n := len(session.HashToken("abc")); n != 64 {
+		t.Errorf("want a hex sha256 (64 chars), got %d", n)
+	}
 }
 
 // A token that repeats is a token that can be predicted.
 func TestRandomTokenIsUnpredictable(t *testing.T) {
 	seen := make(map[string]bool, 100)
 	for range 100 {
-		tok, err := session.RandomToken(32)
-		if err != nil {
-			t.Fatalf("RandomToken: %v", err)
-		}
+		tok := session.RandomToken(32)
 		if seen[tok] {
 			t.Fatal("RandomToken repeated a value")
 		}

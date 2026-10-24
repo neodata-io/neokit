@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -322,21 +323,22 @@ func TestCachingTokenSource_CachesUntilForced(t *testing.T) {
 }
 
 func TestCachingTokenSource_RefreshesAfterExpiry(t *testing.T) {
-	var logins atomic.Int32
-	ts := NewCachingTokenSource(func(context.Context) (string, time.Duration, error) {
-		return fmt.Sprintf("t%d", logins.Add(1)), 20 * time.Millisecond, nil
-	})
-	ctx := t.Context()
+	synctest.Test(t, func(t *testing.T) {
+		var logins atomic.Int32
+		ts := NewCachingTokenSource(func(context.Context) (string, time.Duration, error) {
+			return fmt.Sprintf("t%d", logins.Add(1)), 20 * time.Millisecond, nil
+		})
+		ctx := t.Context()
 
-	if tok, _ := ts.Token(ctx, ""); tok != "t1" {
-		t.Fatalf("first token = %q, want t1", tok)
-	}
-	// ttl (20ms) ≤ margin, so expiry is now+ttl; sleep well past it to avoid a
-	// scheduling-jitter flake on a loaded runner.
-	time.Sleep(200 * time.Millisecond)
-	if tok, _ := ts.Token(ctx, ""); tok != "t2" {
-		t.Fatalf("post-expiry token = %q, want t2", tok)
-	}
+		if tok, _ := ts.Token(ctx, ""); tok != "t1" {
+			t.Fatalf("first token = %q, want t1", tok)
+		}
+		// ttl (20ms) ≤ margin, so expiry is now+ttl.
+		time.Sleep(21 * time.Millisecond)
+		if tok, _ := ts.Token(ctx, ""); tok != "t2" {
+			t.Fatalf("post-expiry token = %q, want t2", tok)
+		}
+	})
 }
 
 func TestCachingTokenSource_UnknownTTLReusesUntilForced(t *testing.T) {

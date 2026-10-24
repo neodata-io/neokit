@@ -5,6 +5,7 @@ import (
 
 	"github.com/neodata-io/neokit/logx"
 	"github.com/neodata-io/neokit/oidcauth"
+	"github.com/neodata-io/neokit/session"
 )
 
 // localIdentityKey stashes the resolved *oidcauth.Identity on the request. It is
@@ -47,7 +48,7 @@ func (g *Gate) resolveSession(c fiber.Ctx, provider *oidcauth.Provider) *oidcaut
 		return nil // the overwhelmingly common path: no cookie, no database read
 	}
 	ctx := c.Context()
-	sess, ok, err := g.sessions.SessionByToken(ctx, oidcauth.HashToken(token))
+	sess, ok, err := g.sessions.SessionByToken(ctx, session.HashToken(token))
 	if err != nil {
 		g.logger().WarnContext(ctx, "session lookup failed", logx.Err(err))
 		return nil

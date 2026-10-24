@@ -13,6 +13,7 @@ import (
 	neoapp "github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/config"
 	"github.com/neodata-io/neokit/oidcauth"
+	"github.com/neodata-io/neokit/session"
 )
 
 // The claim these benchmarks exist to hold is the one in the package doc: an
@@ -124,7 +125,7 @@ func BenchmarkBaselineNoMiddleware(b *testing.B) {
 func BenchmarkHashToken(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = oidcauth.HashToken("VGhpcyBpcyBhIHRlc3Qgc2Vzc2lvbiB0b2tlbg")
+		_ = session.HashToken("VGhpcyBpcyBhIHRlc3Qgc2Vzc2lvbiB0b2tlbg")
 	}
 }
 

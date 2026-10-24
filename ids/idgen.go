@@ -1,8 +1,6 @@
-// Package ids generates identifiers and secrets: UUIDGenerator for v4 UUIDs
-// and CryptoTokenGenerator (see tokengen.go) for crypto-random tokens and
-// passwords. Both are structs with methods rather than package functions so
-// a caller can inject them behind an interface of its own and substitute a
-// fake in tests instead of asserting on real random output.
+// Package ids generates identifiers and secrets. The generators are structs
+// rather than functions so a caller can inject them behind its own interface
+// and substitute a fake in tests.
 package ids
 
 import (
@@ -12,4 +10,5 @@ import (
 // UUIDGenerator produces v4 UUIDs.
 type UUIDGenerator struct{}
 
+// New returns a random (v4) UUID in its canonical string form.
 func (UUIDGenerator) New() string { return uuid.NewString() }

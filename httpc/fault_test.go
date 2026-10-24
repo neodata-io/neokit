@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"testing"
+
+	"github.com/neodata-io/neokit/errs"
 )
 
 func TestClassify(t *testing.T) {
@@ -19,7 +21,7 @@ func TestClassify(t *testing.T) {
 
 		// The sentinels win over any status the error happened to arrive on: a plugin
 		// that says "no such account" is more precise than the 404 it rode in on.
-		{"wrapped ErrNotFound", fmt.Errorf("plex: user 7: %w", ErrNotFound), FaultNotFound},
+		{"wrapped ErrNotFound", fmt.Errorf("plex: user 7: %w", errs.ErrNotFound), FaultNotFound},
 		{"wrapped ErrAlreadyExists", fmt.Errorf("jellyfin: %w", ErrAlreadyExists), FaultConflict},
 
 		// This is the payoff: a bad credential is now distinguishable from an outage,

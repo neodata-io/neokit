@@ -4,8 +4,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-
-	"github.com/neodata-io/neokit/oidcauth"
+	"github.com/neodata-io/neokit/session"
 )
 
 // WhoamiView is the body of the whoami route: who is signed in, and whether a
@@ -78,7 +77,7 @@ func (g *Gate) listSessions() fiber.Handler {
 		var currentID string
 		if p := g.Provider(); p != nil {
 			if token := c.Cookies(g.sessionCookieName(p.CookieSecure())); token != "" {
-				if sess, ok, err := g.sessions.SessionByToken(c.Context(), oidcauth.HashToken(token)); err == nil && ok {
+				if sess, ok, err := g.sessions.SessionByToken(c.Context(), session.HashToken(token)); err == nil && ok {
 					currentID = sess.ID
 				}
 			}

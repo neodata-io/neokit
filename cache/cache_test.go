@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/neodata-io/neokit/cache"
@@ -12,22 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// eventually polls until cond holds or the deadline passes. Revalidation is
-// asynchronous by design, so asserting on it means waiting for it — but waiting
-// with a *condition* rather than a sleep, so the tests stay fast and don't encode
-// a guess about how long a goroutine takes to be scheduled.
-func eventually(t *testing.T, within time.Duration, cond func() bool, msg string) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("condition never held within %v: %s", within, msg)
-}
 
 func TestGetOrFetch_CachesWithinTTL(t *testing.T) {
 	c := cache.New()
@@ -69,23 +54,24 @@ func TestGetOrFetch_RefetchesSynchronouslyAfterInvalidate(t *testing.T) {
 // that happened to arrive first paid the whole upstream cost — which is what made
 // an off television stall every home screen for 5s every 3 minutes.
 func TestGetOrFetch_ServesStaleThenRevalidates(t *testing.T) {
-	c := cache.New()
-	var calls atomic.Int32
-	fetch := func(context.Context) (int, error) {
-		return int(calls.Add(1)), nil
-	}
+	synctest.Test(t, func(t *testing.T) {
+		c := cache.New()
+		var calls atomic.Int32
+		fetch := func(context.Context) (int, error) {
+			return int(calls.Add(1)), nil
+		}
 
-	v1, _ := cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
-	require.Equal(t, 1, v1)
-	time.Sleep(20 * time.Millisecond) // let it go stale
+		v1, _ := cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
+		require.Equal(t, 1, v1)
+		time.Sleep(20 * time.Millisecond) // let it go stale
 
-	v2, _ := cache.GetOrFetch(c, "k", time.Minute, fetch)
-	assert.Equal(t, 1, v2, "a stale read must return the last good value immediately")
+		v2, _ := cache.GetOrFetch(c, "k", time.Minute, fetch)
+		assert.Equal(t, 1, v2, "a stale read must return the last good value immediately")
 
-	eventually(t, time.Second, func() bool {
-		v, _ := cache.GetOrFetch(c, "k", time.Minute, fetch)
-		return v == 2
-	}, "the background revalidation should publish the fresh value")
+		synctest.Wait()
+		v3, _ := cache.GetOrFetch(c, "k", time.Minute, fetch)
+		assert.Equal(t, 2, v3, "the background revalidation should publish the fresh value")
+	})
 }
 
 // The property that actually matters to the home screen: a stale read is fast
@@ -93,117 +79,130 @@ func TestGetOrFetch_ServesStaleThenRevalidates(t *testing.T) {
 // revalidation ever moves back onto the request path, the read blocks and this
 // fails.
 func TestGetOrFetch_StaleReadDoesNotWaitOnASlowFetch(t *testing.T) {
-	c := cache.New()
-	const fetchCost = 300 * time.Millisecond
-	var calls atomic.Int32
+	synctest.Test(t, func(t *testing.T) {
+		c := cache.New()
+		const fetchCost = 300 * time.Millisecond
+		var calls atomic.Int32
 
-	fetch := func(context.Context) (int, error) {
-		n := calls.Add(1)
-		if n > 1 { // the refresh, not the initial load
-			time.Sleep(fetchCost)
+		fetch := func(context.Context) (int, error) {
+			n := calls.Add(1)
+			if n > 1 { // the refresh, not the initial load
+				time.Sleep(fetchCost)
+			}
+			return int(n), nil
 		}
-		return int(n), nil
-	}
 
-	_, _ = cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch) // warm
-	time.Sleep(20 * time.Millisecond)                           // go stale
+		_, _ = cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch) // warm
+		time.Sleep(20 * time.Millisecond)                           // go stale
 
-	start := time.Now()
-	v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
-	elapsed := time.Since(start)
+		// Fake time only advances while the read blocks, so any wait shows up here.
+		start := time.Now()
+		v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
+		elapsed := time.Since(start)
 
-	require.NoError(t, err)
-	assert.Equal(t, 1, v, "should have been served the stale value")
-	assert.Less(t, elapsed, fetchCost/2,
-		"a stale read waited %v on a %v fetch — revalidation is blocking the caller", elapsed, fetchCost)
+		require.NoError(t, err)
+		assert.Equal(t, 1, v, "should have been served the stale value")
+		assert.Zero(t, elapsed, "a stale read waited on the revalidation")
+
+		time.Sleep(fetchCost) // let the refresh finish so the bubble can exit
+		synctest.Wait()
+	})
 }
 
 // A burst of readers hitting a stale key must start exactly one refresh, or the
 // cache would amplify load precisely when the upstream is already slow.
 func TestGetOrFetch_StaleBurstStartsOneRefresh(t *testing.T) {
-	c := cache.New()
-	var calls atomic.Int32
-	fetch := func(context.Context) (int, error) {
-		n := calls.Add(1)
-		if n > 1 {
-			time.Sleep(50 * time.Millisecond) // hold the refresh open so readers pile up
+	synctest.Test(t, func(t *testing.T) {
+		c := cache.New()
+		var calls atomic.Int32
+		fetch := func(context.Context) (int, error) {
+			n := calls.Add(1)
+			if n > 1 {
+				time.Sleep(50 * time.Millisecond) // hold the refresh open so readers pile up
+			}
+			return int(n), nil
 		}
-		return int(n), nil
-	}
 
-	_, _ = cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
-	time.Sleep(20 * time.Millisecond)
+		_, _ = cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
+		time.Sleep(20 * time.Millisecond)
 
-	var wg sync.WaitGroup
-	for range 50 {
-		wg.Go(func() {
-			_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch)
-		})
-	}
-	wg.Wait()
+		var wg sync.WaitGroup
+		for range 50 {
+			wg.Go(func() {
+				_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch)
+			})
+		}
+		wg.Wait()
 
-	eventually(t, time.Second, func() bool { return calls.Load() == 2 },
-		"expected exactly one refresh behind the burst")
-	time.Sleep(50 * time.Millisecond) // give any extra refresh a chance to show up
-	assert.Equal(t, int32(2), calls.Load(), "a stale burst must collapse to one refresh")
+		time.Sleep(time.Second) // past the held refresh
+		synctest.Wait()
+		assert.Equal(t, int32(2), calls.Load(), "a stale burst must collapse to one refresh")
+	})
 }
 
 // A failed revalidation must not blank the tile: the last good value keeps being
 // served. Nor may it be retried on every single read, which would turn the cache
 // into a load amplifier against an upstream that is already down.
 func TestGetOrFetch_FailedRevalidationKeepsLastGoodAndBacksOff(t *testing.T) {
-	c := cache.New()
-	var calls atomic.Int32
-	fetch := func(context.Context) (int, error) {
-		if n := calls.Add(1); n == 1 {
-			return 99, nil
+	synctest.Test(t, func(t *testing.T) {
+		c := cache.New()
+		var calls atomic.Int32
+		fetch := func(context.Context) (int, error) {
+			if n := calls.Add(1); n == 1 {
+				return 99, nil
+			}
+			return 0, assert.AnError
 		}
-		return 0, assert.AnError
-	}
 
-	v1, _ := cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
-	require.Equal(t, 99, v1)
-	time.Sleep(20 * time.Millisecond)
+		v1, _ := cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
+		require.Equal(t, 99, v1)
+		time.Sleep(20 * time.Millisecond)
 
-	_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch) // triggers the failing refresh
-	eventually(t, time.Second, func() bool { return calls.Load() >= 2 }, "refresh should have run")
+		_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch) // triggers the failing refresh
+		synctest.Wait()
+		require.Equal(t, int32(2), calls.Load(), "refresh should have run")
 
-	for range 20 {
-		v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
-		require.NoError(t, err, "a failed revalidation must not surface as a caller error")
-		assert.Equal(t, 99, v, "the last good value must keep being served")
-	}
-	assert.Equal(t, int32(2), calls.Load(),
-		"a failed refresh must back off, not re-dial on every read")
+		for range 20 {
+			v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
+			require.NoError(t, err, "a failed revalidation must not surface as a caller error")
+			assert.Equal(t, 99, v, "the last good value must keep being served")
+		}
+		assert.Equal(t, int32(2), calls.Load(),
+			"a failed refresh must back off, not re-dial on every read")
+	})
 }
 
 // A mutation landing while a refresh is in flight must win. The refresh read the
 // world *before* the mutation, so publishing its result would silently reinstate
 // the state the caller invalidated to get rid of.
 func TestGetOrFetch_InvalidateDiscardsAnInFlightRefresh(t *testing.T) {
-	c := cache.New()
-	release := make(chan struct{})
-	var calls atomic.Int32
+	synctest.Test(t, func(t *testing.T) {
+		c := cache.New()
+		release := make(chan struct{})
+		var calls atomic.Int32
 
-	fetch := func(context.Context) (int, error) {
-		n := calls.Add(1)
-		if n == 2 { // the background refresh: hold it open
-			<-release
+		fetch := func(context.Context) (int, error) {
+			n := calls.Add(1)
+			if n == 2 { // the background refresh: hold it open
+				<-release
+			}
+			return int(n), nil
 		}
-		return int(n), nil
-	}
 
-	_, _ = cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
-	time.Sleep(20 * time.Millisecond)
-	_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch) // starts the held refresh
-	eventually(t, time.Second, func() bool { return calls.Load() == 2 }, "refresh should have started")
+		_, _ = cache.GetOrFetch(c, "k", 10*time.Millisecond, fetch)
+		time.Sleep(20 * time.Millisecond)
+		_, _ = cache.GetOrFetch(c, "k", time.Minute, fetch) // starts the held refresh
+		synctest.Wait()
+		require.Equal(t, int32(2), calls.Load(), "refresh should have started")
 
-	c.Invalidate("k") // the mutation lands mid-refresh
-	close(release)    // now let the stale refresh finish and try to publish
+		c.Invalidate("k") // the mutation lands mid-refresh
+		close(release)    // now let the stale refresh finish and try to publish
+		synctest.Wait()
 
-	v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, 3, v, "the post-invalidate fetch must win over the refresh that predates it")
+		v, err := cache.GetOrFetch(c, "k", time.Minute, fetch)
+		require.NoError(t, err)
+		assert.Equal(t, 3, v, "the post-invalidate fetch must win over the refresh that predates it")
+	})
 }
 
 func TestGetOrFetch_SingleFlight(t *testing.T) {

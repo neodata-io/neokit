@@ -168,10 +168,7 @@ func TestPolicyZeroFieldsFallBackToDefaults(t *testing.T) {
 // ── Handshake ───────────────────────────────────────────────────────────────
 
 func TestNewHandshakeMintsDistinctSecrets(t *testing.T) {
-	h, err := NewHandshake()
-	if err != nil {
-		t.Fatalf("NewHandshake: %v", err)
-	}
+	h := NewHandshake()
 	if !h.Valid() {
 		t.Fatal("a fresh handshake must be valid")
 	}
@@ -182,7 +179,7 @@ func TestNewHandshakeMintsDistinctSecrets(t *testing.T) {
 	if len(h.Verifier) < 43 || len(h.Verifier) > 128 {
 		t.Errorf("PKCE verifier length %d is outside RFC 7636's 43–128", len(h.Verifier))
 	}
-	other, _ := NewHandshake()
+	other := NewHandshake()
 	if other.State == h.State {
 		t.Error("two handshakes must not share a state")
 	}
@@ -198,19 +195,5 @@ func TestHandshakeValidRequiresAllThree(t *testing.T) {
 		if h.Valid() {
 			t.Errorf("%s: Valid must be false", name)
 		}
-	}
-}
-
-func TestHashTokenIsStableAndNotTheToken(t *testing.T) {
-	const token = "a-session-token"
-	h := HashToken(token)
-	if h == token {
-		t.Fatal("the stored hash must not be the token")
-	}
-	if h != HashToken(token) {
-		t.Fatal("HashToken must be deterministic")
-	}
-	if len(h) != 64 {
-		t.Errorf("want a hex sha256 (64 chars), got %d", len(h))
 	}
 }

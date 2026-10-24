@@ -274,7 +274,3 @@ func (g *Gate) WhoamiPath() string { return g.apiBase + "/auth/whoami" }
 
 // SessionsPath is the owner-only session list.
 func (g *Gate) SessionsPath() string { return g.apiBase + "/auth/sessions" }
-
-// HashToken exposes [oidcauth.HashToken] so a caller holding a raw token — an
-// administrative tool, a test — hashes it exactly as the gate does.
-func (g *Gate) HashToken(token string) string { return oidcauth.HashToken(token) }
