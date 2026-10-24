@@ -417,3 +417,17 @@ func TestBlankMountPointFallsBackToTheDefault(t *testing.T) {
 		t.Errorf("APIBase = %q, want the default %q", a.APIBase, app.DefaultAPIBase)
 	}
 }
+
+// A caller's own logger must receive everything New logs, including the
+// telemetry startup lines, or they land in a format the pipeline cannot parse.
+func TestOptionsLogReceivesTelemetryLines(t *testing.T) {
+	var buf bytes.Buffer
+	a, err := app.New(app.Options{Name: "testapp", Log: slog.New(slog.NewJSONHandler(&buf, nil))})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer a.Close()
+	if !strings.Contains(buf.String(), "metrics enabled") {
+		t.Errorf("Options.Log did not receive the metrics startup line: %q", buf.String())
+	}
+}

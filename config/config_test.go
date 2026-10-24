@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,5 +71,63 @@ func TestLoadNamesTheOffendingField(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not-a-number") {
 		t.Errorf("err = %v, want it to quote the value it could not parse", err)
+	}
+}
+
+type dotenvConfig struct {
+	Value string `env:"NEOKIT_DOTENV_TEST"`
+}
+
+func writeDotenv(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Unsetenv("NEOKIT_DOTENV_TEST") })
+	return dir
+}
+
+func TestLoadIgnoresDotenvUnlessNamed(t *testing.T) {
+	t.Chdir(writeDotenv(t, "NEOKIT_DOTENV_TEST=from-file\n"))
+
+	got, err := config.Load[dotenvConfig]()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Value != "" {
+		t.Errorf("Value = %q — a .env nobody named must not be read", got.Value)
+	}
+}
+
+func TestLoadFillsGapsFromANamedDotenv(t *testing.T) {
+	dir := writeDotenv(t, "NEOKIT_DOTENV_TEST=from-file\n")
+
+	got, err := config.Load[dotenvConfig](filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Value != "from-file" {
+		t.Errorf("Value = %q, want the file's value", got.Value)
+	}
+}
+
+func TestLoadPrefersTheEnvironmentOverTheDotenv(t *testing.T) {
+	dir := writeDotenv(t, "NEOKIT_DOTENV_TEST=from-file\n")
+	t.Setenv("NEOKIT_DOTENV_TEST", "from-env")
+
+	got, err := config.Load[dotenvConfig](filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Value != "from-env" {
+		t.Errorf("Value = %q, want the environment to win", got.Value)
+	}
+}
+
+// A container has no .env, so naming one must not fail there.
+func TestLoadSkipsAMissingDotenv(t *testing.T) {
+	if _, err := config.Load[dotenvConfig](filepath.Join(t.TempDir(), ".env")); err != nil {
+		t.Fatalf("Load: %v", err)
 	}
 }

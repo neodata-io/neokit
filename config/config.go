@@ -8,7 +8,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
@@ -64,14 +66,18 @@ type Base struct {
 	DatabasePath string `env:"DATABASE_PATH"`
 }
 
-// Load reads a .env file if one is present, then parses T from the environment.
+// Load parses T from the environment. T is normally a struct embedding [Base].
 //
-// T is normally a struct embedding [Base]. A missing .env is not an error: it is
-// a development convenience, and in a container the values come from the
-// environment itself.
-func Load[T any]() (T, error) {
-	// Best-effort: env vars already set always win, so this only fills gaps.
-	_ = godotenv.Load()
+// Name dotenv files (usually ".env") to fill gaps from them first; variables
+// already set always win and a missing file is skipped. Nothing is read unless
+// you ask, so a stray .env in a container image cannot change settings.
+func Load[T any](dotenv ...string) (T, error) {
+	for _, f := range dotenv {
+		if err := godotenv.Load(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			var zero T
+			return zero, fmt.Errorf("load %s: %w", f, err)
+		}
+	}
 
 	cfg, err := env.ParseAs[T]()
 	if err != nil {

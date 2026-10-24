@@ -19,8 +19,13 @@ confined to the two places Go offers no alternative — decoding the environment
 in `config`, and `validator` tags in `fiberx`. Nothing reaches a binary unless
 its package is imported.
 
-The one global: `app.New` installs its logger as `slog.Default()`, unless you
-pass your own through `Options.Log`.
+Two globals:
+
+- `app.New` installs its logger as `slog.Default()`, unless you pass your own
+  through `Options.Log`.
+- `safe.Go` and the `jobs` `Start` methods run on `safe`'s package-level group, which
+  `app.Run` drains as its `background-work` shutdown step. A subsystem that wants
+  its own drain uses a `safe.Group` of its own.
 
 Pre-1.0: the API may change between `v0.x` releases.
 
@@ -30,7 +35,7 @@ There is no generator. A service starts as one file, and each feature is one
 call — calling it is enabling it:
 
 ```go
-cfg, err := config.Load[config.Base]()
+cfg, err := config.Load[config.Base](".env")   // .env only fills gaps, and only when named
 a, err := neokit.New(app.Options{Name: "okstables", Base: cfg})
 defer a.Close()
 

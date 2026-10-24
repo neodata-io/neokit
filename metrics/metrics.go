@@ -56,6 +56,9 @@ type Config struct {
 	ServiceName string
 	Version     string
 
+	// Log receives the enabled/disabled lines. Nil means slog.Default().
+	Log *slog.Logger
+
 	// Pull adds the Prometheus reader and populates [Pipeline.Handler]. The app
 	// builder always sets it: the endpoint is mounted unconditionally, and
 	// METRICS_TOKEN is what guards it.
@@ -90,6 +93,10 @@ const runtimeReadInterval = time.Second
 // not the process — exactly like tracing.Init.
 func Init(ctx context.Context, cfg Config) (Pipeline, error) {
 	disabled := Pipeline{Shutdown: func(context.Context) error { return nil }}
+	log := cfg.Log
+	if log == nil {
+		log = slog.Default()
+	}
 
 	var readers []sdkmetric.Reader
 	var handler http.Handler
@@ -103,7 +110,7 @@ func Init(ctx context.Context, cfg Config) (Pipeline, error) {
 		reg := prometheus.NewRegistry()
 		exp, err := promexporter.New(promexporter.WithRegisterer(reg))
 		if err != nil {
-			slog.Warn("metrics endpoint disabled: Prometheus reader init failed", logx.Err(err))
+			log.Warn("metrics endpoint disabled: Prometheus reader init failed", logx.Err(err))
 		} else {
 			readers = append(readers, exp)
 			handler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
@@ -123,7 +130,7 @@ func Init(ctx context.Context, cfg Config) (Pipeline, error) {
 		// standard OTel configuration works unchanged.
 		exp, err := otlpmetrichttp.New(ctx)
 		if err != nil {
-			slog.Warn("metrics push disabled: OTLP metric exporter init failed", logx.Err(err))
+			log.Warn("metrics push disabled: OTLP metric exporter init failed", logx.Err(err))
 			endpoint = ""
 		} else {
 			// The PeriodicReader's export interval is the SDK default (60s); we keep it
@@ -170,9 +177,9 @@ func Init(ctx context.Context, cfg Config) (Pipeline, error) {
 		runtime.WithMeterProvider(mp),
 		runtime.WithMinimumReadMemStatsInterval(runtimeReadInterval),
 	); err != nil {
-		slog.Warn("runtime metrics instrumentation failed to start", logx.Err(err))
+		log.Warn("runtime metrics instrumentation failed to start", logx.Err(err))
 	}
 
-	slog.Info("metrics enabled", "pull", handler != nil, "push", endpoint)
+	log.Info("metrics enabled", "pull", handler != nil, "push", endpoint)
 	return Pipeline{Handler: handler, Shutdown: mp.Shutdown}, nil
 }

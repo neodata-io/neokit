@@ -17,9 +17,9 @@ import "errors"
 var (
 	// ErrNotFound is "there is no such record". It renders as 404 / "not_found".
 	//
-	// httpc clients return it for an upstream 404 too, so a raw outbound error
-	// returned from a handler renders 404, not 502. Map it at that boundary if
-	// the distinction matters.
+	// API clients built on httpc wrap it for an upstream 404 too, so such an
+	// error returned unmapped from a handler renders 404, not 502. Map it at that
+	// boundary if the distinction matters.
 	ErrNotFound = errors.New("not found")
 
 	// ErrInvalidInput is "the caller sent something unusable" for a reason no

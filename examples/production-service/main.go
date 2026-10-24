@@ -24,7 +24,7 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load[Config]()
+	cfg, err := config.Load[Config](".env")
 	if err != nil {
 		return err
 	}

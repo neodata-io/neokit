@@ -39,6 +39,9 @@ const scopeName = "github.com/neodata-io/neokit/tracing"
 type Config struct {
 	ServiceName string
 	Version     string
+
+	// Log receives the enabled/disabled lines. Nil means slog.Default().
+	Log *slog.Logger
 }
 
 // Init installs the W3C propagator and, when an OTLP endpoint is configured via
@@ -47,6 +50,11 @@ type Config struct {
 // exporter; it is safe to call even when tracing is disabled. Enabling tracing
 // never fails startup: an exporter error is logged and tracing stays off.
 func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error, err error) {
+	log := cfg.Log
+	if log == nil {
+		log = slog.Default()
+	}
+
 	// Always propagate: even with no local exporter we honor and forward an
 	// upstream traceparent, so trace_id still flows through logs behind a proxy
 	// that starts the trace.
@@ -70,7 +78,7 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 	// is not honored — the transport is fixed to HTTP by construction here.
 	exp, err := otlptracehttp.New(ctx)
 	if err != nil {
-		slog.Warn("tracing disabled: OTLP exporter init failed", logx.Err(err))
+		log.Warn("tracing disabled: OTLP exporter init failed", logx.Err(err))
 		return func(context.Context) error { return nil }, nil
 	}
 
@@ -103,7 +111,7 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
-	slog.Info("tracing enabled", "endpoint", endpoint)
+	log.Info("tracing enabled", "endpoint", endpoint)
 
 	return tp.Shutdown, nil
 }

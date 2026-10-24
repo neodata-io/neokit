@@ -26,7 +26,7 @@ func captureSetup(t *testing.T, level, format string, fn func()) string {
 	t.Cleanup(func() { os.Stderr = origStderr; slog.SetDefault(origLogger) })
 
 	os.Stderr = w
-	Setup("neogate", level, format, "v1.12.2")
+	Setup(Options{App: "neogate", Version: "v1.12.2", Level: level, Format: format})
 	fn()
 	require.NoError(t, w.Close())
 
@@ -171,4 +171,23 @@ func TestRootLoggerStampsAppAndVersion(t *testing.T) {
 	require.NotNil(t, rec)
 	assert.Equal(t, "neogate", rec["app"])
 	assert.Equal(t, "v1.12.2", rec["version"])
+}
+
+// New is for a host that keeps its own global logger.
+func TestNewLeavesTheDefaultAlone(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	_ = New(Options{App: "embedded", Format: "json", Level: "error"})
+	assert.Same(t, prev, slog.Default(), "New must not install itself as slog.Default")
+}
+
+func TestEmptyLevelIsInfoWithoutAWarning(t *testing.T) {
+	out := captureSetup(t, "", "json", func() {
+		slog.Debug("suppressed")
+		slog.Info("kept")
+	})
+	assert.NotContains(t, out, "invalid LOG_LEVEL")
+	assert.NotContains(t, out, "suppressed")
+	assert.Contains(t, out, "kept")
 }

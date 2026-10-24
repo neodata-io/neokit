@@ -231,8 +231,10 @@ func New(o Options) (*App, error) {
 
 	log := o.Log
 	if log == nil {
-		logx.Setup(o.Name, o.Base.LogLevel, o.Base.LogFormat, o.Version)
-		log = slog.Default()
+		log = logx.Setup(logx.Options{
+			App: o.Name, Version: o.Version,
+			Level: o.Base.LogLevel, Format: o.Base.LogFormat,
+		})
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -252,7 +254,7 @@ func New(o Options) (*App, error) {
 	// Tracing and metrics export are both opt-in on the standard OTEL env vars
 	// and are no-ops without them. They are pushed first, so they flush last —
 	// a span emitted by any later teardown step still gets exported.
-	traceShutdown, err := tracing.Init(ctx, tracing.Config{ServiceName: o.Name, Version: o.Version})
+	traceShutdown, err := tracing.Init(ctx, tracing.Config{ServiceName: o.Name, Version: o.Version, Log: log})
 	if err != nil {
 		cancel()
 		return nil, err
@@ -260,7 +262,7 @@ func New(o Options) (*App, error) {
 	a.Shutdown.Push("tracing", traceShutdown)
 
 	pipeline, err := metrics.Init(ctx, metrics.Config{
-		ServiceName: o.Name, Version: o.Version, Pull: true,
+		ServiceName: o.Name, Version: o.Version, Pull: true, Log: log,
 	})
 	if err != nil {
 		cancel()
