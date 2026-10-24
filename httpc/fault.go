@@ -3,6 +3,7 @@ package httpc
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 
@@ -70,6 +71,25 @@ func (f Fault) Retryable() bool {
 // key is worth telling someone about; a NAS that is briefly down is not.
 func (f Fault) AdminActionable() bool {
 	return f == FaultAuth || f == FaultConflict
+}
+
+// LogLevel is how loudly work that repeats — a scheduler tick, a poll — should
+// log a failure with this fault. An admin-actionable fault is a Warn: someone
+// can fix it, and should hear about it once. Everything else is background
+// weather — an upstream that is down, rate limiting, a deadline, an error nobody
+// has classified — and logs at Debug, there under a debug level when diagnosing
+// and silent otherwise. A job that ticks all day would otherwise emit an
+// identical warning on every tick for as long as the upstream is out, which is
+// noise, not signal: the tile already shows the offline state.
+//
+// Reserve it for calls against a plugin or a remote service. A local failure the
+// operator would want to see regardless — a database write, a push send — stays
+// a plain Warn.
+func (f Fault) LogLevel() slog.Level {
+	if f.AdminActionable() {
+		return slog.LevelWarn
+	}
+	return slog.LevelDebug
 }
 
 // Classify derives a Fault from an error by walking the chain: the shared sentinels

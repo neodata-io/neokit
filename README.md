@@ -196,13 +196,13 @@ gets exactly that.
 | Package | What |
 | --- | --- |
 | `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
-| `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify`, SSRF guard |
-| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters |
-| `cache` | stale-while-revalidate `GetOrFetch` |
-| `sqlitex` | `PRAGMA user_version` append-only migration runner, `VACUUM INTO` snapshot backup |
+| `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify` + `Fault.LogLevel`, SSRF guard |
+| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters, strong ETags + 304 for cacheable bytes |
+| `cache` | stale-while-revalidate `GetOrFetch`; `Fetch` adds a `Status` saying when a value is only being kept alive through an outage |
+| `sqlitex` | `PRAGMA user_version` append-only migration runner, `Query`/`Each`/`QueryOne`, `Placeholders`/`Args`/`CheckAffected`, `VACUUM INTO` snapshot backup |
 | `tracing` `metrics` | OpenTelemetry traces and metrics — `/metrics` to scrape, OTLP to push, one set of instruments |
 | `health` | liveness/readiness registry — bounded sweep, terse public verdict, detail behind your own auth |
-| `safe` `ids` `clock` | goroutine recovery, id/token generation, injectable clock |
+| `safe` `ids` `clock` | goroutine recovery, `Group` supervision, `Pool` for bounded one-shot tasks, `All` fan-out, id/token generation, injectable clock |
 | `netx` | `AddrInUseHint` — a readable message for a listener already bound |
 | `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
 | `session` | `Session`, `Store`, `Policy` — and `NewSQLite`, the store neokit ships. Standard library only |

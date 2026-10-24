@@ -62,6 +62,13 @@ type entry struct {
 	// reads on a stale key spawns exactly one refresh rather than one per request.
 	refreshing bool
 
+	// failed records that the most recent fetch for this key did not succeed and
+	// val is the last one that did; fetchedAt is when val was produced. Together
+	// they are what Fetch reports as Status, so a consumer can tell a value that
+	// is being kept alive through an outage from a fresh one.
+	failed    bool
+	fetchedAt time.Time
+
 	// gen increments on every Invalidate. A fetch captures it before starting and
 	// discards its result if it changed meanwhile: the value was read *before* the
 	// mutation that invalidated the key, so publishing it would reinstate exactly
@@ -83,34 +90,50 @@ func New() *Cache {
 // diagnostic.
 var ErrTypeMismatch = errors.New("cache: key holds a value of a different type")
 
+// Status describes how [Fetch] produced its value.
+type Status struct {
+	// Failed reports that the most recent fetch for this key failed and the value
+	// is the last one that succeeded, kept alive through the outage. A consumer
+	// that merely displays can show it as is; one that accumulates — a meter
+	// sampler integrating watts into kilowatt-hours — must not treat it as a
+	// fresh reading, or it integrates a frozen number for as long as the upstream
+	// is down.
+	Failed bool
+	// FetchedAt is when the value was produced. It is the zero time when the
+	// value did not come from the cache at all: a cold fetch that failed hands
+	// back whatever fn returned, uncached.
+	FetchedAt time.Time
+}
+
 // load reads an entry under its own lock and reports what the caller should do:
-// whether a usable value was found (hit) and whether this caller is the one
-// that should start a background revalidation (spawn).
+// whether a usable value was found (hit), its status, and whether this caller is
+// the one that should start a background revalidation (spawn).
 //
 // It exists so the lock is released by a defer on every path — including the
 // type-assertion failure — which is what makes ErrTypeMismatch survivable.
 // Nothing here can block: the fetch happens in the caller, after this returns.
-func load[T any](e *entry, key string) (v T, hit, spawn bool, err error) {
+func load[T any](e *entry, key string) (v T, st Status, hit, spawn bool, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if !e.loaded {
-		return v, false, false, nil
+		return v, st, false, false, nil
 	}
 	got, ok := e.val.(T)
 	if !ok {
-		return v, false, false, fmt.Errorf("%w: %q holds %T, not %T", ErrTypeMismatch, key, e.val, v)
+		return v, st, false, false, fmt.Errorf("%w: %q holds %T, not %T", ErrTypeMismatch, key, e.val, v)
 	}
+	st = Status{Failed: e.failed, FetchedAt: e.fetchedAt}
 	if time.Now().Before(e.expires) {
-		return got, true, false, nil // fresh
+		return got, st, true, false, nil // fresh
 	}
 	// Stale. Claim the refresh under this same lock so a burst of readers
 	// produces exactly one revalidation.
 	if !e.refreshing {
 		e.refreshing = true
-		return got, true, true, nil
+		return got, st, true, true, nil
 	}
-	return got, true, false, nil
+	return got, st, true, false, nil
 }
 
 func (c *Cache) entryFor(key string) *entry {
@@ -181,14 +204,29 @@ func (c *Cache) Invalidate(key string) {
 // the error, so a caller that builds a usable "degraded" value (e.g. a
 // configured-but-unreachable view) can hand it back without that failure sticking
 // for the full TTL. A failed *revalidation* keeps serving the last good value and
-// retries after retryBackoff.
+// retries after retryBackoff — silently, as far as this function is concerned;
+// a caller that must know it is being served through an outage uses [Fetch].
 func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error)) (T, error) {
+	v, _, err := Fetch(c, key, ttl, fn)
+	return v, err
+}
+
+// Fetch is [GetOrFetch] for a caller that needs to know how the value was
+// produced. The [Status] says whether the latest fetch failed — in which case
+// the value is the last good one, kept alive through the outage — and when the
+// value was fetched.
+//
+// It exists because the last-good behaviour that makes a dashboard calm through
+// a blip is a hazard for anything that accumulates: a sampler integrating a
+// cached power reading into energy must skip a reading the cache is merely
+// keeping alive, and nothing in the value itself says so.
+func Fetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error)) (T, Status, error) {
 	e := c.entryFor(key)
 
-	v, hit, spawn, err := load[T](e, key)
+	v, st, hit, spawn, err := load[T](e, key)
 	if err != nil {
 		var zero T
-		return zero, err
+		return zero, Status{}, err
 	}
 	if hit {
 		// Stale: hand back what we have and refresh behind it. `refreshing` is the
@@ -197,7 +235,7 @@ func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.
 		if spawn {
 			go revalidate(e, key, ttl, fn)
 		}
-		return v, nil
+		return v, st, nil
 	}
 
 	// Cold. Queue behind any caller already fetching this key.
@@ -205,13 +243,13 @@ func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.
 	defer e.fetch.Unlock()
 
 	// Re-check under the fetch gate: whoever we queued behind has published by now.
-	v, hit, _, err = load[T](e, key)
+	v, st, hit, _, err = load[T](e, key)
 	if err != nil {
 		var zero T
-		return zero, err
+		return zero, Status{}, err
 	}
 	if hit {
-		return v, nil
+		return v, st, nil
 	}
 
 	e.mu.Lock()
@@ -222,17 +260,20 @@ func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.
 	defer cancel()
 	v, err = fn(ctx)
 	if err != nil {
-		return v, err // hand the value back but don't cache the failure
+		return v, Status{}, err // hand the value back but don't cache the failure
 	}
 
+	now := time.Now()
 	e.mu.Lock()
 	if e.gen == gen { // not invalidated while we fetched
 		e.val = v
-		e.expires = time.Now().Add(ttl)
+		e.expires = now.Add(ttl)
 		e.loaded = true
+		e.failed = false
+		e.fetchedAt = now
 	}
 	e.mu.Unlock()
-	return v, nil
+	return v, Status{FetchedAt: now}, nil
 }
 
 // revalidate refreshes an already-loaded key in the background. It never blocks a
@@ -265,12 +306,17 @@ func revalidate[T any](e *entry, key string, ttl time.Duration, fn func(context.
 		// Invalidated while we fetched: this value predates the mutation, so drop it
 		// and leave the key cold for the next caller to fetch synchronously.
 	case ok:
+		now := time.Now()
 		e.val = v
-		e.expires = time.Now().Add(ttl)
+		e.expires = now.Add(ttl)
 		e.loaded = true
+		e.failed = false
+		e.fetchedAt = now
 	default:
 		// Keep serving the last good value; try again after the backoff rather than
-		// on the very next read.
+		// on the very next read. Say so through Status, so a consumer that must
+		// not accumulate a kept-alive value can tell.
+		e.failed = true
 		e.expires = time.Now().Add(retryBackoff)
 	}
 	e.mu.Unlock()
