@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	neokit "github.com/neodata-io/neokit"
 	"github.com/neodata-io/neokit/app"
 	"github.com/neodata-io/neokit/backup"
 	"github.com/neodata-io/neokit/config"
 	"github.com/neodata-io/neokit/oidcauth/fiberauth"
+	"github.com/neodata-io/neokit/safe"
 )
 
 func newKit(t *testing.T) *neokit.App {
@@ -68,8 +70,18 @@ func (noopSnap) SnapshotTo(context.Context, string) error { return nil }
 
 // Backups returns a usable service wired against the embedded app's context.
 func TestBackupsReturnsAUsableService(t *testing.T) {
+	// Before newKit, so these cleanups run after a.Close (LIFO): the backup
+	// goroutine is joined before its directory is removed.
+	dir := t.TempDir()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := safe.WaitGo(ctx); err != nil {
+			t.Errorf("background backup did not stop: %v", err)
+		}
+	})
 	a := newKit(t)
-	svc := a.Backups(noopSnap{}, backup.Options{Dir: t.TempDir(), Retention: 3})
+	svc := a.Backups(noopSnap{}, backup.Options{Dir: dir, Retention: 3})
 	if svc == nil {
 		t.Fatal("Backups returned nil")
 	}
