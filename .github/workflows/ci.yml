@@ -24,8 +24,8 @@ jobs:
         go: ["1.26.0", "stable"]
     name: test (go ${{ matrix.go }})
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
       - run: go vet ./...
@@ -40,8 +40,8 @@ jobs:
     # and the standard library.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
