@@ -153,14 +153,15 @@ These are decisions neokit cannot make for you:
 
 - **Whether there is a login.** `fiberauth` is off until an identity provider is
   configured, and its guards pass everything through while it is off. A service
-  that must never run open should refuse to start without one.
+  that must never run open sets `fiberauth.Options.Required`: the guards then
+  answer 503 instead, so a missing setting cannot open it.
 - **Which routes need what.** `gate.RequireAuth()` and `gate.RequireOwner()` are
   the two guards. Anything finer — per-record ownership, roles — is a check in
   your app layer against `fiberauth.IdentityFrom`.
 - **What a token may not do.** A personal API token does what its maker may. Put
   `fiberauth.RefuseAPIToken` ahead of the guard on any route that could mint
   credentials, change who may sign in, or hand over a stored secret.
-- **Rate limits.** `fiberx.RateLimiter` and `RateLimiterByPeer` are per route;
+- **Rate limits.** `fiberx.RateLimiter` is per route;
   only you know which routes are expensive. Behind a proxy, set
   `TRUSTED_PROXIES` first, or every caller shares the proxy's budget.
 - **HSTS.** Off by default because it outlives a mistake by its whole max-age.

@@ -496,3 +496,15 @@ func TestATableFromBeforeExpiryIsAdopted(t *testing.T) {
 }
 
 var _ apitoken.Store = (*apitoken.SQLite)(nil)
+
+// An expired token grants nothing, so it must not use up a slot: otherwise a
+// person is locked out of making tokens until someone deletes the dead ones.
+func TestExpiredTokensDoNotCountTowardTheLimit(t *testing.T) {
+	store := newStore(t, apitoken.SQLiteOptions{MaxPerSubject: 1})
+	spent := t0.Add(-time.Hour)
+	old := aToken("old")
+	old.CreatedAt, old.ExpiresAt = t0.Add(-48*time.Hour), &spent
+	create(t, store, old)
+
+	create(t, store, aToken("new"))
+}

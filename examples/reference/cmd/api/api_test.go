@@ -303,3 +303,19 @@ func TestAScriptUsesAPersonalToken(t *testing.T) {
 		t.Errorf("a token minting a token: status = %d, code = %q; want 403 token_not_allowed", again.StatusCode, e.Code)
 	}
 }
+
+// A half-configured login is a typo, never a choice: three of the four settings
+// must not quietly mean "open".
+func TestAHalfConfiguredLoginRefusesToStart(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.OIDCIssuer, cfg.OIDCClientID, cfg.OIDCBaseURL = "https://id.example.com", "reference", "https://app.example.com"
+
+	svc, err := wire(cfg)
+	if err == nil {
+		_ = svc.app.Close()
+		t.Fatal("wire succeeded with OIDC_CLIENT_SECRET missing; the service would have started open")
+	}
+	if !strings.Contains(err.Error(), "OIDC_CLIENT_SECRET") {
+		t.Errorf("error = %q, want it to name the missing setting", err)
+	}
+}

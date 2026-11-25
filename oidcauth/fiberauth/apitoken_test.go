@@ -486,8 +486,8 @@ func TestTokenLifetimeIsWhatWasAskedNeverPastTheMaximum(t *testing.T) {
 		ask    any // expiresInDays, or nil
 		want   time.Duration
 	}{
-		{"nothing asked, no maximum", 0, nil, 0},
-		{"asked, no maximum", 0, 30, 30 * day},
+		{"nothing asked, no maximum", -1, nil, 0},
+		{"asked, no maximum", -1, 30, 30 * day},
 		{"nothing asked, a maximum", 90 * day, nil, 90 * day},
 		{"asked for less than the maximum", 90 * day, 7, 7 * day},
 		{"asked for more than the maximum", 90 * day, 365, 90 * day},

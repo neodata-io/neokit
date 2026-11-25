@@ -23,7 +23,8 @@
 //   - [Gate.ResolveIdentity] returns immediately, reading no cookie and touching
 //     no database;
 //   - [Gate.RequireOwner] passes every request through, so an application that
-//     ships open stays open;
+//     ships open stays open — unless [Options.Required] is set, which closes the
+//     guards with a 503 instead;
 //   - the handshake and session-admin routes answer 404, so an unconfigured
 //     deployment exposes no auth surface at all.
 //
@@ -83,6 +84,10 @@ import (
 // the identity provider.
 const DefaultRateLimit = 30
 
+// DefaultTokenMaxAge is how long a token may live when [Options.TokenMaxAge]
+// is unset.
+const DefaultTokenMaxAge = 365 * 24 * time.Hour
+
 // handshakeTTL bounds how long a login may sit half-finished.
 const handshakeTTL = 10 * time.Minute
 
@@ -94,6 +99,11 @@ type Options struct {
 	// so a caller can box a typed nil into a genuinely nil interface. A nil
 	// Options.Provider itself is treated as "never configured".
 	Provider func() *oidcauth.Provider
+
+	// Required closes the guards while no login is configured: RequireAuth and
+	// RequireOwner answer 503 instead of passing everyone through. Set it for a
+	// service that must never run open, so a missing setting cannot open it.
+	Required bool
 
 	// Sessions persists signed-in browsers. Required when Provider can return
 	// non-nil — without it a sign-in fails with [ReasonServer], since there is
@@ -158,8 +168,9 @@ type Options struct {
 	TokenPrefix string
 
 	// TokenMaxAge is the longest a token may live. A request may ask for less;
-	// one that asks for more, or for nothing, gets this. Zero lets a token be made
-	// without an expiry.
+	// one that asks for more, or for nothing, gets this. Zero means
+	// [DefaultTokenMaxAge]; negative lets a token be made without an expiry — it
+	// then keeps the groups it was made with for good.
 	TokenMaxAge time.Duration
 
 	// Log receives the gate's diagnostics. Nil means slog.Default().
@@ -172,6 +183,7 @@ type Gate struct {
 	sessions oidcauth.SessionStore
 	policy   oidcauth.Policy
 	log      *slog.Logger
+	required bool
 
 	apiBase       string
 	handshakeBase string
@@ -219,6 +231,7 @@ func New(a *app.App, o Options) *Gate {
 	}
 	g := &Gate{
 		provider:      o.Provider,
+		required:      o.Required,
 		sessions:      o.Sessions,
 		policy:        o.Policy,
 		log:           o.Log,
@@ -230,7 +243,7 @@ func New(a *app.App, o Options) *Gate {
 		onFailure:     o.OnLoginFailure,
 		tokens:        o.Tokens,
 		tokenPrefix:   orDefault(o.TokenPrefix, prefix+"_"),
-		tokenMaxAge:   o.TokenMaxAge,
+		tokenMaxAge:   orDefaultAge(o.TokenMaxAge, DefaultTokenMaxAge),
 		now:           time.Now,
 	}
 	if g.rateLimit == 0 {
@@ -244,6 +257,10 @@ func New(a *app.App, o Options) *Gate {
 	// symptom otherwise arrives at someone's first sign-in, not at boot.
 	if g.sessions == nil && g.Enabled() {
 		g.logger().Error("login is configured but Options.Sessions is nil; sign-in will fail")
+	}
+
+	if g.required && !g.Enabled() {
+		g.logger().Error("login is required but not configured; guarded routes answer 503")
 	}
 
 	// Middleware first, then routes: whoami and the session endpoints call
@@ -278,6 +295,17 @@ func (g *Gate) Run(ctx context.Context) {
 		return
 	}
 	g.sweepJob.Run(ctx)
+}
+
+// orDefaultAge maps an unset duration to def and a negative one to "no limit".
+func orDefaultAge(v, def time.Duration) time.Duration {
+	switch {
+	case v == 0:
+		return def
+	case v < 0:
+		return 0
+	}
+	return v
 }
 
 func orDefault(v, def string) string {

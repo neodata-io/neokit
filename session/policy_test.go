@@ -59,7 +59,7 @@ func TestZeroFieldsFallBackToDefaults(t *testing.T) {
 // The hash is what the store holds, so it must be stable and must not be the
 // token.
 func TestHashTokenIsStableAndNotTheToken(t *testing.T) {
-	if session.HashToken("abc") != session.HashToken("abc") {
+	if first, second := session.HashToken("abc"), session.HashToken("abc"); first != second {
 		t.Error("HashToken must be stable")
 	}
 	if session.HashToken("abc") == "abc" {

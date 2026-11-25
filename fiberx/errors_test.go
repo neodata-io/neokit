@@ -150,3 +150,19 @@ func TestFiberErrorStillOutranksTheStandardSet(t *testing.T) {
 		t.Errorf("error = %v, want the fiber.Error's message", out["error"])
 	}
 }
+
+// A hand-written APIError with no Status must not render an error body under
+// HTTP 200 when a handler writes it inline.
+func TestWriteErrorNeverAnswersAnErrorWith200(t *testing.T) {
+	e := fiberx.NewErrors(nil)
+	app := fiber.New()
+	app.Get("/x", func(c fiber.Ctx) error { return e.WriteError(c, &fiberx.APIError{Message: "nope"}) })
+
+	status, out := body(t, app, "/x")
+	if status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 for an APIError that names no status", status)
+	}
+	if out["code"] != "internal" {
+		t.Errorf("code = %v, want internal", out["code"])
+	}
+}

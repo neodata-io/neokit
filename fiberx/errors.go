@@ -147,8 +147,10 @@ func (e *Errors) WriteError(c fiber.Ctx, err error) error {
 	// An APIError already carries its own rendered shape (status/code/fields);
 	// honor it rather than flattening it through the mapper/status switch.
 	if ae, ok := errors.AsType[*APIError](err); ok {
-		e.logCause(c, ae.Status, err)
-		return c.Status(ae.Status).JSON(ae)
+		out := *ae // copy, and fill a missing status or code as Render does
+		normalized(&out)
+		e.logCause(c, out.Status, err)
+		return c.Status(out.Status).JSON(out)
 	}
 
 	status, msg, code := e.mapError(err)

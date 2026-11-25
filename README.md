@@ -213,7 +213,9 @@ obtain the middleware, and by then the routes would already be mounted.
 
 `ok == false` (no credentials configured) means the gate is off: the middleware
 returns immediately, the guards pass through, and the handshake routes 404 — so
-an app can ship open and close later without a second feature flag.
+an app can ship open and close later without a second feature flag. A service
+that must never run open sets `Required: true`: with no login configured its
+guards answer 503 instead of passing everyone through.
 
 The expired-session sweep comes with it: a store that can prune in one statement
 is swept daily for as long as the app runs. Building the gate directly with
@@ -230,7 +232,7 @@ tokens, err := apitoken.NewSQLite(db, apitoken.SQLiteOptions{})
 gate := a.Login(fiberauth.Options{
     Provider: provider, Sessions: sessions, CookiePrefix: "myapp",
     Tokens:      tokens,
-    TokenMaxAge: 365 * 24 * time.Hour, // optional: none may outlive this
+    TokenMaxAge: 90 * 24 * time.Hour, // optional: a year when unset, negative for no limit
 })
 ```
 
@@ -293,7 +295,7 @@ gets exactly that.
 | --- | --- |
 | `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
 | `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify` + `Fault.LogLevel`, SSRF guard |
-| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, security headers, the cross-origin write guard, rate limiters, `Created` + `Location`, strong ETags + 304 for cacheable bytes |
+| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, security headers, the cross-origin write guard, a rate limiter, `Created` + `Location`, strong ETags + 304 for cacheable bytes |
 | `cache` | stale-while-revalidate `GetOrFetch`; `Fetch` adds a `Status` saying when a value is only being kept alive through an outage |
 | `sqlitex` | `PRAGMA user_version` append-only migration runner, `Query`/`Each`/`QueryOne`, `Placeholders`/`Args`/`CheckAffected`, `VACUUM INTO` snapshot backup |
 | `tracing` `metrics` | OpenTelemetry traces and metrics — `/metrics` to scrape, OTLP to push, one set of instruments |
