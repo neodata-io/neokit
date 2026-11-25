@@ -19,3 +19,9 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  # The base images of the reference service's Dockerfile, pinned by digest.
+  - package-ecosystem: docker
+    directory: /examples/reference
+    schedule:
+      interval: weekly

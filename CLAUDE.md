@@ -19,6 +19,7 @@ test -z "$(gofmt -l .)"
 test -z "$(go fix -diff ./...)"                  # CI fails if a modernizer has work left
 go test ./fiberx/ -run xxx -fuzz FuzzIfMatchVersion -fuzztime 20s
 go run ./examples/minimal-api
+docker build -f examples/reference/Dockerfile -t reference .   # CI builds this too
 ```
 
 `govulncheck` runs in CI only. All of the above must pass before work is called

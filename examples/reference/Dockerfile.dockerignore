@@ -1,0 +1,11 @@
+# Keeps the build context small and secrets out of the image layers.
+.git
+.github
+.worktrees
+.superpowers
+.env
+.env.*
+**/data
+**/*.db
+**/*.db-wal
+**/*.db-shm
