@@ -1,0 +1,23 @@
+# Local agent and worktree state
+.superpowers/
+.worktrees/
+
+# Local configuration and data
+.env
+.env.*
+!.env.example
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Build and test output
+/bin/
+*.test
+*.out
+coverage.*
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
