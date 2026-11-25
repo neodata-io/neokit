@@ -38,7 +38,8 @@ const columns = `id, name, issuer, subject, email, display_name, "groups", creat
 
 // SQLiteOptions configures [NewSQLite]. The zero value is usable.
 type SQLiteOptions struct {
-	// MaxPerSubject bounds how many tokens one person may hold under one login.
+	// MaxPerSubject bounds how many unexpired tokens one person may hold under
+	// one login.
 	// Zero means [DefaultMaxPerSubject].
 	MaxPerSubject int
 }
@@ -115,10 +116,13 @@ func (s *SQLite) CreateToken(ctx context.Context, t Token, tokenHash string) err
 		INSERT INTO api_token
 			(id, token_hash, name, issuer, subject, email, display_name, "groups", created_at, expires_at)
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-		WHERE (SELECT COUNT(*) FROM api_token WHERE issuer = ? AND subject = ?) < ?`,
+		WHERE (SELECT COUNT(*) FROM api_token
+		       WHERE issuer = ? AND subject = ?
+		         AND (expires_at IS NULL OR expires_at > ?)) < ?`,
 		t.ID, tokenHash, t.Name, t.Issuer, t.Subject, t.Email, t.DisplayName, string(groups),
 		stamp(t.CreatedAt), stampPtr(t.ExpiresAt),
-		t.Issuer, t.Subject, s.max,
+		// Only live tokens use up a slot: an expired one grants nothing.
+		t.Issuer, t.Subject, stamp(t.CreatedAt), s.max,
 	)
 	if err != nil {
 		return fmt.Errorf("apitoken: create: %w", err)

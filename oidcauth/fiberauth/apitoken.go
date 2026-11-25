@@ -354,7 +354,7 @@ func (n *tokenName) UnmarshalJSON(raw []byte) error {
 type createTokenRequest struct {
 	Name tokenName `json:"name" validate:"required,max=64"` // apitoken.NameMaxLen
 	// ExpiresInDays is optional. Without it the token lives as long as
-	// Options.TokenMaxAge allows — forever, when that is unset.
+	// Options.TokenMaxAge allows.
 	ExpiresInDays *int `json:"expiresInDays" validate:"omitempty,min=1,max=3650"`
 }
 

@@ -3,6 +3,7 @@ package fiberauth
 import (
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/neodata-io/neokit/fiberx"
 	"github.com/neodata-io/neokit/logx"
 	"github.com/neodata-io/neokit/oidcauth"
 	"github.com/neodata-io/neokit/session"
@@ -66,6 +67,11 @@ func (g *Gate) resolveSession(c fiber.Ctx, provider *oidcauth.Provider) *oidcaut
 	if !g.policy.Live(sess, now) {
 		return nil
 	}
+	// A session made under another identity provider is not this login's. An
+	// empty issuer is a row from before it was recorded, and runs out on its own.
+	if sess.Issuer != "" && sess.Issuer != provider.Issuer() {
+		return nil
+	}
 	if g.policy.NeedsTouch(sess, now) {
 		// ExpiryFor clamps the sliding renewal to the absolute cap, which is what
 		// lets a sweeper collect the row on schedule instead of it sitting
@@ -88,19 +94,36 @@ func (g *Gate) resolveSession(c fiber.Ctx, provider *oidcauth.Provider) *oidcaut
 	return &id
 }
 
+// errLoginNotConfigured answers a guard on a gate with [Options.Required] while
+// no login is configured. 503, not 401: no credential could satisfy it.
+var errLoginNotConfigured = &fiberx.APIError{
+	Status: fiber.StatusServiceUnavailable, Code: "login_not_configured",
+	Message: "login is required but not configured",
+}
+
+// withoutLogin is what a guard does while no login is configured: pass, or
+// refuse when the gate is [Options.Required].
+func (g *Gate) withoutLogin(c fiber.Ctx) error {
+	if g.required {
+		return errLoginNotConfigured
+	}
+	return c.Next()
+}
+
 // RequireOwner guards a route for the signed-in owner.
 //
 // It passes through when no login is configured, which is what makes the whole
 // gate additive: an application that ships open stays open until credentials are
 // set, and switching them off restores that exactly. Otherwise it answers 401
-// (no session) or 403 (signed in, not an owner).
+// (no session) or 403 (signed in, not an owner). With [Options.Required] it
+// answers 503 instead of passing through.
 //
 // Apply it to your own route groups. See the package doc for why this package
 // does not hold a list of admin paths.
 func (g *Gate) RequireOwner() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		if !g.Enabled() {
-			return c.Next() // login not configured → open
+			return g.withoutLogin(c)
 		}
 		id, ok := IdentityFrom(c)
 		switch {
@@ -118,7 +141,7 @@ func (g *Gate) RequireOwner() fiber.Handler {
 func (g *Gate) RequireAuth() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		if !g.Enabled() {
-			return c.Next()
+			return g.withoutLogin(c)
 		}
 		if _, ok := IdentityFrom(c); !ok {
 			return fiber.NewError(fiber.StatusUnauthorized, "authentication required")

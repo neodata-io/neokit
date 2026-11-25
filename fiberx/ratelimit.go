@@ -1,30 +1,24 @@
 package fiberx
 
 import (
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
 )
 
-// RateLimiter builds a per-minute rate-limit middleware keyed on the real client
-// IP. When the app sits behind a reverse proxy, every request otherwise arrives
-// from the proxy's own address — Fiber's default key (c.IP()) would then bucket
-// every caller behind it into one counter, and two unrelated clients could
-// exhaust each other's budget. The proxy forwards the originating client in
-// X-Forwarded-For; we key on its first hop and fall back to c.IP() when it's
-// absent (direct access), so this never regresses.
+// RateLimiter builds a per-minute rate limit keyed on the client address,
+// c.IP().
 //
-// XFF is spoofable. That is an acceptable trade when the limiter's job is
-// shielding a downstream upstream API from an eager caller (an autocomplete
-// hammering a geocoder, say) rather than enforcing a security boundary — see
-// [RateLimiterByPeer] for the case where it isn't.
+// Behind a reverse proxy that address is the proxy's until the deployment names
+// it in TRUSTED_PROXIES (see [github.com/neodata-io/neokit/config.Base]); every
+// caller then shares one budget. X-Forwarded-For is never read directly: a
+// header nobody vouched for lets a caller reset its own limit.
 func RateLimiter(maxPerMinute int) fiber.Handler {
 	return limiter.New(limiter.Config{
 		Max:          maxPerMinute,
 		Expiration:   time.Minute,
-		KeyGenerator: clientIP,
+		KeyGenerator: func(c fiber.Ctx) string { return c.IP() },
 		LimitReached: limitReached,
 	})
 }
@@ -42,40 +36,8 @@ func limitReached(c fiber.Ctx) error {
 	})
 }
 
-// RateLimiterByPeer builds a per-minute rate limit keyed on the *transport peer*
-// — the address the connection actually came from — ignoring X-Forwarded-For.
+// RateLimiterByPeer is [RateLimiter].
 //
-// Use it for any route that makes its own outbound call to a third party on
-// every hit — an OIDC callback exchanging a code at the provider's token
-// endpoint is the canonical case. There the limit is what stops an
-// unauthenticated caller turning this service into an amplifier, and a budget
-// that renews whenever the caller edits a header is a formality, not a limit.
-//
-// The cost is that every caller behind a shared proxy shares one counter —
-// until the deployment names that proxy. With TRUSTED_PROXIES set (see
-// [github.com/neodata-io/neokit/config.Base]) the app builder has Fiber derive
-// the peer from X-Forwarded-For as written by that proxy and nobody else, so
-// this limiter keys on the real client and still cannot be reset by a header.
-// That is the configuration to prefer behind a proxy; it is opt-in because the
-// proxy's address is the one thing a library cannot know.
-func RateLimiterByPeer(maxPerMinute int) fiber.Handler {
-	return limiter.New(limiter.Config{
-		Max:          maxPerMinute,
-		Expiration:   time.Minute,
-		KeyGenerator: func(c fiber.Ctx) string { return c.IP() },
-		LimitReached: limitReached,
-	})
-}
-
-// clientIP returns the originating client's address, preferring the first hop of
-// X-Forwarded-For (set by the front proxy) over the direct peer. Spoofable by
-// construction — see [RateLimiterByPeer] for where that disqualifies it.
-func clientIP(c fiber.Ctx) string {
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if before, _, ok := strings.Cut(xff, ","); ok {
-			return strings.TrimSpace(before)
-		}
-		return strings.TrimSpace(xff)
-	}
-	return c.IP()
-}
+// Deprecated: RateLimiter no longer reads a forwarded header on its own, so the
+// two are the same limiter. Use RateLimiter.
+func RateLimiterByPeer(maxPerMinute int) fiber.Handler { return RateLimiter(maxPerMinute) }

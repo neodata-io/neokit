@@ -24,6 +24,7 @@ var schema = []string{
 	`CREATE TABLE IF NOT EXISTS auth_session (
 		id           TEXT PRIMARY KEY,
 		token_hash   TEXT NOT NULL UNIQUE,
+		issuer       TEXT NOT NULL DEFAULT '',
 		subject      TEXT NOT NULL,
 		name         TEXT NOT NULL DEFAULT '',
 		email        TEXT NOT NULL DEFAULT '',
@@ -60,7 +61,36 @@ func NewSQLite(db *sql.DB) (*SQLite, error) {
 			return nil, fmt.Errorf("session: create schema: %w", err)
 		}
 	}
+	// A table from before the issuer column gains it, empty, so its rows keep
+	// working until they run out.
+	has, err := hasColumn(db, "issuer")
+	if err != nil {
+		return nil, fmt.Errorf("session: inspect schema: %w", err)
+	}
+	if !has {
+		if _, err := db.Exec(`ALTER TABLE auth_session ADD COLUMN issuer TEXT NOT NULL DEFAULT ''`); err != nil {
+			return nil, fmt.Errorf("session: add issuer: %w", err)
+		}
+	}
 	return &SQLite{db: db}, nil
+}
+
+func hasColumn(db *sql.DB, column string) (bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('auth_session')`)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // CreateSession stores a new signed-in browser. tokenHash is [HashToken]'s
@@ -72,10 +102,10 @@ func (s *SQLite) CreateSession(ctx context.Context, sess Session, tokenHash stri
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO auth_session
-			(id, token_hash, subject, name, email, groups_json, owner, user_agent,
+			(id, token_hash, issuer, subject, name, email, groups_json, owner, user_agent,
 			 created_at, last_seen_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.ID, tokenHash, sess.Subject, sess.Name, sess.Email, string(groups),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, tokenHash, sess.Issuer, sess.Subject, sess.Name, sess.Email, string(groups),
 		sess.Owner, sess.UserAgent,
 		stamp(sess.CreatedAt), stamp(sess.LastSeenAt), stamp(sess.ExpiresAt),
 	)
@@ -88,9 +118,12 @@ func (s *SQLite) CreateSession(ctx context.Context, sess Session, tokenHash stri
 // SessionByToken resolves a session from the cookie's hash. A row past its
 // expiry is returned like any other — [Policy.Live] is the enforcement point,
 // and a second one here is how the two come to disagree.
+//
+// A row whose creation or expiry time will not parse is an error, not a
+// session: read as the zero time it would never expire.
 func (s *SQLite) SessionByToken(ctx context.Context, tokenHash string) (Session, bool, error) {
 	row := s.db.QueryRowContext(ctx, selectColumns+` WHERE token_hash = ?`, tokenHash)
-	sess, err := scan(row)
+	sess, err := scan(row, true)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, false, nil
 	}
@@ -140,12 +173,13 @@ func (s *SQLite) ListSessions(ctx context.Context) ([]Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Non-nil, so an empty table serialises as [] rather than null.
 	out := []Session{}
 	for rows.Next() {
-		sess, err := scan(rows)
+		// Lenient: a row with a bad timestamp must still be listed to be revoked.
+		sess, err := scan(rows, false)
 		if err != nil {
 			return nil, fmt.Errorf("session: list: %w", err)
 		}
@@ -178,20 +212,22 @@ func (s *SQLite) DeleteExpiredSessions(ctx context.Context, now time.Time) (int6
 // selectColumns fixes the column order every scan depends on, so the list and
 // the single-row read cannot drift apart.
 const selectColumns = `
-	SELECT id, subject, name, email, groups_json, owner, user_agent,
+	SELECT id, issuer, subject, name, email, groups_json, owner, user_agent,
 	       created_at, last_seen_at, expires_at
 	FROM auth_session`
 
 // scanner is what QueryRow and Rows have in common, so one scan serves both.
 type scanner interface{ Scan(dest ...any) error }
 
-func scan(r scanner) (Session, error) {
+// scan reads one row. strict refuses a creation or expiry time that will not
+// parse, which is what a read that signs someone in needs.
+func scan(r scanner, strict bool) (Session, error) {
 	var (
 		s                          Session
 		groups                     string
 		created, lastSeen, expires string
 	)
-	if err := r.Scan(&s.ID, &s.Subject, &s.Name, &s.Email, &groups, &s.Owner,
+	if err := r.Scan(&s.ID, &s.Issuer, &s.Subject, &s.Name, &s.Email, &groups, &s.Owner,
 		&s.UserAgent, &created, &lastSeen, &expires); err != nil {
 		return Session{}, err
 	}
@@ -201,15 +237,17 @@ func scan(r scanner) (Session, error) {
 	s.CreatedAt = parse(created)
 	s.LastSeenAt = parse(lastSeen)
 	s.ExpiresAt = parse(expires)
+	if strict && (s.CreatedAt.IsZero() || s.ExpiresAt.IsZero()) {
+		return Session{}, errors.New("unreadable created_at or expires_at")
+	}
 	return s, nil
 }
 
 // stamp and parse are the only place the storage encoding is decided.
 func stamp(t time.Time) string { return t.UTC().Format(timeLayout) }
 
-// An unparseable instant yields the zero time, which Policy treats as "unknown,
-// not expired" — so a corrupt column retires the session on its TTL rather than
-// failing the read.
+// An unparseable instant yields the zero time; scan decides whether that is
+// acceptable for the read at hand.
 func parse(s string) time.Time {
 	t, err := time.Parse(timeLayout, s)
 	if err != nil {

@@ -41,7 +41,11 @@ func (i Identity) Authenticated() bool { return i.Subject != "" }
 // [HashToken]), so a database leak yields nothing that can be replayed as a
 // session.
 type Session struct {
-	ID      string
+	ID string
+	// Issuer is the identity provider the session was made under. A gate refuses
+	// a session whose issuer is not the one in force; empty means a row from
+	// before this field, which runs out on its own lifetime.
+	Issuer  string
 	Subject string
 	Name    string
 	Email   string

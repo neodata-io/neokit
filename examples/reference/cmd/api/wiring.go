@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
@@ -117,6 +119,9 @@ func login(a *neokit.App, cfg Config, store *sqlite.Store) (*fiberauth.Gate, err
 		return nil, err
 	}
 
+	if err := halfConfigured(cfg); err != nil {
+		return nil, err
+	}
 	provider, configured := oidcauth.New(oidcauth.Config{
 		Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
 		BaseURL: cfg.OIDCBaseURL, OwnerGroup: cfg.OIDCOwnerGroup,
@@ -138,4 +143,24 @@ func login(a *neokit.App, cfg Config, store *sqlite.Store) (*fiberauth.Gate, err
 		// A token for a script should not outlive the script's author's attention.
 		TokenMaxAge: 365 * 24 * time.Hour,
 	}), nil
+}
+
+// halfConfigured refuses a login with some of its four settings and not the
+// rest. oidcauth.New reads that as "no login", which would start the service
+// open because of a typo.
+func halfConfigured(cfg Config) error {
+	settings := []struct{ name, value string }{
+		{"OIDC_ISSUER", cfg.OIDCIssuer}, {"OIDC_CLIENT_ID", cfg.OIDCClientID},
+		{"OIDC_CLIENT_SECRET", cfg.OIDCClientSecret}, {"OIDC_BASE_URL", cfg.OIDCBaseURL},
+	}
+	var missing []string
+	for _, s := range settings {
+		if strings.TrimSpace(s.value) == "" {
+			missing = append(missing, s.name)
+		}
+	}
+	if len(missing) == 0 || len(missing) == len(settings) {
+		return nil
+	}
+	return fmt.Errorf("login is half configured: %s not set", strings.Join(missing, ", "))
 }

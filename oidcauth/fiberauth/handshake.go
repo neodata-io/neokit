@@ -73,7 +73,7 @@ func (g *Gate) register(app *fiber.App) {
 		if g.rateLimit < 0 {
 			return h, nil
 		}
-		return fiberx.RateLimiterByPeer(g.rateLimit), []any{h}
+		return fiberx.RateLimiter(g.rateLimit), []any{h}
 	}
 
 	first, rest := chain(g.loginHandler())
@@ -227,7 +227,7 @@ func (g *Gate) callbackHandler() fiber.Handler {
 			return g.fail(c, reasonFor(err), err)
 		}
 
-		if err := g.issueSession(c, id, secure); err != nil {
+		if err := g.issueSession(c, id, provider.Issuer(), secure); err != nil {
 			return g.fail(c, ReasonServer, err)
 		}
 		return c.Redirect().Status(fiber.StatusFound).To(next)
@@ -235,7 +235,7 @@ func (g *Gate) callbackHandler() fiber.Handler {
 }
 
 // issueSession mints the session token, persists the session, and sets the cookie.
-func (g *Gate) issueSession(c fiber.Ctx, id oidcauth.Identity, secure bool) error {
+func (g *Gate) issueSession(c fiber.Ctx, id oidcauth.Identity, issuer string, secure bool) error {
 	// Named, because the alternative is a nil-interface panic three lines down
 	// that a recover middleware turns into an unexplained 500.
 	if g.sessions == nil {
@@ -244,7 +244,8 @@ func (g *Gate) issueSession(c fiber.Ctx, id oidcauth.Identity, secure bool) erro
 	token := session.RandomToken(32)
 	now := g.now().UTC()
 	sess := oidcauth.Session{
-		ID: uuid.NewString(), Subject: id.Subject, Name: id.Name, Email: id.Email,
+		ID: uuid.NewString(), Issuer: issuer,
+		Subject: id.Subject, Name: id.Name, Email: id.Email,
 		Groups: id.Groups, Owner: id.Owner,
 		UserAgent:  boundedDescription(c.Get("User-Agent")),
 		CreatedAt:  now,

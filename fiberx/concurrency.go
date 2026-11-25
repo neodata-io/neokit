@@ -74,8 +74,10 @@ func IfMatchVersion(c fiber.Ctx) (version int, conditional bool) {
 		return 0, false
 	}
 	first = strings.Trim(strings.TrimPrefix(first, "W/"), `"`)
+	// Only the canonical form the server issued: Atoi alone would read "007" or
+	// "+7" as version 7, a tag CheckIfMatch refuses.
 	v, err := strconv.Atoi(first)
-	if err != nil {
+	if err != nil || v < 0 || strconv.Itoa(v) != first {
 		return -1, true
 	}
 	return v, true

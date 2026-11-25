@@ -333,7 +333,7 @@ func TestIssueSessionWithoutAStoreFailsInsteadOfPanicking(t *testing.T) {
 	var got error
 	app := fiber.New()
 	app.Get("/issue", func(c fiber.Ctx) error {
-		got = g.issueSession(c, oidcauth.Identity{Subject: "u-1"}, false)
+		got = g.issueSession(c, oidcauth.Identity{Subject: "u-1"}, "https://id.example.com", false)
 		return c.SendStatus(fiber.StatusOK)
 	})
 	resp := do(t, app, httptest.NewRequest(http.MethodGet, "/issue", nil))
