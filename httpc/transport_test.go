@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -356,4 +357,107 @@ func (r *unrewindableReader) Read(p []byte) (int, error) {
 	r.done = true
 	p[0] = 'x'
 	return 1, nil
+}
+
+func TestGuardedDialerHasATimeout(t *testing.T) {
+	if d := guardedDialer(IsPrivateAddr); d.Timeout <= 0 {
+		t.Error("the guarded dialer has no connect timeout")
+	}
+}
+
+// countingTransport counts the attempts the retry layer makes against base.
+type countingTransport struct {
+	base  http.RoundTripper
+	calls atomic.Int32
+}
+
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.calls.Add(1)
+	return c.base.RoundTrip(r)
+}
+
+// None of these gets better on a second try: the address stays refused, the
+// certificate stays wrong, the scheme stays unsupported. Retrying only delays
+// the answer and re-dials a host the guard exists to keep away from.
+func TestRetryTransport_DoesNotRetryAPermanentFailure(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer plain.Close()
+	untrusted := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer untrusted.Close()
+
+	cases := []struct {
+		name string
+		base http.RoundTripper
+		url  string
+	}{
+		{"guard refusal", GuardedTransport(IsPrivateAddr), plain.URL},
+		{"certificate failure", &http.Transport{}, untrusted.URL},
+		{"unsupported scheme", &http.Transport{}, "gopher://example.com/x"},
+	}
+	for _, c := range cases {
+		counted := &countingTransport{base: c.base}
+		client := &http.Client{Timeout: 5 * time.Second, Transport: NewRetryTransport(counted, fastRetry())}
+		resp, err := client.Get(c.url)
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Errorf("%s: want an error", c.name)
+			continue
+		}
+		if n := counted.calls.Load(); n != 1 {
+			t.Errorf("%s: attempts = %d, want 1 (%v)", c.name, n, err)
+		}
+	}
+}
+
+// The regression guard for the test above: a refused connection is still the
+// transient failure the retry layer exists for.
+func TestRetryTransport_StillRetriesARefusedConnection(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	counted := &countingTransport{base: &http.Transport{}}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: NewRetryTransport(counted, fastRetry())}
+	if resp, err := client.Get("http://" + addr); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("want a connection error")
+	}
+	if n := counted.calls.Load(); n != 3 {
+		t.Errorf("attempts = %d, want 3", n)
+	}
+}
+
+// A RetryConfig written without MaxDelay used to mean "no cap": any Retry-After
+// was slept out, and the caller got a timeout in place of the 429.
+func TestRetryTransport_AMissingMaxDelayGetsTheDefaultCap(t *testing.T) {
+	if got := NewRetryTransport(nil, RetryConfig{MaxRetries: 2}).cfg.MaxDelay; got != DefaultRetryConfig().MaxDelay {
+		t.Errorf("MaxDelay = %v, want the default %v", got, DefaultRetryConfig().MaxDelay)
+	}
+	if got := NewTracedRetryTransport(nil, RetryConfig{MaxRetries: 2}).cfg.MaxDelay; got != DefaultRetryConfig().MaxDelay {
+		t.Errorf("traced MaxDelay = %v, want the default %v", got, DefaultRetryConfig().MaxDelay)
+	}
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := NewHTTPClient(HTTPOptions{
+		Timeout: 500 * time.Millisecond,
+		Retry:   &RetryConfig{MaxRetries: 2, BaseDelay: time.Millisecond},
+	})
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("Get: %v — the Retry-After was slept out until the client timeout", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests || calls.Load() != 1 {
+		t.Errorf("status = %d after %d calls, want the 429 handed back after 1", resp.StatusCode, calls.Load())
+	}
 }

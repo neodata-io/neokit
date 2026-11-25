@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -50,6 +51,9 @@ type HTTPOptions struct {
 //	httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: httpc.NoTimeout}) // ctx bounds it
 //	httpc.NewHTTPClient(httpc.HTTPOptions{Tracing: true})            // + otel spans
 //
+// A redirect to another host keeps only negotiation and trace headers, and is
+// refused outright when it would replay a request body there.
+//
 // For a WebSocket handshake use [NewWebSocketHTTPClient] instead.
 func NewHTTPClient(opts HTTPOptions) *http.Client {
 	timeout := opts.Timeout
@@ -69,7 +73,7 @@ func NewHTTPClient(opts HTTPOptions) *http.Client {
 	if opts.Tracing {
 		rt = NewTracedRetryTransport(opts.Transport, cfg)
 	}
-	return &http.Client{Timeout: timeout, Transport: rt}
+	return &http.Client{Timeout: timeout, Transport: rt, CheckRedirect: checkRedirect}
 }
 
 // NewWebSocketHTTPClient returns a client for a WebSocket opening handshake.
@@ -82,7 +86,7 @@ func NewHTTPClient(opts HTTPOptions) *http.Client {
 // Use it only for the handshake. Fetch anything else the device serves with a
 // normal [NewHTTPClient], so those requests keep their retries.
 func NewWebSocketHTTPClient(tlsConfig *tls.Config) *http.Client {
-	return &http.Client{Transport: cloneTransport(tlsConfig)}
+	return &http.Client{Transport: cloneTransport(tlsConfig), CheckRedirect: checkRedirect}
 }
 
 // InsecureTLSTransport returns a transport with certificate verification
@@ -107,6 +111,7 @@ func cloneTransport(tlsConfig *tls.Config) *http.Transport {
 
 // CheckStatus returns a *[APIError] when resp carries a non-2xx status, or nil
 // when it is 2xx — leaving the body unread and intact for the caller to decode.
+// A non-2xx body is kept up to 8 KiB and truncated beyond that.
 //
 // It gives a hand-rolled client the same structured error [BaseClient.DoJSON]
 // produces, so errors.As(&APIError) and [IsConflict] keep working. A client that
@@ -119,7 +124,8 @@ func CheckStatus(service string, resp *http.Response) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	raw, _ := ReadAllLimited(resp.Body, errorBodyLimit)
+	// Not ReadAllLimited: that returns nothing at all for a body past the limit.
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
 	return newAPIError(service, resp.StatusCode, raw)
 }
 

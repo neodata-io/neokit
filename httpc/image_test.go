@@ -180,3 +180,37 @@ func TestBaseClientBytes_RetriesOn401(t *testing.T) {
 		t.Errorf("server calls = %d, want 2 (401 then 200)", calls)
 	}
 }
+
+// The blob is served to a browser from the application's own origin. Passing
+// an upstream's text/html through turns a fetched URL into stored XSS.
+func TestImage_RefusesAContentTypeThatIsNotAnImage(t *testing.T) {
+	for _, ct := range []string{"text/html", "text/html; charset=utf-8", "application/javascript", "application/octet-stream", "imagery/png", "garbage;;"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", ct)
+			_, _ = w.Write([]byte("<script>alert(1)</script>"))
+		}))
+		blob, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 0)
+		srv.Close()
+		if err == nil {
+			t.Errorf("Content-Type %q: got a blob typed %q, want an error", ct, blob.ContentType)
+		}
+	}
+}
+
+func TestImage_AcceptsImageTypesHoweverTheyAreSpelled(t *testing.T) {
+	for _, ct := range []string{"image/png", "IMAGE/PNG", "image/webp; q=1", "image/x-icon"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", ct)
+			_, _ = w.Write(pngBytes)
+		}))
+		blob, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 0)
+		srv.Close()
+		if err != nil {
+			t.Errorf("Content-Type %q: %v", ct, err)
+			continue
+		}
+		if blob.ContentType != ct {
+			t.Errorf("ContentType = %q, want %q passed through", blob.ContentType, ct)
+		}
+	}
+}

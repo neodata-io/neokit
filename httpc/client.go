@@ -199,7 +199,8 @@ func NewBaseClient(baseURL, service string, auth AuthFunc) BaseClient {
 }
 
 // DoJSON performs an HTTP request with optional JSON body and response decoding.
-// It handles marshalling, auth injection, status checks, and error wrapping.
+// It handles marshalling, auth injection, status checks, and error wrapping. An
+// empty response body is success and leaves out untouched.
 //
 // When a [TokenSource] is configured (see [BaseClient.Tokens]), DoJSON injects a
 // bearer token and, on a 401, refreshes the token and retries the request
@@ -260,7 +261,7 @@ func (c *BaseClient) attempt(ctx context.Context, method, url string, rawBody []
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
-		return "", fmt.Errorf("%s build request: %w", c.Service, err)
+		return "", fmt.Errorf("%s build request: %w", c.Service, Redact(err))
 	}
 	if c.Auth != nil {
 		c.Auth(req)
@@ -286,7 +287,10 @@ func (c *BaseClient) attempt(ctx context.Context, method, url string, rawBody []
 	if out != nil {
 		// Bounded like every other read here: a compromised or runaway upstream
 		// must not stream unbounded bytes into memory.
-		if err := json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(out); err != nil {
+		// io.EOF is a body with nothing in it (a 204, an empty 200): success, with
+		// out left alone. A body cut short is io.ErrUnexpectedEOF and still fails.
+		err := json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(out)
+		if err != nil && !errors.Is(err, io.EOF) {
 			return used, fmt.Errorf("%s response decode failed: %w", c.Service, err)
 		}
 	}
@@ -303,17 +307,18 @@ func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response
 	start := time.Now()
 	resp, err := c.HTTPClient.Do(req)
 	duration := time.Since(start)
-	// The ring is surfaced to whoever reads the diagnostics, so it gets the same
-	// redaction a logged error gets: a client whose auth rides in an api_key query
-	// parameter would otherwise publish that token through the debug endpoint.
+	// The ring and the returned error both end up where others read them (a
+	// diagnostics endpoint, a log), so both are redacted: a client whose auth rides
+	// in an api_key query parameter would otherwise publish that token.
 	if err != nil {
+		err = Redact(err)
 		if c.Debug != nil {
 			c.Debug.Push(DebugEntry{
 				Time:       start,
 				Method:     method,
 				URL:        RedactURL(url),
 				DurationMs: duration.Milliseconds(),
-				Error:      Redact(err).Error(),
+				Error:      err.Error(),
 			})
 		}
 		return nil, fmt.Errorf("%s API request failed: %w", c.Service, err)

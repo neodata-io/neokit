@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/neodata-io/neokit/errs"
@@ -96,5 +97,48 @@ func TestFault_AdminActionable(t *testing.T) {
 	}
 	if FaultUnknown.AdminActionable() {
 		t.Error("FaultUnknown must not be admin-actionable: we cannot tell the admin what to do about it")
+	}
+}
+
+// Every failure of http.Client.Do is a *url.Error, and *url.Error is a
+// net.Error — so "is a net.Error" called all of these transient, and a
+// scheduler retried a wrong certificate forever at Debug level.
+func TestClassify_APermanentTransportFailureIsNotUnavailable(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer plain.Close()
+	untrusted := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer untrusted.Close()
+
+	once := &RetryConfig{}
+	cases := []struct {
+		name   string
+		client *http.Client
+		url    string
+	}{
+		{"guard refusal", NewHTTPClient(HTTPOptions{Transport: GuardedTransport(nil), Retry: once}), plain.URL},
+		{"certificate failure", NewHTTPClient(HTTPOptions{Transport: &http.Transport{}, Retry: once}), untrusted.URL},
+		{"unsupported scheme", NewHTTPClient(HTTPOptions{Retry: once}), "gopher://example.com/x"},
+	}
+	for _, c := range cases {
+		resp, err := c.client.Get(c.url)
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Errorf("%s: want an error", c.name)
+			continue
+		}
+		if got := Classify(err); got != FaultUnknown {
+			t.Errorf("%s: Classify(%v) = %q, want %q", c.name, err, got, FaultUnknown)
+		}
+	}
+}
+
+func TestClassify_ARefusedConnectionIsStillUnavailable(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := dead.URL
+	dead.Close()
+
+	_, err := NewHTTPClient(HTTPOptions{Retry: &RetryConfig{}}).Get(url) //nolint:bodyclose // err path returns no body
+	if got := Classify(err); got != FaultUnavailable {
+		t.Errorf("Classify(%v) = %q, want %q", err, got, FaultUnavailable)
 	}
 }

@@ -106,9 +106,10 @@ func (k Keys) Validate() error {
 // the subject through here removes that failure mode regardless of how an admin
 // typed it in.
 //
-// An https URL is returned unchanged. Anything that is neither a usable email
-// address nor an https URL is an error, since a push service given an
-// unreachable contact may throttle or block the sender outright.
+// An https URL is returned unchanged but for a lower-cased scheme. Anything that
+// is neither a bare email address (no display name) nor an https URL is an
+// error, since a push service given an unreachable contact may throttle or
+// block the sender outright.
 func NormalizeSubject(subject string) (string, error) {
 	s := strings.TrimSpace(subject)
 	if s == "" {
@@ -117,10 +118,11 @@ func NormalizeSubject(subject string) (string, error) {
 
 	if lower := strings.ToLower(s); strings.HasPrefix(lower, "https:") {
 		u, err := url.Parse(s)
-		if err != nil || u.Host == "" {
+		if err != nil || u.Host == "" || u.User != nil {
 			return "", fmt.Errorf("webpush: VAPID subject %q is not a valid https URL", subject)
 		}
-		return s, nil
+		// Lower-case the scheme: the delivery library matches "https:" exactly.
+		return "https:" + s[len("https:"):], nil
 	}
 	// http: is called out separately from "anything else": it is the mistake an
 	// admin actually makes, and "use https" is a better answer than "not a valid
@@ -129,9 +131,13 @@ func NormalizeSubject(subject string) (string, error) {
 		return "", fmt.Errorf("webpush: VAPID subject %q must use https, not http", subject)
 	}
 
-	s = strings.TrimSpace(strings.TrimPrefix(s, "mailto:"))
-	if _, err := mail.ParseAddress(s); err != nil {
-		return "", fmt.Errorf("webpush: VAPID subject %q is neither an https URL nor an email address", subject)
+	if len(s) >= len("mailto:") && strings.EqualFold(s[:len("mailto:")], "mailto:") {
+		s = strings.TrimSpace(s[len("mailto:"):])
+	}
+	// The address must be bare: ParseAddress also accepts "Ops <ops@example.com>",
+	// which makes a `sub` that is not a URI.
+	if addr, err := mail.ParseAddress(s); err != nil || addr.Name != "" || addr.Address != s {
+		return "", fmt.Errorf("webpush: VAPID subject %q is neither an https URL nor a bare email address", subject)
 	}
 	return s, nil
 }

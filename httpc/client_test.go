@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -390,5 +391,71 @@ func TestCachingTokenSource_DedupesConcurrentForcedRefresh(t *testing.T) {
 
 	if logins != 2 {
 		t.Errorf("logins = %d, want 2 (initial + exactly one deduped refresh)", logins)
+	}
+}
+
+// The DebugRing copy of a failed request was redacted and the error handed to
+// the caller was not — and the error is the one that reaches the log.
+func TestATransportErrorDoesNotLeakTheQueryCredential(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	base := dead.URL
+	dead.Close()
+
+	bc := NewBaseClient(base, "svc", nil)
+	bc.HTTPClient = NewHTTPClient(HTTPOptions{Retry: &RetryConfig{}})
+
+	errs := map[string]error{
+		"DoJSON":           bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/x?api_key=S3CRET"), nil, nil),
+		"DoJSON malformed": bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/%zz?api_key=S3CRET"), nil, nil),
+	}
+	_, _, errs["Bytes"] = bc.Bytes(t.Context(), http.MethodGet, bc.URL("/x?api_key=S3CRET"), 0)
+	_, _, errs["Bytes malformed"] = bc.Bytes(t.Context(), http.MethodGet, bc.URL("/%zz?api_key=S3CRET"), 0)
+
+	for name, err := range errs {
+		if err == nil {
+			t.Errorf("%s: want an error", name)
+			continue
+		}
+		if strings.Contains(err.Error(), "S3CRET") {
+			t.Errorf("%s: the error leaked the query credential: %v", name, err)
+		}
+	}
+	// Redacting must not cost the classification.
+	if got := Classify(errs["DoJSON"]); got != FaultUnavailable {
+		t.Errorf("Classify = %q, want %q", got, FaultUnavailable)
+	}
+}
+
+// A DELETE answered 204, or a 200 with nothing in it, has succeeded. Reporting
+// "decode failed: EOF" made every caller special-case its own happy path.
+func TestDoJSON_AnEmptyBodyIsSuccess(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusOK} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+		}))
+		bc := NewBaseClient(srv.URL, "test", nil)
+		out := map[string]string{"untouched": "yes"}
+		err := bc.DoJSON(t.Context(), http.MethodDelete, bc.URL("/x"), nil, &out)
+		srv.Close()
+		if err != nil {
+			t.Errorf("status %d: err = %v, want success", status, err)
+		}
+		if out["untouched"] != "yes" {
+			t.Errorf("status %d: out was modified: %v", status, out)
+		}
+	}
+}
+
+// A body cut off mid-document is still a failure, not an empty success.
+func TestDoJSON_ATruncatedBodyIsStillADecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"a":`))
+	}))
+	defer srv.Close()
+
+	bc := NewBaseClient(srv.URL, "test", nil)
+	var out map[string]string
+	if err := bc.DoJSON(t.Context(), http.MethodGet, bc.URL("/x"), nil, &out); err == nil {
+		t.Fatal("expected a decode error")
 	}
 }

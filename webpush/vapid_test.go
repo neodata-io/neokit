@@ -114,6 +114,25 @@ func TestNormalizeSubjectStripsTheMailtoPrefix(t *testing.T) {
 	}
 }
 
+// A URI scheme is case-insensitive, but the delivery library matches "https:"
+// exactly and would prepend "mailto:" to anything else.
+func TestNormalizeSubjectLowercasesTheScheme(t *testing.T) {
+	for in, want := range map[string]string{
+		"MAILTO:ops@example.com":      "ops@example.com",
+		"Mailto:ops@example.com":      "ops@example.com",
+		"HTTPS://example.com/contact": "https://example.com/contact",
+	} {
+		got, err := NormalizeSubject(in)
+		if err != nil {
+			t.Errorf("NormalizeSubject(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("NormalizeSubject(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestNormalizeSubjectKeepsAnHTTPSURL(t *testing.T) {
 	const in = "https://example.com/contact"
 	got, err := NormalizeSubject(in)
@@ -135,6 +154,13 @@ func TestNormalizeSubjectRejectsUnusableContacts(t *testing.T) {
 		"not an addr": "just some words",
 		"bare host":   "example.com",
 		"no host":     "https://",
+		// mail.ParseAddress accepts these; a JWT `sub` of "mailto:Ops <ops@…>" is
+		// not a URI, and a push service rejects it without saying which claim.
+		"display name":   "Ops Team <ops@example.com>",
+		"angle brackets": "<ops@example.com>",
+		"mailto + name":  "mailto:Ops <ops@example.com>",
+		"address list":   "ops@example.com, dev@example.com",
+		"https userinfo": "https://user:pw@example.com/contact",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NormalizeSubject(in); err == nil {

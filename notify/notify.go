@@ -2,23 +2,36 @@
 // self-hosted deployment already has: a generic JSON webhook, an ntfy topic, or
 // an Apprise API server.
 //
-// Hand-written versions of these three tend to share two omissions: a bare
-// `&http.Client{Timeout: …}`, so no retry on a transient 502 and no SSRF guard
-// on a URL an admin pastes in; and a payload built from the caller's own domain
-// types, so the transport cannot be reused for a second kind of event.
-//
 // [Notification] is the transport-agnostic shape all three renderers accept, so
-// an application maps its own event to it once. [Sender] is the interface to
-// hold. Every constructor here builds its client through httpc.
+// an application maps its own event to it once, rather than building a payload
+// from its own domain types that no second kind of event can reuse. [Sender] is
+// the interface to hold.
+//
+// # What a send does and does not do
+//
+//   - One attempt. Every backend takes a POST, which is not idempotent, so a
+//     transient failure is reported instead of retried into a duplicate.
+//   - No address guard. Targets are operator-configured and often on the LAN
+//     (an Apprise or ntfy container), which a guard would block. Do not pass a
+//     URL an end user chose; if you must, set [Options.HTTPClient] to one built
+//     on httpc.GuardedTransport.
+//   - No redirects. A 3xx is returned as an error: following it would turn the
+//     POST into an empty GET, or replay the secret and body to another host.
+//   - Errors name the target by host only, since the path is often the
+//     credential (an Apprise key, an ntfy topic).
+//
+// The webhook secret is a static header, not a signature: use https.
 package notify
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -80,15 +93,16 @@ type Sender interface {
 	Send(ctx context.Context, n Notification) error
 }
 
-// DefaultTimeout bounds one delivery attempt including its retries. A
-// notification that has not landed in ten seconds has lost its value.
+// DefaultTimeout bounds one delivery. A notification that has not landed in ten
+// seconds has lost its value.
 const DefaultTimeout = 10 * time.Second
 
 // Options are the settings every sender shares. The zero value is valid.
 type Options struct {
 	// HTTPClient overrides the client. Nil builds one through httpc with
 	// [DefaultTimeout], which is what you want unless you need a custom
-	// transport (a self-signed internal endpoint) or tracing.
+	// transport (a self-signed internal endpoint) or tracing. It is copied, and
+	// the copy never follows redirects whatever its CheckRedirect says.
 	HTTPClient *http.Client
 
 	// Timeout overrides [DefaultTimeout]. Ignored when HTTPClient is set.
@@ -96,26 +110,32 @@ type Options struct {
 }
 
 func (o Options) client() *http.Client {
+	var c http.Client
 	if o.HTTPClient != nil {
-		return o.HTTPClient
+		c = *o.HTTPClient
+	} else {
+		timeout := o.Timeout
+		if timeout <= 0 {
+			timeout = DefaultTimeout
+		}
+		c = *httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: timeout})
 	}
-	timeout := o.Timeout
-	if timeout <= 0 {
-		timeout = DefaultTimeout
-	}
-	return httpc.NewHTTPClient(httpc.HTTPOptions{Timeout: timeout})
+	// A followed redirect delivers nothing (POST becomes GET) or leaks the secret
+	// and body to another host, so the 3xx is handed back as the response.
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
 }
+
+// drainLimit bounds how much of a response is read to keep the connection
+// reusable; a backend that keeps writing is abandoned rather than waited on.
+const drainLimit = 64 << 10
 
 // post sends body to url and consumes the response, which is the identical tail
 // of all three senders.
-//
-// Drain the body before closing: an undrained response cannot return to the
-// connection pool, so a service notified on every event would open a fresh TCP
-// connection each time.
 func post(ctx context.Context, client *http.Client, service, url string, body io.Reader, header http.Header) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
-		return fmt.Errorf("%s: build request: %w", service, err)
+		return fmt.Errorf("%s: build request for %s: %w", service, targetHost(url), withoutURL(err))
 	}
 	for k, vs := range header {
 		for _, v := range vs {
@@ -125,18 +145,36 @@ func post(ctx context.Context, client *http.Client, service, url string, body io
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// Redact: a notification URL routinely carries its credential in the query
-		// string or as userinfo (an ntfy topic token, an Apprise key), and a
-		// transport failure renders the whole URL.
-		return fmt.Errorf("%s: send: %w", service, httpc.Redact(err))
+		// A transport failure renders the whole URL, and the credential is as
+		// often in the path as in the query string, so only the host survives.
+		return fmt.Errorf("%s: send to %s: %w", service, targetHost(url), withoutURL(err))
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	// CheckStatus rather than a hand-rolled status test, so the result classifies
 	// through httpc.Classify like every other upstream error: a 401 from a
 	// notification backend is the admin's problem, a 503 is nobody's.
-	return httpc.CheckStatus(service, resp)
+	err = httpc.CheckStatus(service, resp)
+	// Drain after CheckStatus has taken the rejection reason, so the connection
+	// returns to the pool instead of costing a handshake per notification.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, drainLimit))
+	return err
+}
+
+// targetHost is the only part of a notification URL fit for an error message.
+func targetHost(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "(unparseable URL)"
+}
+
+// withoutURL drops the URL a *url.Error carries and keeps its cause.
+func withoutURL(err error) error {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
+		return urlErr.Err
+	}
+	return err
 }
 
 func (n Notification) level() Level {

@@ -124,8 +124,14 @@ func Classify(err error) Fault {
 		return FaultUnavailable
 	}
 
-	// Anything that never reached the service: a dial refusal, DNS, a TLS failure, a
-	// transport timeout.
+	// Before the net.Error test, because every http.Client failure is a *url.Error
+	// and that is a net.Error: a refused address or a bad certificate is not an outage.
+	if permanentTransportError(err) {
+		return FaultUnknown
+	}
+
+	// Anything that never reached the service: a dial refusal, DNS, a transport
+	// timeout.
 	if _, ok := errors.AsType[net.Error](err); ok {
 		return FaultUnavailable
 	}

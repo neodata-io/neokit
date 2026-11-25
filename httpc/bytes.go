@@ -22,7 +22,7 @@ func (c *BaseClient) Bytes(ctx context.Context, method, url string, maxBytes int
 	attempt := func(token string) (status int, data []byte, ct string, err error) {
 		req, err := http.NewRequestWithContext(ctx, method, url, nil)
 		if err != nil {
-			return 0, nil, "", fmt.Errorf("%s build request: %w", c.Service, err)
+			return 0, nil, "", fmt.Errorf("%s build request: %w", c.Service, Redact(err))
 		}
 		if c.Auth != nil {
 			c.Auth(req)
