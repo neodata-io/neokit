@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,10 @@ import (
 
 // Open opens the service's database with the settings a server actually wants
 // and runs migrate against it. A nil migrate skips the migration step.
+//
+// A transaction on the handle takes the write lock when it begins. Pass
+// [sql.TxOptions] with ReadOnly set for one that only reads, so it does not
+// queue behind writers.
 //
 //	db, err := sqlitex.Open(cfg.DatabasePath, migrate)
 //	a.Shutdown.Push("database", func(context.Context) error { return db.Close() })
@@ -29,8 +34,13 @@ func Open(path string, migrate func(*sql.DB) error) (*sql.DB, error) {
 
 	memory := path == ":memory:"
 	if !memory {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		// Private to the service user, but only what is created here: an existing
+		// directory or database keeps the mode its operator gave it.
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, fmt.Errorf("create data directory: %w", err)
+		}
+		if err := createPrivate(path); err != nil {
+			return nil, fmt.Errorf("create database file: %w", err)
 		}
 	}
 
@@ -76,6 +86,23 @@ func Open(path string, migrate func(*sql.DB) error) (*sql.DB, error) {
 	return db, nil
 }
 
+// createPrivate creates the database file 0600 if it does not exist. SQLite
+// would create it 0644, and gives the WAL and SHM files the database's mode.
+func createPrivate(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// uriPath escapes what a URI would read as syntax, so a path containing '#',
+// '?' or '%' names that exact file instead of being cut short or decoded.
+var uriPath = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23")
+
 // dsn builds the connection string.
 //
 // The pragmas ride in the DSN rather than a post-open Exec, and that is the
@@ -94,10 +121,14 @@ func dsn(path string, memory bool) string {
 		// the pragmas above they must ride the DSN.
 		"_pragma=cache_size(-8000)",
 		"_pragma=temp_store(memory)",
+		// BEGIN IMMEDIATE for every transaction not declared read-only. SQLite
+		// does not wait to upgrade a read lock: a deferred transaction that reads
+		// and then writes fails at once with SQLITE_BUSY, busy_timeout or not.
+		"_txlock=immediate",
 	}
 	if memory {
 		return "file::memory:?" + strings.Join(pragmas, "&")
 	}
 	pragmas = append(pragmas, "_pragma=journal_mode(WAL)")
-	return "file:" + path + "?" + strings.Join(pragmas, "&")
+	return "file:" + uriPath.Replace(path) + "?" + strings.Join(pragmas, "&")
 }

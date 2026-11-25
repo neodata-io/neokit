@@ -1,8 +1,8 @@
 // Package disk reports free and total space on the filesystem holding a path.
 //
-// The implementation is per-platform: statfs on Linux, macOS and the BSDs,
-// statvfs on Solaris/illumos, and GetDiskFreeSpaceEx on Windows. Platforms with
-// no filesystem-statistics call at all (js/wasm, plan9) build against a stub
+// The implementation is per-platform: statfs on Linux, macOS, FreeBSD, Android
+// and AIX, and GetDiskFreeSpaceEx on Windows. Every other platform — OpenBSD,
+// NetBSD, Solaris, illumos, js/wasm, wasip1, plan9 — builds against a stub
 // that returns [ErrUnsupported].
 //
 // This doc comment lives in an untagged file on purpose: when it sat in the

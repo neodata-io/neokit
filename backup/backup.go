@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/neodata-io/neokit/jobs"
@@ -31,7 +32,7 @@ import (
 const scheduleTimeout = time.Hour
 
 // Snapshotter writes a consistent, standalone copy of the live database to dst,
-// which must not already exist. neokit/sqlitex's SnapshotTo has this shape.
+// which does not exist when it is called. Wrap neokit/sqlitex's SnapshotTo.
 type Snapshotter interface {
 	SnapshotTo(ctx context.Context, dst string) error
 }
@@ -45,6 +46,10 @@ const (
 
 	fileSuffix = ".db"
 	dateLayout = "2006-01-02"
+
+	// tempSuffix marks a snapshot still being written. It ends the name, so an
+	// unfinished file never matches isBackupName.
+	tempSuffix = ".tmp"
 )
 
 // Clock is a local wall-clock time of day, read in the deployment's own
@@ -85,6 +90,9 @@ type Options struct {
 	// backups invisible to List and to prune the day it migrated — orphaned
 	// rather than deleted, which is worse: they stop being listed and never stop
 	// accumulating.
+	//
+	// Only <Prefix><YYYY-MM-DD>.db is this service's. Any other file under the
+	// prefix is neither listed nor pruned.
 	Prefix string
 }
 
@@ -96,6 +104,9 @@ type Service struct {
 	prefix    string
 	at        Clock
 	now       func() time.Time
+
+	// mu keeps one WriteDaily from clearing away another's unfinished snapshot.
+	mu sync.Mutex
 }
 
 // New wires the service: the daily schedule Run drives keeps the backup
@@ -188,21 +199,85 @@ func (s *Service) WriteDaily(ctx context.Context) error {
 	if strings.TrimSpace(s.dir) == "" {
 		return nil // scheduled backups disabled
 	}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 0700 applies only to a directory created here; an existing one is left alone.
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("backup: create directory: %w", err)
 	}
+	s.removeTemps()
 
 	path := filepath.Join(s.dir, s.prefix+s.now().Format(dateLayout)+fileSuffix)
-	if _, err := os.Stat(path); err == nil {
+	// An empty file is not a backup: releases that snapshotted straight to this
+	// name left one behind when the snapshot was cancelled.
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
 		s.prune()
 		return nil // already written today
 	}
 
-	if err := s.snap.SnapshotTo(ctx, path); err != nil {
-		return fmt.Errorf("backup: snapshot: %w", err)
+	if err := s.write(ctx, path); err != nil {
+		return err
 	}
 	s.prune()
 	return nil
+}
+
+// write snapshots to a temporary name and renames it into place, so the dated
+// name only ever holds a complete backup.
+func (s *Service) write(ctx context.Context, path string) error {
+	tmp := path + tempSuffix
+	if err := s.snap.SnapshotTo(ctx, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("backup: snapshot: %w", err)
+	}
+	if err := seal(tmp); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("backup: sync snapshot: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("backup: publish snapshot: %w", err)
+	}
+	// Best-effort: make the rename itself durable. Not every platform can sync
+	// a directory.
+	if d, err := os.Open(s.dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
+// seal makes a finished snapshot private and flushes it to disk. SQLite does
+// neither for a VACUUM INTO target.
+func seal(path string) error {
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// removeTemps clears snapshots a killed run left unfinished. Only names this
+// service would itself have written are touched.
+func (s *Service) removeTemps() {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), tempSuffix)
+		if ok && !e.IsDir() && s.isBackupName(name) {
+			_ = os.Remove(filepath.Join(s.dir, e.Name()))
+		}
+	}
 }
 
 // Info describes one stored backup.
@@ -256,6 +331,17 @@ func (s *Service) prune() {
 	}
 }
 
+// isBackupName reports whether name is one WriteDaily wrote: prefix, a date,
+// suffix. The date is required so that prune can never claim a file that merely
+// shares the prefix — a hand-kept copy, or the live database itself.
 func (s *Service) isBackupName(name string) bool {
-	return strings.HasPrefix(name, s.prefix) && strings.HasSuffix(name, fileSuffix)
+	date, ok := strings.CutPrefix(name, s.prefix)
+	if !ok {
+		return false
+	}
+	if date, ok = strings.CutSuffix(date, fileSuffix); !ok {
+		return false
+	}
+	_, err := time.Parse(dateLayout, date)
+	return err == nil
 }

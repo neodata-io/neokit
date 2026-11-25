@@ -1,5 +1,10 @@
 package disk
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // isMeasurable reports whether path names something that actually lives on a
 // filesystem, and so has free/total space worth asking the kernel about.
 //
@@ -14,4 +19,15 @@ package disk
 // filesystem is worse than answering nothing.
 func isMeasurable(path string) bool {
 	return path != "" && path != ":memory:"
+}
+
+// dirOf returns the directory to measure for path: path itself when it is a
+// directory, otherwise the one containing it — a database file's, including a
+// file that does not exist yet. Taking the parent of a directory would measure
+// the wrong filesystem whenever that directory is a mount point.
+func dirOf(path string) string {
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		return path
+	}
+	return filepath.Dir(path)
 }

@@ -2,10 +2,13 @@ package sqlitex_test
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/neodata-io/neokit/sqlitex"
 )
@@ -142,5 +145,210 @@ func TestOpenClosesTheDatabaseWhenMigrationFails(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("want the migration error surfaced")
+	}
+}
+
+func perm(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	return fi.Mode().Perm()
+}
+
+// The database holds emails and credential hashes; nobody else on the host has
+// any business reading it.
+func TestOpenCreatesAPrivateDatabase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no unix permission bits")
+	}
+	dir := filepath.Join(t.TempDir(), "data")
+	path := filepath.Join(dir, "app.db")
+	db, err := sqlitex.Open(path, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if got := perm(t, dir); got != 0o700 {
+		t.Errorf("new data directory is %o, want 700", got)
+	}
+	// The WAL and SHM files take the database file's mode.
+	for _, f := range []string{path, path + "-wal", path + "-shm"} {
+		if got := perm(t, f); got != 0o600 {
+			t.Errorf("%s is %o, want 600", filepath.Base(f), got)
+		}
+	}
+}
+
+// An operator who opened these up did so on purpose.
+func TestOpenLeavesAnExistingDatabasesModeAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no unix permission bits")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.db")
+	db, err := sqlitex.Open(path, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	db.Close()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = sqlitex.Open(path, nil)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	db.Close()
+	if got := perm(t, dir); got != 0o755 {
+		t.Errorf("existing directory became %o, want it left at 755", got)
+	}
+	if got := perm(t, path); got != 0o644 {
+		t.Errorf("existing database became %o, want it left at 644", got)
+	}
+}
+
+// The path goes into a URI, where '#' starts a fragment, '?' the query and '%'
+// an escape. Unescaped, "my#app.db" silently opened a file called "my".
+func TestOpenUsesExactlyThePathItIsGiven(t *testing.T) {
+	names := []string{"plain.db", "my#app.db", "100%25.db", "with space.db"}
+	if runtime.GOOS != "windows" {
+		names = append(names, "what?.db")
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			db, err := sqlitex.Open(path, nil)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			if _, err := db.Exec(`CREATE TABLE t (id INTEGER)`); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			db.Close()
+
+			fi, err := os.Stat(path)
+			if err != nil || fi.Size() == 0 {
+				t.Fatalf("the database is not at the path given: %v", err)
+			}
+			entries, _ := os.ReadDir(dir)
+			for _, e := range entries {
+				if !strings.HasPrefix(e.Name(), name) {
+					t.Errorf("Open also created %q", e.Name())
+				}
+			}
+		})
+	}
+}
+
+func TestOpenResolvesARelativePathAgainstTheWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	db, err := sqlitex.Open(filepath.Join("data", "app.db"), nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	db.Close()
+	if fi, err := os.Stat(filepath.Join(dir, "data", "app.db")); err != nil || fi.Size() == 0 {
+		t.Errorf("the database is not under the working directory: %v", err)
+	}
+}
+
+func openCounter(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sqlitex.Open(filepath.Join(t.TempDir(), "app.db"), nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`CREATE TABLE counter (id INTEGER PRIMARY KEY, n INTEGER)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO counter VALUES (1, 0)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	return db
+}
+
+// SQLite will not wait to upgrade a read lock: a deferred transaction that read
+// and then wrote failed at once with SQLITE_BUSY if anyone had written between.
+func TestAReadThenWriteTransactionIsNotBrokenByAnotherWriter(t *testing.T) {
+	db := openCounter(t)
+	ctx := t.Context()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT n FROM counter WHERE id = 1`).Scan(&n); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	// A second writer arrives between the read and the write.
+	other := make(chan error, 1)
+	go func() {
+		_, err := db.ExecContext(ctx, `UPDATE counter SET n = n + 1 WHERE id = 1`)
+		other <- err
+	}()
+	select {
+	case err := <-other:
+		other <- err
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE counter SET n = ? WHERE id = 1`, n+1); err != nil {
+		t.Fatalf("the write after a read failed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := <-other; err != nil {
+		t.Fatalf("the other writer should have waited its turn: %v", err)
+	}
+	if err := db.QueryRow(`SELECT n FROM counter WHERE id = 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("n = %d, want 2 — one of the two increments was lost", n)
+	}
+}
+
+// Taking the write lock at BEGIN is for transactions that may write. One
+// declared read-only must still run alongside a writer.
+func TestAReadOnlyTransactionDoesNotTakeTheWriteLock(t *testing.T) {
+	db := openCounter(t)
+	ctx := t.Context()
+
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT n FROM counter WHERE id = 1`).Scan(&n); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	start := time.Now()
+	if _, err := db.ExecContext(ctx, `UPDATE counter SET n = n + 1 WHERE id = 1`); err != nil {
+		t.Fatalf("a writer was blocked by a read-only transaction: %v", err)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Errorf("the writer waited %v behind a read-only transaction", waited)
 	}
 }
