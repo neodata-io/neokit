@@ -54,11 +54,18 @@ actually uses; they compose identically.
 
 That is the whole boot, and it is already a production shape. `Load`, `New`,
 `Close`, `Run` — four calls — get you structured logging, a request log with
-trace ids, the `{"error": …}` envelope, panic recovery, CORS, compression,
+trace ids, the `{"error": …}` envelope, panic recovery, security headers, a
+refusal for writes a browser sends from another site, CORS, compression,
 request/idle timeouts, `/healthz`, `/metrics`, OTLP export when you point it
 somewhere, and an ordered SIGTERM drain. You did not configure any of it and you
 can override all of it. Readiness is the one thing `app` does not decide for
 you — see below.
+
+A service with more than one file has a shape worth getting right once.
+[`examples/reference`](examples/reference) is a complete small service in the
+layout neokit is meant for — domain, use cases, one store, one HTTP module, a
+composition root — and [`docs/architecture.md`](docs/architecture.md) explains
+what goes where and why. Copy the directory to start.
 
 Even the version fills itself in — `go build` embeds the commit, so every log
 line says `okstables dev (a1b2c3d, dirty)` without a Makefile.
@@ -146,6 +153,44 @@ a.Shutdown.Push("plugins", func(context.Context) error { return manager.Close() 
 The stack unwinds LIFO after the HTTP drain, so a dependency closes after the
 requests still using it have finished.
 
+## Safe before you configure anything
+
+The defaults are chosen for the service written in a hurry, because that is the
+one that ships without them.
+
+- **Response headers** on every answer, errors included: `nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a
+  Content-Security-Policy that lets a browser render nothing.
+- **Writes from another site are refused.** A browser labels each request with
+  where it came from; a state-changing one from another origin answers
+  `403 cross_origin` unless that origin is in `CORS_ORIGINS`. No token, no
+  state — the rule is Go's own `net/http.CrossOriginProtection`. This is what
+  protects a service with *no* login on a private network, which any page its
+  users visit can otherwise reach through their browser.
+- **Bounded requests**: 1 MiB bodies, 16 KB of headers, a deadline for sending
+  one.
+- **Errors say nothing they should not**: a public sentence and a stable code;
+  the cause goes to the log.
+- **No header is believed** about who the client is until you name the proxy
+  that wrote it: `TRUSTED_PROXIES=10.0.0.2` (or a CIDR range). The client
+  address then comes from `X-Forwarded-For`, read from the right, past the
+  proxies named and no further — and a mistyped entry fails at boot.
+
+All of it is one hook away, in the same shape as the Fiber one:
+
+```go
+a, err := app.New(app.Options{
+    Name: "myapp", Base: cfg.Base,
+    Security: func(s *app.Security) {
+        s.Headers.HSTS = 365 * 24 * time.Hour          // once the host is HTTPS for good
+        s.Headers.ContentSecurityPolicy = "default-src 'self'" // if you also serve pages
+    },
+})
+```
+
+Together they cost about 150 ns and no allocation per request — measured by
+`BenchmarkSecurityHeaders` and `BenchmarkCrossOriginGuard_Write` in `fiberx`.
+
 ## Login gate in ten lines
 
 ```go
@@ -175,6 +220,46 @@ is swept daily for as long as the app runs. Building the gate directly with
 `fiberauth.New(a.App, …)` skips only that step — start it yourself with
 `safe.Go(a.Context(), "session sweep", func() { gate.Run(a.Context()) })`.
 
+## API tokens for scripts and apps
+
+A browser signs in; a script, a CI job or a native app presents a token. One
+more field turns them on:
+
+```go
+tokens, err := apitoken.NewSQLite(db, apitoken.SQLiteOptions{})
+gate := a.Login(fiberauth.Options{
+    Provider: provider, Sessions: sessions, CookiePrefix: "myapp",
+    Tokens:      tokens,
+    TokenMaxAge: 365 * 24 * time.Hour, // optional: none may outlive this
+})
+```
+
+`Authorization: Bearer myapp_…` is then recognised wherever a session is, so
+your guards and handlers do not know the difference, and the gate mounts the
+routes that manage tokens:
+
+| Route | Who | |
+| --- | --- | --- |
+| `GET`, `POST {api}/auth/me/tokens` | signed in, by browser | list your own, or make one — shown this once |
+| `DELETE {api}/auth/me/tokens/:id` | signed in, by browser | revoke one of yours |
+| `DELETE {api}/auth/me/token` | the token itself | how an app signs out |
+| `GET {api}/auth/tokens`, `DELETE …/:id` | owner, by browser | see and revoke everyone's |
+
+A token is 256 random bits behind your prefix; only its SHA-256 is stored. It
+acts as its maker, with ownership re-derived on every request, and belongs to
+the login it was made under — point the service at another identity provider
+and every token is retired by that alone. A token that cannot be matched
+answers 401 even on an open route, rather than carrying on as nobody.
+
+What a token may not do is the part to extend. The routes above refuse one
+(`403 token_not_allowed`), so a leaked token cannot mint another. Put
+`fiberauth.RefuseAPIToken` ahead of the guard on any route of your own that
+could mint credentials, change who may sign in, or hand over a stored secret:
+
+```go
+admin.Put("/login", fiberauth.RefuseAPIToken, gate.RequireOwner(), h.changeLogin)
+```
+
 ## Runnable examples
 
 | Need | Example |
@@ -182,6 +267,7 @@ is swept daily for as long as the app runs. Building the gate directly with
 | A small HTTP service | [`examples/minimal-api`](examples/minimal-api) |
 | HTTP, health, metrics, shutdown, and SQLite | [`examples/production-service`](examples/production-service) |
 | A bounded, retrying external API client | [`examples/external-client`](examples/external-client) |
+| A whole service in layers: domain, use cases, store, HTTP module, login, tokens, a nightly job — with tests for each | [`examples/reference`](examples/reference) |
 
 Run one from the repository root with `go run ./examples/minimal-api`. They are
 ordinary Go types and constructors: copy the pieces your service needs rather
@@ -197,7 +283,7 @@ gets exactly that.
 | --- | --- |
 | `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
 | `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify` + `Fault.LogLevel`, SSRF guard |
-| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, rate limiters, strong ETags + 304 for cacheable bytes |
+| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, security headers, the cross-origin write guard, rate limiters, `Created` + `Location`, strong ETags + 304 for cacheable bytes |
 | `cache` | stale-while-revalidate `GetOrFetch`; `Fetch` adds a `Status` saying when a value is only being kept alive through an outage |
 | `sqlitex` | `PRAGMA user_version` append-only migration runner, `Query`/`Each`/`QueryOne`, `Placeholders`/`Args`/`CheckAffected`, `VACUUM INTO` snapshot backup |
 | `tracing` `metrics` | OpenTelemetry traces and metrics — `/metrics` to scrape, OTLP to push, one set of instruments |
@@ -207,7 +293,8 @@ gets exactly that.
 | `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
 | `session` | `Session`, `Store`, `Policy` — and `NewSQLite`, the store neokit ships. Standard library only |
 | `oidcauth` | provider-agnostic OpenID Connect relying party: PKCE, nonce, typed error sentinels |
-| `oidcauth/fiberauth` | the browser half — handshake routes, `__Host-` cookies, session middleware, guards |
+| `apitoken` | `Token`, `Store` — and `NewSQLite`: personal API tokens, stored as hashes, with optional expiry. Standard library only |
+| `oidcauth/fiberauth` | the browser half — handshake routes, `__Host-` cookies, session middleware, guards — and API tokens recognised wherever a session is |
 | `jobs` | `Job{Every, Timeout, RunAtStart, Do}` — periodic work that is bounded and panic-guarded |
 | `lifecycle` | `Signals` context + a LIFO named shutdown `Stack` |
 | `pubsub` | `Bus[T]` — keyed fan-out for SSE/WebSocket, drop-on-slow |
