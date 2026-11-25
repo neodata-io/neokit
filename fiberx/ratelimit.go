@@ -51,10 +51,13 @@ func limitReached(c fiber.Ctx) error {
 // unauthenticated caller turning this service into an amplifier, and a budget
 // that renews whenever the caller edits a header is a formality, not a limit.
 //
-// The cost is that every caller behind a shared proxy shares one counter. The
-// alternative, Fiber's TrustedProxies, needs the deployment to declare the
-// proxy's address — which varies per environment and degrades silently when
-// wrong.
+// The cost is that every caller behind a shared proxy shares one counter —
+// until the deployment names that proxy. With TRUSTED_PROXIES set (see
+// [github.com/neodata-io/neokit/config.Base]) the app builder has Fiber derive
+// the peer from X-Forwarded-For as written by that proxy and nobody else, so
+// this limiter keys on the real client and still cannot be reset by a header.
+// That is the configuration to prefer behind a proxy; it is opt-in because the
+// proxy's address is the one thing a library cannot know.
 func RateLimiterByPeer(maxPerMinute int) fiber.Handler {
 	return limiter.New(limiter.Config{
 		Max:          maxPerMinute,

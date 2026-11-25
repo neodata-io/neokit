@@ -45,6 +45,22 @@ type Base struct {
 	// this default is not a security boundary, it is a convenience.
 	CorsOrigins []string `env:"CORS_ORIGINS" envDefault:"http://localhost:3000" envSeparator:","`
 
+	// TrustedProxies is the addresses or CIDR ranges of the reverse proxies in
+	// front of this service, comma-separated: "10.0.0.2" or "172.16.0.0/12".
+	//
+	// Empty means no proxy is believed, which is the only safe default: the client
+	// address is then the connection's own peer, so behind a proxy every caller
+	// looks like the proxy. Name the proxy here and three things become true at
+	// once — the client address is read from X-Forwarded-For, walking past the
+	// proxies named and no further, so a caller cannot choose its own; the scheme
+	// is read from X-Forwarded-Proto, which is what Secure cookies and HSTS key
+	// off; and both headers are ignored from every other peer.
+	//
+	// An entry that is not an address or a range fails at boot. A list that
+	// silently trusted nobody would leave rate limits keyed on the proxy, and one
+	// that silently trusted everybody would hand the client address to the client.
+	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
+
 	// MetricsToken requires `Authorization: Bearer <token>` on the Prometheus
 	// endpoint, which the app builder always serves at /metrics.
 	//

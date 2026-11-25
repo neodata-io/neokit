@@ -10,6 +10,11 @@
 // constructor. There is no lookup, no reflection, and no bespoke handler
 // signature — you write ordinary Fiber handlers against ordinary types.
 //
+// It also decides what a service should not have to remember: the response
+// headers a browser needs, the refusal of writes sent from another site, and
+// bounds on what a client may send. All are on by default and adjustable — see
+// [Security] and [Options.Fiber].
+//
 // What it fixes is narrow: where its own six teardown steps sit. Streams, the
 // HTTP drain, the background-context cancel and the background-work join run
 // before yours, the OpenTelemetry flush after them, because those positions are
@@ -37,9 +42,12 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,6 +75,14 @@ const (
 	defaultBodyLimit   = 1 << 20 // 1 MiB
 	defaultReadTimeout = 15 * time.Second
 	defaultIdleTimeout = 120 * time.Second
+
+	// Fiber reads the request line and headers into a 4 KB buffer by default and
+	// answers 431 past it. A browser sends every cookie set on the parent domain,
+	// and behind a shared reverse proxy a single-sign-on cookie alone can exceed
+	// that — at which point every API call fails at once, for some users only.
+	// 16 KB is Node's limit, so a JavaScript frontend proxying to this server
+	// rejects first rather than the two disagreeing.
+	defaultReadBufferSize = 16 << 10
 )
 
 // LivePath is the liveness probe, on the application listener.
@@ -146,6 +162,13 @@ type Options struct {
 	//	Fiber: func(c *fiber.Config) { c.TrustProxy = true },
 	Fiber func(*fiber.Config)
 
+	// Security adjusts the browser-facing defences after neokit fills in its
+	// defaults — a function for the same reason Fiber is one. See [Security] for
+	// what is on by default and why.
+	//
+	//	Security: func(s *app.Security) { s.Headers.HSTS = 365 * 24 * time.Hour },
+	Security func(*Security)
+
 	// Log replaces the logger. Nil configures one from Base via logx.
 	Log *slog.Logger
 
@@ -157,6 +180,31 @@ type Options struct {
 	// [DefaultAuthBase]. Versioning it would buy nothing and cost something real —
 	// see that constant.
 	AuthBase string
+}
+
+// Security is the browser-facing half of the standard chain: what every
+// response tells a browser, and which browsers may write.
+//
+// Both are on without being asked for. A default that has to be remembered is
+// one that is missing from the service written in a hurry, and neither costs
+// anything a caller would notice — see the benchmarks in fiberx.
+type Security struct {
+	// Headers are sent on every response. Starts as
+	// [fiberx.DefaultSecurityHeaders].
+	Headers fiberx.SecurityHeaders
+
+	// TrustedOrigins may send state-changing requests from a browser, besides the
+	// API's own origin. Starts as Base.CorsOrigins: an origin allowed to read the
+	// API across origins is one that is meant to write to it. See
+	// [fiberx.CrossOriginGuard].
+	TrustedOrigins []string
+
+	// AllowCrossOriginWrites removes the guard, so any site may send writes
+	// through a visitor's browser. For an API that authenticates every write by a
+	// bearer token and uses no cookies at all, that is sound; for anything a
+	// browser signs into, or anything open on a private network, it is the hole
+	// the guard exists to close.
+	AllowCrossOriginWrites bool
 }
 
 // App is a constructed application. Everything a caller wires against is an
@@ -229,6 +277,14 @@ func New(o Options) (*App, error) {
 		o.Version = buildinfo.Get("", "", "").String()
 	}
 
+	// Before anything is built: a list that parsed to "trust nobody" or "trust
+	// everybody" would start, serve, and be wrong about every client address.
+	for _, p := range o.Base.TrustedProxies {
+		if !isAddrOrRange(p) {
+			return nil, fmt.Errorf("app: TRUSTED_PROXIES entry %q is not an IP address or a CIDR range", p)
+		}
+	}
+
 	log := o.Log
 	if log == nil {
 		log = logx.Setup(logx.Options{
@@ -276,6 +332,16 @@ func New(o Options) (*App, error) {
 	return a, nil
 }
 
+// isAddrOrRange reports whether s is something a proxy can be named by.
+func isAddrOrRange(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.Contains(s, "/") {
+		_, _, err := net.ParseCIDR(s)
+		return err == nil
+	}
+	return net.ParseIP(s) != nil
+}
+
 // bearerGuard requires `Authorization: Bearer <token>`, or passes everything
 // through when token is empty.
 //
@@ -312,16 +378,38 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 		BodyLimit: defaultBodyLimit,
 		// Bound how long a client may take to send a request and how long an idle
 		// keep-alive lingers, so a slow or stuck client cannot pin a connection.
-		ReadTimeout: defaultReadTimeout,
-		IdleTimeout: defaultIdleTimeout,
+		ReadTimeout:    defaultReadTimeout,
+		IdleTimeout:    defaultIdleTimeout,
+		ReadBufferSize: defaultReadBufferSize,
 		// One renderer, so every returned error crosses the wire as the same
 		// envelope. Without it Fiber emits plain text a client cannot parse.
 		ErrorHandler: a.Errors.Render,
+	}
+	if len(o.Base.TrustedProxies) > 0 {
+		proxies := make([]string, len(o.Base.TrustedProxies))
+		for i, p := range o.Base.TrustedProxies {
+			proxies[i] = strings.TrimSpace(p)
+		}
+		cfg.TrustProxy = true
+		cfg.TrustProxyConfig = fiber.TrustProxyConfig{Proxies: proxies}
+		cfg.ProxyHeader = fiber.HeaderXForwardedFor
+		// Walk the X-Forwarded-For chain from the right, past the proxies named
+		// above, and stop. Without it c.IP() is the header as sent — leftmost entry
+		// first, which is the one the client wrote.
+		cfg.EnableIPValidation = true
 	}
 	if o.Fiber != nil {
 		o.Fiber(&cfg)
 	}
 	f := fiber.New(cfg)
+
+	sec := Security{
+		Headers:        fiberx.DefaultSecurityHeaders(),
+		TrustedOrigins: slices.Clone(a.Cfg.CorsOrigins),
+	}
+	if o.Security != nil {
+		o.Security(&sec)
+	}
 
 	// Recover first, so it wraps everything below it. A panic without a stack
 	// trace is a bare 500 and the least information at exactly the wrong moment.
@@ -360,6 +448,9 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 	// carries the trace id.
 	f.Use(tracing.Middleware())
 	f.Use(a.Errors.MetricsAndLogger())
+	// Ahead of everything that can answer, so a refusal further down — a 403 from
+	// the guard below, a 404, a handler's own error — leaves with them too.
+	f.Use(sec.Headers.Middleware())
 	// Compress everything except Server-Sent Events: a compressor buffers the
 	// writes an event stream exists to flush immediately. EventSource always
 	// sends this Accept header, so keying off it leaves SSE uncompressed wherever
@@ -371,9 +462,23 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 	}))
 	f.Use(cors.New(cors.Config{
 		AllowOrigins: a.Cfg.CorsOrigins,
-		AllowHeaders: []string{"Origin", "Content-Type", "Accept"},
+		// Authorization for a bearer token, the two conditionals for the ETag
+		// helpers in fiberx: a header missing here is one a frontend on another
+		// origin cannot send, and the failure shows up as a preflight error with no
+		// mention of which header.
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "If-Match", "If-None-Match"},
 		AllowMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
+		// What a script may read off a response. Without these a cross-origin
+		// client sees the body of a 201, a 412 or a 429 and none of the header that
+		// tells it what to do next.
+		ExposeHeaders: []string{"ETag", "Location", "Retry-After", "X-Request-Id"},
 	}))
+	// After CORS, so the refusal carries the CORS headers a trusted frontend needs
+	// in order to read it — and so a preflight is answered by the middleware whose
+	// job that is.
+	if !sec.AllowCrossOriginWrites {
+		f.Use(fiberx.CrossOriginGuard(sec.TrustedOrigins))
+	}
 	return f
 }
 

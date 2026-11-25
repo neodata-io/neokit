@@ -1,6 +1,7 @@
 // Package fiberx holds cross-cutting Fiber v3 HTTP helpers: the error
-// envelope, request binding/validation, metrics+logging middleware, rate
-// limiting and optimistic-concurrency helpers. It never knows a caller's own
+// envelope, request binding/validation, metrics+logging middleware, security
+// headers and the cross-origin write guard, rate limiting and
+// optimistic-concurrency helpers. It never knows a caller's own
 // domain sentinels — see DomainMapper for the seam that keeps them out. It does
 // know neokit's own [github.com/neodata-io/neokit/errs], which is what lets a
 // service render 404, 400 and 409 with no mapper configured.
