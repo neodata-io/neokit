@@ -5,6 +5,8 @@ Changes a service built on neokit could notice. Releases are minor tags only
 
 ## Unreleased
 
+## v0.19.0 — 2026-11-25
+
 Fixes from a full security and correctness review. Read **Changed** before
 upgrading: several defaults are stricter.
 
