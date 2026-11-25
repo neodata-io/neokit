@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/neodata-io/neokit/httpc"
 )
@@ -258,6 +260,118 @@ func TestATransportFailureDoesNotLeakTheURLCredential(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "s3cret-token") {
 		t.Errorf("the error leaked the URL credential: %v", err)
+	}
+}
+
+// The path can be the whole credential — an Apprise key, an ntfy topic — so an
+// error names the target by host and nothing else.
+func TestAnErrorNamesTheTargetByHostOnly(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	base := dead.URL
+	dead.Close()
+	host := strings.TrimPrefix(base, "http://")
+
+	senders := map[string]Sender{
+		"apprise key":   NewApprise(base+"/notify/S3CRET-PATH", Options{}),
+		"ntfy topic":    NewNtfy(base+"/S3CRET-PATH", "", Options{}),
+		"malformed URL": NewWebhook("http://hooks.test/%zz/S3CRET-PATH", "", Options{}),
+	}
+	for name, s := range senders {
+		err := s.Send(t.Context(), Notification{Title: "t"})
+		if err == nil {
+			t.Fatalf("%s: want an error", name)
+		}
+		if strings.Contains(err.Error(), "S3CRET-PATH") {
+			t.Errorf("%s: the error leaked the URL path: %v", name, err)
+		}
+		if name != "malformed URL" && !strings.Contains(err.Error(), host) {
+			t.Errorf("%s: err = %v, want it to name the host %s", name, err, host)
+		}
+	}
+}
+
+// A redirected POST either arrives as a body-less GET that "succeeds" having
+// delivered nothing, or replays the secret and payload to wherever it points.
+func TestARedirectIsReportedNotFollowed(t *testing.T) {
+	clients := map[string]*http.Client{"default client": nil, "caller's client": {}}
+	for name, hc := range clients {
+		for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+			var hits atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL+"/elsewhere", status)
+			}))
+
+			err := NewWebhook(srv.URL, "sh4red", Options{HTTPClient: hc}).Send(t.Context(), Notification{Title: "t", Body: "b"})
+			srv.Close()
+			target.Close()
+
+			apiErr, ok := errors.AsType[*httpc.APIError](err)
+			if !ok || apiErr.StatusCode != status {
+				t.Errorf("%s, %d: err = %v, want the redirect reported as an APIError", name, status, err)
+			}
+			if hits.Load() != 0 {
+				t.Errorf("%s, %d: the redirect target was contacted", name, status)
+			}
+		}
+	}
+}
+
+// "webhook API 400" with no reason sends an operator to the backend's own logs.
+func TestARejectionCarriesTheBackendsReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("topic name is not allowed"))
+	}))
+	defer srv.Close()
+
+	err := NewNtfy(srv.URL, "", Options{}).Send(t.Context(), Notification{Title: "t"})
+	apiErr, ok := errors.AsType[*httpc.APIError](err)
+	if !ok {
+		t.Fatalf("err = %v, want an *httpc.APIError", err)
+	}
+	if apiErr.Body != "topic name is not allowed" {
+		t.Errorf("APIError.Body = %q, want the backend's reason", apiErr.Body)
+	}
+}
+
+// A backend that never stops writing must not hold a send for its whole timeout.
+func TestAnEndlessResponseBodyIsNotDrainedForever(t *testing.T) {
+	chunk := strings.Repeat("x", 32<<10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for r.Context().Err() == nil {
+			if _, err := w.Write([]byte(chunk)); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	start := time.Now()
+	if err := NewWebhook(srv.URL, "", Options{Timeout: 3 * time.Second}).Send(t.Context(), Notification{Title: "t"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("Send took %v: the response body was drained until the timeout", elapsed)
+	}
+}
+
+// Pins what the package doc promises: a POST is not idempotent, so a transient
+// failure is reported rather than retried into a duplicate notification.
+func TestAFailedPostIsNotRetried(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	if err := NewApprise(srv.URL, Options{}).Send(t.Context(), Notification{Title: "t"}); err == nil {
+		t.Fatal("want the 502 reported")
+	}
+	if hits.Load() != 1 {
+		t.Errorf("requests = %d, want exactly 1", hits.Load())
 	}
 }
 

@@ -192,3 +192,94 @@ func TestGuardedTransportWithNoPolicyFallsBackToTheStrictOne(t *testing.T) {
 		t.Fatal("a nil policy must not produce an unguarded transport")
 	}
 }
+
+// The ranges that are neither RFC1918 nor public, and the IPv6 forms that carry
+// an IPv4 destination inside them. Each one was reachable through the guard.
+func TestPoliciesCoverTheRangesBetweenPrivateAndPublic(t *testing.T) {
+	cases := []struct {
+		ip                string
+		private, internal bool
+	}{
+		// CGNAT is a network (a tailnet, a carrier), so only the strict policy
+		// refuses it — except the metadata endpoint that lives inside it.
+		{"100.64.0.1", true, false},
+		{"100.127.255.254", true, false},
+		{"100.100.100.200", true, true}, // Alibaba Cloud metadata
+		{"100.128.0.1", false, false},   // just past 100.64.0.0/10
+
+		// Never a host on any network.
+		{"0.1.2.3", true, true},         // 0.0.0.0/8, "this network"
+		{"240.0.0.1", true, true},       // reserved
+		{"255.255.255.255", true, true}, // broadcast
+
+		// Metadata endpoints outside link-local.
+		{"168.63.129.16", true, true}, // Azure WireServer, a public-looking address
+		{"fd00:ec2::254", true, true}, // AWS IMDS over IPv6, inside ULA
+
+		// NAT64 and 6to4 are judged by the IPv4 address they translate to.
+		{"64:ff9b::a9fe:a9fe", true, true},    // 169.254.169.254
+		{"64:ff9b::7f00:1", true, true},       // 127.0.0.1
+		{"64:ff9b::a00:5", true, false},       // 10.0.0.5
+		{"64:ff9b::808:808", false, false},    // 8.8.8.8 — DNS64 must keep working
+		{"2002:a9fe:a9fe::1", true, true},     // 169.254.169.254
+		{"2002:c0a8:101::1", true, false},     // 192.168.1.1
+		{"2002:808:808::1", false, false},     // 8.8.8.8
+		{"64:ff9b:1::a9fe:a9fe", true, false}, // local-use NAT64 prefix
+	}
+	for _, c := range cases {
+		ip := netip.MustParseAddr(c.ip)
+		if got := httpc.IsPrivateAddr(ip); got != c.private {
+			t.Errorf("IsPrivateAddr(%s) = %v, want %v", c.ip, got, c.private)
+		}
+		if got := httpc.IsInternalAddr(ip); got != c.internal {
+			t.Errorf("IsInternalAddr(%s) = %v, want %v", c.ip, got, c.internal)
+		}
+	}
+}
+
+// A guarded fetcher talks to hosts a caller picked. A zero-value Transport
+// never closes an idle connection and never times a handshake out, so every
+// distinct hostname would cost a file descriptor for the life of the process.
+func TestGuardedTransportBoundsItsConnections(t *testing.T) {
+	tr := httpc.GuardedTransport(nil)
+	if tr.IdleConnTimeout <= 0 {
+		t.Error("IdleConnTimeout is unset: idle connections are kept forever")
+	}
+	if tr.MaxIdleConns <= 0 {
+		t.Error("MaxIdleConns is unset: the idle pool is unbounded")
+	}
+	if tr.TLSHandshakeTimeout <= 0 {
+		t.Error("TLSHandshakeTimeout is unset: a stalled handshake never ends")
+	}
+	if !tr.ForceAttemptHTTP2 {
+		t.Error("a custom DialContext disables HTTP/2 unless it is forced back on")
+	}
+	// A proxy would be the address dialled, and the guard would check that instead.
+	if tr.Proxy != nil {
+		t.Error("the guarded transport must not route through a proxy")
+	}
+}
+
+// The rule the IPv6 handling must keep: wrapping an IPv4 address in a mapped,
+// NAT64 or 6to4 form never makes it more reachable than the address itself.
+func FuzzAnEmbeddedIPv4IsJudgedLikeTheAddressItself(f *testing.F) {
+	for _, seed := range [][4]byte{{127, 0, 0, 1}, {169, 254, 169, 254}, {10, 0, 0, 5}, {100, 64, 0, 1}, {8, 8, 8, 8}, {0, 0, 0, 0}} {
+		f.Add(seed[0], seed[1], seed[2], seed[3])
+	}
+	f.Fuzz(func(t *testing.T, a, b, c, d byte) {
+		v4 := netip.AddrFrom4([4]byte{a, b, c, d})
+		wrapped := map[string]netip.Addr{
+			"mapped": netip.AddrFrom16([16]byte{10: 0xff, 11: 0xff, 12: a, 13: b, 14: c, 15: d}),
+			"nat64":  netip.AddrFrom16([16]byte{0: 0x00, 1: 0x64, 2: 0xff, 3: 0x9b, 12: a, 13: b, 14: c, 15: d}),
+			"6to4":   netip.AddrFrom16([16]byte{0: 0x20, 1: 0x02, 2: a, 3: b, 4: c, 5: d, 15: 1}),
+		}
+		for form, ip := range wrapped {
+			if got, want := httpc.IsPrivateAddr(ip), httpc.IsPrivateAddr(v4); got != want {
+				t.Errorf("IsPrivateAddr(%s %s) = %v, but %s is %v", form, ip, got, v4, want)
+			}
+			if got, want := httpc.IsInternalAddr(ip), httpc.IsInternalAddr(v4); got != want {
+				t.Errorf("IsInternalAddr(%s %s) = %v, but %s is %v", form, ip, got, v4, want)
+			}
+		}
+	})
+}

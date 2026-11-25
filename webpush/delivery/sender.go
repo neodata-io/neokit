@@ -18,6 +18,8 @@
 //   - 404/410 means the browser threw the subscription away, so it is dropped —
 //     while any other rejection is left alone, since unsubscribing a working
 //     device over a transient 403 is the worse failure;
+//   - the endpoint is browser-supplied, so it must be an https URL, the dial
+//     refuses private and internal addresses, and redirects are not followed;
 //   - one failed delivery never fails the others, and never fails the call.
 //
 // The payload is opaque bytes. What a service worker expects inside it — title,
@@ -27,6 +29,7 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -38,6 +41,7 @@ import (
 
 	webpushgo "github.com/SherClockHolmes/webpush-go"
 
+	"github.com/neodata-io/neokit/httpc"
 	"github.com/neodata-io/neokit/logx"
 	"github.com/neodata-io/neokit/safe"
 	"github.com/neodata-io/neokit/webpush"
@@ -140,7 +144,13 @@ func New(store Store, keys webpush.Keys, o Options) (*Sender, error) {
 		// One client, shared: http.Client is safe for concurrent use, and the
 		// timeout is the same for every delivery. webpush-go left to itself uses
 		// a client with no timeout at all.
-		client: &http.Client{Timeout: timeout},
+		client: &http.Client{
+			Timeout: timeout,
+			// The endpoint is browser-supplied: refuse internal addresses at dial
+			// time, and never let a 3xx carry the push somewhere unchecked.
+			Transport:     httpc.GuardedTransport(httpc.IsPrivateAddr),
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}, nil
 }
 
@@ -209,20 +219,25 @@ func (s *Sender) SendTo(ctx context.Context, subs []webpush.Subscription, payloa
 // deliver sends one message and reports whether the push service accepted it.
 // Safe to call concurrently.
 func (s *Sender) deliver(ctx context.Context, sub webpush.Subscription, payload []byte, o *webpushgo.Options) bool {
+	if !validEndpoint(sub.Endpoint) {
+		// Not pruned: refusing is safe, and deleting on a parse rule is not ours to do.
+		slog.Warn("webpush: refusing endpoint that is not an https URL", "endpoint", endpointHost(sub.Endpoint))
+		return false
+	}
 	resp, err := webpushgo.SendNotificationWithContext(ctx, payload, &webpushgo.Subscription{
 		Endpoint: sub.Endpoint,
 		Keys:     webpushgo.Keys{Auth: sub.Auth, P256dh: sub.P256DH},
 	}, o)
 	if err != nil {
 		// Could not reach the push service at all.
-		slog.Warn("webpush: delivery failed", "endpoint", endpointHost(sub.Endpoint), logx.Err(err))
+		slog.Warn("webpush: delivery failed", "endpoint", endpointHost(sub.Endpoint), logx.Err(withoutURL(err)))
 		return false
 	}
 	// The body is only used to log a rejection reason, so bound the read: an
 	// unexpected oversized response should not amplify memory or flood the log,
 	// and a bounded prefix still drains enough for connection reuse.
 	body, _ := readLimited(resp)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	switch {
 	case resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound:
@@ -264,5 +279,24 @@ func endpointHost(endpoint string) string {
 	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
 		return u.Host
 	}
-	return endpoint
+	return "(unparseable)"
+}
+
+// validEndpoint reports whether a browser-supplied endpoint is an absolute
+// https URL. Every real push service is https; anything else is an SSRF probe.
+func validEndpoint(endpoint string) bool {
+	if !httpc.SafeAbsoluteURL(endpoint) {
+		return false
+	}
+	u, err := url.Parse(endpoint)
+	return err == nil && u.Scheme == "https"
+}
+
+// withoutURL drops the request URL a transport error carries, keeping its cause:
+// a *url.Error renders the whole per-device endpoint.
+func withoutURL(err error) error {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
+		return urlErr.Err
+	}
+	return err
 }

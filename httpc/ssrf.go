@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // This file owns the guard needed when fetching a URL a *caller* influenced.
@@ -32,9 +34,8 @@ import (
 type Policy func(ip netip.Addr) bool
 
 // IsPrivateAddr reports whether ip is in one of the address classes an SSRF
-// payload aims at: RFC1918/ULA private space, loopback, link-local (which
-// includes 169.254.169.254, the cloud metadata endpoint), the unspecified
-// address, and multicast. A public CDN never resolves to one of these.
+// payload aims at: RFC1918/ULA private space, carrier-grade NAT, and everything
+// [IsInternalAddr] refuses. A public CDN never resolves to one of these.
 //
 // This is the strict policy, and the right default. Use it whenever the fetch
 // has no business leaving the public internet.
@@ -44,13 +45,18 @@ type Policy func(ip netip.Addr) bool
 // without the TOCTOU gap.
 func IsPrivateAddr(ip netip.Addr) bool {
 	ip = ip.Unmap()
+	if v4, ok := embeddedIPv4(ip); ok {
+		return IsPrivateAddr(v4)
+	}
 	return ip.IsPrivate() ||
+		inAny(ip, privateRanges) ||
 		IsInternalAddr(ip)
 }
 
 // IsInternalAddr reports whether ip means "this machine" or "this link" rather
 // than "a host on the network": loopback, link-local (169.254.169.254 among
-// them), the unspecified address, and multicast.
+// them), the cloud metadata endpoints that live elsewhere, multicast, and the
+// reserved blocks no host has (0.0.0.0/8, 240.0.0.0/4 and broadcast).
 //
 // It is [IsPrivateAddr] minus the private ranges, for the fetch that is
 // *supposed* to reach the local network — a self-hosted app resolving the
@@ -64,11 +70,62 @@ func IsPrivateAddr(ip netip.Addr) bool {
 // the LAN is the actual purpose; otherwise [IsPrivateAddr].
 func IsInternalAddr(ip netip.Addr) bool {
 	ip = ip.Unmap()
+	if v4, ok := embeddedIPv4(ip); ok {
+		return IsInternalAddr(v4)
+	}
 	return ip.IsLoopback() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
 		ip.IsUnspecified() ||
-		ip.IsMulticast()
+		ip.IsMulticast() ||
+		inAny(ip, internalRanges)
+}
+
+// internalRanges are never "a box on the network": blocks no host has, and the
+// metadata endpoints that sit outside link-local.
+var internalRanges = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),          // "this network"
+	netip.MustParsePrefix("240.0.0.0/4"),        // reserved, and broadcast
+	netip.MustParsePrefix("100.100.100.200/32"), // Alibaba Cloud metadata
+	netip.MustParsePrefix("168.63.129.16/32"),   // Azure WireServer
+	netip.MustParsePrefix("fd00:ec2::254/128"),  // AWS IMDS over IPv6
+}
+
+// privateRanges are networks the strict policy refuses beyond what
+// [netip.Addr.IsPrivate] knows.
+var privateRanges = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),  // carrier-grade NAT; also tailnets
+	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
+}
+
+var (
+	nat64Prefix     = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFourPrefix = netip.MustParsePrefix("2002::/16")
+)
+
+// embeddedIPv4 returns the IPv4 destination a NAT64 or 6to4 address stands for.
+// Such an address is judged by that destination: a blanket refusal would break
+// every public fetch from an IPv6-only host behind DNS64.
+func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
+	b := ip.As16()
+	switch {
+	case !ip.Is6():
+		return netip.Addr{}, false
+	case nat64Prefix.Contains(ip):
+		return netip.AddrFrom4([4]byte(b[12:16])), true
+	case sixToFourPrefix.Contains(ip):
+		return netip.AddrFrom4([4]byte(b[2:6])), true
+	}
+	return netip.Addr{}, false
+}
+
+func inAny(ip netip.Addr, ranges []netip.Prefix) bool {
+	for _, r := range ranges {
+		if r.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // GuardedTransport returns a base RoundTripper that refuses to connect to any
@@ -84,6 +141,12 @@ func IsInternalAddr(ip netip.Addr) bool {
 // check has the same gap. By the time Control runs there is nothing left to
 // re-resolve, and a denied address is never actually connected to.
 //
+// It ignores proxy environment variables on purpose: through a proxy the
+// address dialled is the proxy's, and the guard would be checking the wrong one.
+//
+// Build it once and share it — each call returns a transport with its own
+// connection pool.
+//
 // The returned transport is a plain *http.Transport, so a caller that needs one
 // more thing can set it — a LAN probe tolerating self-signed certificates, say:
 //
@@ -94,26 +157,44 @@ func IsInternalAddr(ip netip.Addr) bool {
 //
 //	http: httpc.NewHTTPClient(httpc.HTTPOptions{Transport: httpc.GuardedTransport(httpc.IsPrivateAddr)})
 func GuardedTransport(deny Policy) *http.Transport {
+	// The limits are http.DefaultTransport's. A zero-value Transport has none: it
+	// keeps every idle connection forever, one set per host a caller names.
+	return &http.Transport{
+		DialContext:           guardedDialer(deny).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+}
+
+// errGuard marks every refusal the guard makes, so the retry layer and
+// [Classify] can tell it from a transient dial failure.
+var errGuard = errors.New("ssrf guard")
+
+func guardedDialer(deny Policy) *net.Dialer {
 	if deny == nil {
 		deny = IsPrivateAddr
 	}
-	dialer := &net.Dialer{
+	return &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
 		Control: func(_, address string, _ syscall.RawConn) error {
 			host, _, err := net.SplitHostPort(address)
 			if err != nil {
-				return fmt.Errorf("ssrf guard: unparsable address %q", address)
+				return fmt.Errorf("%w: unparsable address %q", errGuard, address)
 			}
 			ip, err := netip.ParseAddr(host)
 			if err != nil {
-				return fmt.Errorf("ssrf guard: unparsable address %q", host)
+				return fmt.Errorf("%w: unparsable address %q", errGuard, host)
 			}
 			if deny(ip) {
-				return fmt.Errorf("ssrf guard: refusing to fetch a private/internal address (%s)", ip)
+				return fmt.Errorf("%w: refusing to fetch a private/internal address (%s)", errGuard, ip)
 			}
 			return nil
 		},
 	}
-	return &http.Transport{DialContext: dialer.DialContext}
 }
 
 // SafeAbsoluteURL reports whether raw is an absolute URL worth handing to an

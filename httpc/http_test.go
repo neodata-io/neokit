@@ -232,3 +232,27 @@ func TestRedact_StripsCredentialsFromURLErrors(t *testing.T) {
 		}
 	})
 }
+
+// A rejection body past the limit used to be dropped whole, so the largest
+// error pages — the ones most worth reading — produced an empty APIError.Body.
+func TestCheckStatus_TruncatesAnOversizedBodyInsteadOfDroppingIt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("reason: " + strings.Repeat("x", 4*errorBodyLimit)))
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL) //nolint:noctx // test
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	apiErr, ok := errors.AsType[*APIError](CheckStatus("svc", resp))
+	if !ok {
+		t.Fatal("want an *APIError")
+	}
+	if len(apiErr.Body) != errorBodyLimit || !strings.HasPrefix(apiErr.Body, "reason: ") {
+		t.Errorf("Body is %d bytes, want the first %d", len(apiErr.Body), errorBodyLimit)
+	}
+}

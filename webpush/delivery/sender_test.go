@@ -1,16 +1,20 @@
 package delivery_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,7 +80,19 @@ func (f *fakeStore) deletedEndpoints() []string {
 	return append([]string(nil), f.deleted...)
 }
 
+// newSender builds a Sender whose transport reaches a loopback httptest TLS
+// server. The real transport refuses loopback, so only newGuardedSender keeps it.
 func newSender(t *testing.T, store delivery.Store, o delivery.Options) *delivery.Sender {
+	t.Helper()
+	s := newGuardedSender(t, store, o)
+	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // httptest's self-signed cert
+	t.Cleanup(tr.CloseIdleConnections)
+	s.HTTPClient().Transport = tr
+	return s
+}
+
+// newGuardedSender builds a Sender exactly as production does.
+func newGuardedSender(t *testing.T, store delivery.Store, o delivery.Options) *delivery.Sender {
 	t.Helper()
 	if o.Subject == "" {
 		o.Subject = "ops@example.com"
@@ -88,10 +104,135 @@ func newSender(t *testing.T, store delivery.Store, o delivery.Options) *delivery
 	return s
 }
 
+// captureLogs redirects the default logger for one test and returns its output.
+func captureLogs(t *testing.T) *lockedBuffer {
+	t.Helper()
+	buf := &lockedBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// lockedBuffer is a bytes.Buffer safe for the fan-out's concurrent log writes.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// The endpoint comes from the browser, so it is attacker-chosen: plain http is
+// never a push service, and following it would POST into the local network.
+func TestAPlainHTTPEndpointIsRefused(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	store := &fakeStore{subs: []webpush.Subscription{browserSub(t, srv.URL)}}
+	delivered, err := newSender(t, store, delivery.Options{}).Send(t.Context(), "downloads", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if delivered != 0 || hits.Load() != 0 {
+		t.Errorf("delivered = %d, requests = %d; a plain-http endpoint must never be contacted", delivered, hits.Load())
+	}
+}
+
+func TestAMalformedEndpointIsRefused(t *testing.T) {
+	logs := captureLogs(t)
+	for _, endpoint := range []string{"", "not a url", "https://", "//push.example/x", "https://user:pw@push.example/x"} {
+		store := &fakeStore{subs: []webpush.Subscription{browserSub(t, endpoint)}}
+		delivered, err := newSender(t, store, delivery.Options{}).Send(t.Context(), "downloads", []byte(`{}`))
+		if err != nil || delivered != 0 {
+			t.Errorf("endpoint %q: delivered = %d, err = %v; want it refused", endpoint, delivered, err)
+		}
+	}
+	if got := logs.String(); !strings.Contains(got, "refusing endpoint") || strings.Contains(got, "user:pw") {
+		t.Errorf("want each refusal logged without the endpoint's credentials, got:\n%s", got)
+	}
+}
+
+// The scheme check alone is not enough: an https URL can still name a box on
+// the internal network, so the dial itself has to refuse it.
+func TestTheDeliveryClientRefusesPrivateAddresses(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+
+	client := newGuardedSender(t, &fakeStore{}, delivery.Options{}).HTTPClient()
+	resp, err := client.Get(srv.URL)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("the delivery client reached a loopback address")
+	}
+	if hits.Load() != 0 {
+		t.Errorf("loopback server saw %d requests, want 0", hits.Load())
+	}
+}
+
+// A redirect would carry the VAPID JWT and the encrypted payload to a host the
+// push service chose, past the endpoint check.
+func TestARedirectIsNotFollowed(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer target.Close()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	store := &fakeStore{subs: []webpush.Subscription{browserSub(t, srv.URL)}}
+	delivered, err := newSender(t, store, delivery.Options{}).Send(t.Context(), "downloads", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if delivered != 0 || hits.Load() != 0 {
+		t.Errorf("delivered = %d, redirect target requests = %d; want 0 and 0", delivered, hits.Load())
+	}
+}
+
+// The per-device URL is a capability to push to that device. A transport error
+// renders the whole URL, so it must be cut down to the host before it is logged.
+func TestATransportFailureLogsOnlyTheEndpointHost(t *testing.T) {
+	logs := captureLogs(t)
+	dead := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	endpoint := dead.URL + "/fcm/send/DEVICE-CAPABILITY-TOKEN"
+	dead.Close()
+
+	store := &fakeStore{subs: []webpush.Subscription{browserSub(t, endpoint)}}
+	if _, err := newSender(t, store, delivery.Options{}).Send(t.Context(), "downloads", []byte(`{}`)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "delivery failed") {
+		t.Fatalf("want the failure logged, got:\n%s", got)
+	}
+	if strings.Contains(got, "DEVICE-CAPABILITY-TOKEN") {
+		t.Errorf("the log leaked the per-device endpoint:\n%s", got)
+	}
+}
+
 func TestSendDeliversToEverySubscriber(t *testing.T) {
 	var mu sync.Mutex
 	var bodies int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
 		bodies++
 		mu.Unlock()
@@ -122,7 +263,7 @@ func TestSendDeliversToEverySubscriber(t *testing.T) {
 // Keeping it would mean signing and sending to a dead endpoint on every push,
 // forever.
 func TestSendPrunesASubscriptionReportedGone(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusGone)
 	}))
 	defer srv.Close()
@@ -143,7 +284,7 @@ func TestSendPrunesASubscriptionReportedGone(t *testing.T) {
 }
 
 func TestSendPrunesASubscriptionReportedNotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
@@ -163,7 +304,7 @@ func TestSendPrunesASubscriptionReportedNotFound(t *testing.T) {
 // subscription is dead — dropping it there would silently unsubscribe a working
 // device.
 func TestARejectedDeliveryIsNotPruned(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
@@ -185,11 +326,11 @@ func TestARejectedDeliveryIsNotPruned(t *testing.T) {
 
 // One dead device must not cost the household every other notification.
 func TestOneFailingEndpointDoesNotStopTheRest(t *testing.T) {
-	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	good := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer good.Close()
-	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	bad := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer bad.Close()
@@ -234,7 +375,7 @@ func TestSendWithNoSubscribersTouchesNothing(t *testing.T) {
 func TestConcurrencyIsBounded(t *testing.T) {
 	var mu sync.Mutex
 	inFlight, peak := 0, 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
 		inFlight++
 		if inFlight > peak {
@@ -276,7 +417,7 @@ func TestConcurrencyIsBounded(t *testing.T) {
 // for a scheduler means that sampler is dead for the life of the process.
 func TestASilentEndpointIsBoundedByTheTimeout(t *testing.T) {
 	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		<-release
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -308,7 +449,7 @@ func TestASilentEndpointIsBoundedByTheTimeout(t *testing.T) {
 // bare BadJwtToken naming no claim.
 func TestAPrefixedSubjectProducesExactlyOneMailtoInTheJWT(t *testing.T) {
 	got := make(chan string, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case got <- r.Header.Get("Authorization"):
 		default:

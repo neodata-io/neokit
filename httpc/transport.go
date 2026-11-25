@@ -2,9 +2,11 @@ package httpc
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +25,8 @@ type RetryConfig struct {
 	BaseDelay time.Duration
 	// MaxDelay caps a single backoff, and is also the longest server-sent
 	// Retry-After that will be waited out — beyond it the retries stop and the
-	// response is returned as-is.
+	// response is returned as-is. Zero or negative means the default, 2s: there
+	// is no "uncapped", since that hands the wait to an untrusted header.
 	MaxDelay time.Duration
 }
 
@@ -37,7 +40,8 @@ func DefaultRetryConfig() RetryConfig {
 
 // RetryTransport is an http.RoundTripper that retries transient failures —
 // network/transport errors, HTTP 429, and 5xx — with exponential backoff and
-// jitter. It retries only *idempotent* methods (GET, HEAD, OPTIONS, TRACE), so
+// jitter. A failure no retry can fix (an SSRF-guard refusal, a certificate that
+// does not verify, an unsupported scheme) is returned at once. It retries only *idempotent* methods (GET, HEAD, OPTIONS, TRACE), so
 // writes (account provisioning, login, player controls) are issued exactly once
 // and can never be double-applied by a retry. A server Retry-After header on a
 // 429/5xx is honored in place of the computed backoff, up to RetryConfig.MaxDelay;
@@ -60,7 +64,15 @@ func NewRetryTransport(base http.RoundTripper, cfg RetryConfig) *RetryTransport 
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &RetryTransport{base: base, cfg: cfg}
+	return &RetryTransport{base: base, cfg: withDefaultCap(cfg)}
+}
+
+// withDefaultCap fills in a missing MaxDelay, which is also the Retry-After cap.
+func withDefaultCap(cfg RetryConfig) RetryConfig {
+	if cfg.MaxDelay <= 0 {
+		cfg.MaxDelay = DefaultRetryConfig().MaxDelay
+	}
+	return cfg
 }
 
 // NewTracedRetryTransport is [NewRetryTransport] plus otel client spans: every
@@ -79,7 +91,7 @@ func NewTracedRetryTransport(base http.RoundTripper, cfg RetryConfig) *RetryTran
 		base = http.DefaultTransport
 	}
 	base = otelhttp.NewTransport(base, otelhttp.WithSpanNameFormatter(spanName))
-	return &RetryTransport{base: base, cfg: cfg}
+	return &RetryTransport{base: base, cfg: withDefaultCap(cfg)}
 }
 
 // spanName gives outbound client spans a low-cardinality, readable name like
@@ -161,19 +173,38 @@ func idempotentMethod(method string) bool {
 
 // retryable reports whether a (resp, err) outcome is a transient failure worth
 // retrying. A cancelled or expired context is not retried — the caller (or the
-// client's overall timeout) has already given up.
+// client's overall timeout) has already given up — and neither is a failure
+// that would only repeat.
 func retryable(resp *http.Response, err error) bool {
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false
 		}
-		return true
+		return !permanentTransportError(err)
 	}
 	if resp == nil {
 		return false
 	}
 	return resp.StatusCode == http.StatusTooManyRequests ||
 		(resp.StatusCode >= 500 && resp.StatusCode <= 599)
+}
+
+// permanentTransportError reports a failure that happened before any response
+// and that no retry can fix: one of this package's own refusals, a certificate
+// the peer will keep presenting, or a scheme no transport speaks.
+func permanentTransportError(err error) bool {
+	if errors.Is(err, errGuard) || errors.Is(err, errCrossHostBody) {
+		return true
+	}
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
+		return true
+	}
+	// net/http exports no sentinel for this one. Match the cause, not the whole
+	// message: a *url.Error's text includes the URL, which a caller may control.
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
+		err = urlErr.Err
+	}
+	return strings.HasPrefix(err.Error(), "unsupported protocol scheme")
 }
 
 // backoffFor returns how long to wait before the next attempt, and whether to
