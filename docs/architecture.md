@@ -196,3 +196,6 @@ fail. A test that passes either way is documentation, not a check.
 8. Set `CORS_ORIGINS` to your frontend's origin, `TRUSTED_PROXIES` to your
    proxy's address, and the four `OIDC_*` variables when it should stop being
    open.
+9. Keep the `Dockerfile`: it builds a static binary into an image with no shell
+   that runs as an unprivileged user, with the database on the `/data` volume.
+   Build it with `--build-arg PKG=./cmd/api` once `go.mod` sits beside it.
