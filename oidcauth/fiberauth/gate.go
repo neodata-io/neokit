@@ -11,7 +11,8 @@
 //
 // Set [Options.Tokens] and a script or a native app can be a signed-in person
 // too: a personal API token is recognised wherever a session is, and six more
-// routes manage them. See apitoken.go.
+// routes manage them. An application with token routes of its own takes the
+// recognition alone, through [APITokenMiddleware]. See apitoken.go.
 //
 // # Optional by construction
 //
@@ -142,6 +143,10 @@ type Options struct {
 	//
 	// Like the rest of the gate it is inert while no login is configured: a token
 	// is a way to be a signed-in person, and without a login there is none.
+	//
+	// An application that manages tokens through routes of its own leaves this
+	// nil and mounts [APITokenMiddleware] instead: the same recognition, without
+	// the routes.
 	Tokens apitoken.Store
 
 	// TokenPrefix starts every token this application mints, and is how a request

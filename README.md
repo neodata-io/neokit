@@ -260,6 +260,16 @@ could mint credentials, change who may sign in, or hand over a stored secret:
 admin.Put("/login", fiberauth.RefuseAPIToken, gate.RequireOwner(), h.changeLogin)
 ```
 
+Already have token routes — paths your clients call, or a sign-in flow that
+ends in a token? Keep them, leave `Tokens` unset, and take the recognition
+alone. It is the same code the gate mounts, so the 401, the expiry check and the
+per-request owner are not yours to get right twice:
+
+```go
+gate := a.Login(fiberauth.Options{Provider: provider, Sessions: sessions})
+a.HTTP.Use(fiberauth.APITokenMiddleware(provider, tokens, "myapp_")) // after the gate, ahead of your routes
+```
+
 ## Runnable examples
 
 | Need | Example |

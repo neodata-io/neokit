@@ -3,6 +3,7 @@ package fiberauth
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -62,56 +63,116 @@ var errTooManyTokens = &fiberx.APIError{
 //
 // The token itself goes no further than this function: only its hash leaves it.
 func (g *Gate) ResolveAPIToken() fiber.Handler {
-	return func(c fiber.Ctx) error {
-		if g.tokens == nil {
-			return c.Next()
-		}
-		provider := g.Provider()
-		if provider == nil {
-			return c.Next()
-		}
-		secret, ok := g.bearerToken(c.Get(fiber.HeaderAuthorization))
-		if !ok {
-			return c.Next()
-		}
+	if g.tokens == nil {
+		return func(c fiber.Ctx) error { return c.Next() }
+	}
+	return recognizer{
+		provider: g.Provider,
+		tokens:   g.tokens,
+		prefix:   g.tokenPrefix,
+		logger:   g.logger,
+		// Through the gate, not a copy of g.now: the clock is swapped after New.
+		now: func() time.Time { return g.now() },
+	}.handle
+}
 
-		ctx := c.Context()
-		token, found, err := g.tokens.TokenByHash(ctx, apitoken.Hash(secret))
-		if err != nil {
-			// The store's error does not hold the hash: database/sql leaves
-			// arguments out of what it reports.
-			g.logger().ErrorContext(ctx, "API token lookup failed", logx.Err(err))
-			return fiber.NewError(fiber.StatusServiceUnavailable, "could not check the API token")
-		}
-		now := g.now().UTC()
-		// One answer for unknown, expired and made-under-another-login, so it does
-		// not say which tokens once existed.
-		if !found || token.Issuer != provider.Issuer() || !token.Live(now) {
-			c.Set(fiber.HeaderWWWAuthenticate, "Bearer")
-			return fiber.NewError(fiber.StatusUnauthorized, "invalid API token")
-		}
-
-		if token.NeedsTouch(now, apitoken.DefaultTouchInterval) {
-			// Freshness is not worth failing a request the caller is entitled to.
-			if err := g.tokens.TouchToken(ctx, token.ID, now); err != nil {
-				g.logger().WarnContext(ctx, "API token touch failed", logx.Err(err))
+// APITokenMiddleware is [Gate.ResolveAPIToken] for an application that manages
+// tokens through routes of its own: it recognises a token exactly as a gate with
+// [Options.Tokens] does, and mounts nothing. Such an application has reasons the
+// gate's six routes cannot know — a path its clients already call, a sign-in
+// flow that ends in a token — but none to recognise a token differently, and
+// that half is the one a mistake in costs something.
+//
+// Leave [Options.Tokens] unset and mount this yourself, after [New] and ahead of
+// your own routes — the same position the gate gives it:
+//
+//	gate := fiberauth.New(a, fiberauth.Options{Provider: provider, Sessions: sessions})
+//	a.HTTP.Use(fiberauth.APITokenMiddleware(provider, tokens, "myapp_"))
+//
+// provider is the one the gate was given; nil, or returning nil, means no login
+// and the middleware passes everything through. [ViaAPIToken], [APITokenID] and
+// [RefuseAPIToken] work behind it as they do behind a gate.
+//
+// It panics on a nil store or an empty prefix. Both are wiring mistakes, and the
+// second would claim every bearer value as this application's and answer 401 to
+// credentials meant for something else.
+func APITokenMiddleware(provider func() *oidcauth.Provider, tokens apitoken.Lookup, prefix string) fiber.Handler {
+	if tokens == nil {
+		panic("fiberauth: APITokenMiddleware needs a token store")
+	}
+	if prefix == "" {
+		panic("fiberauth: APITokenMiddleware needs a token prefix")
+	}
+	return recognizer{
+		provider: func() *oidcauth.Provider {
+			if provider == nil {
+				return nil
 			}
-		}
+			return provider()
+		},
+		tokens: tokens,
+		prefix: prefix,
+		logger: slog.Default,
+		now:    time.Now,
+	}.handle
+}
 
-		id := token.Identity()
-		// Derived per request, as for a session: the owner group in force decides,
-		// so changing it applies at once. The groups are the snapshot from when the
-		// token was made.
-		id.Owner = provider.IsOwner(id.Groups)
-		c.Locals(localIdentityKey, &id)
-		c.Locals(localTokenKey, token.ID)
+// recognizer is what recognising a token needs, however it came to be mounted.
+// Every field is set; the two constructors above are the only ones.
+type recognizer struct {
+	provider func() *oidcauth.Provider
+	tokens   apitoken.Lookup
+	prefix   string
+	logger   func() *slog.Logger
+	now      func() time.Time
+}
+
+func (r recognizer) handle(c fiber.Ctx) error {
+	provider := r.provider()
+	if provider == nil {
 		return c.Next()
 	}
+	secret, ok := bearerToken(c.Get(fiber.HeaderAuthorization), r.prefix)
+	if !ok {
+		return c.Next()
+	}
+
+	ctx := c.Context()
+	token, found, err := r.tokens.TokenByHash(ctx, apitoken.Hash(secret))
+	if err != nil {
+		// The store's error does not hold the hash: database/sql leaves
+		// arguments out of what it reports.
+		r.logger().ErrorContext(ctx, "API token lookup failed", logx.Err(err))
+		return fiber.NewError(fiber.StatusServiceUnavailable, "could not check the API token")
+	}
+	now := r.now().UTC()
+	// One answer for unknown, expired and made-under-another-login, so it does
+	// not say which tokens once existed.
+	if !found || token.Issuer != provider.Issuer() || !token.Live(now) {
+		c.Set(fiber.HeaderWWWAuthenticate, "Bearer")
+		return fiber.NewError(fiber.StatusUnauthorized, "invalid API token")
+	}
+
+	if token.NeedsTouch(now, apitoken.DefaultTouchInterval) {
+		// Freshness is not worth failing a request the caller is entitled to.
+		if err := r.tokens.TouchToken(ctx, token.ID, now); err != nil {
+			r.logger().WarnContext(ctx, "API token touch failed", logx.Err(err))
+		}
+	}
+
+	id := token.Identity()
+	// Derived per request, as for a session: the owner group in force decides,
+	// so changing it applies at once. The groups are the snapshot from when the
+	// token was made.
+	id.Owner = provider.IsOwner(id.Groups)
+	c.Locals(localIdentityKey, &id)
+	c.Locals(localTokenKey, token.ID)
+	return c.Next()
 }
 
 // bearerToken pulls one of this application's own tokens out of an Authorization
 // header. The scheme is case-insensitive by RFC 9110; the token is not.
-func (g *Gate) bearerToken(header string) (string, bool) {
+func bearerToken(header, prefix string) (string, bool) {
 	if header == "" {
 		return "", false
 	}
@@ -120,7 +181,7 @@ func (g *Gate) bearerToken(header string) (string, bool) {
 		return "", false
 	}
 	value = strings.TrimSpace(value)
-	if !strings.HasPrefix(value, g.tokenPrefix) {
+	if !strings.HasPrefix(value, prefix) {
 		return "", false
 	}
 	return value, true

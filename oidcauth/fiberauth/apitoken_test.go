@@ -661,6 +661,202 @@ func TestWithoutAStoreNothingIsMounted(t *testing.T) {
 	}
 }
 
+// ── Without the routes ──────────────────────────────────────────────────────
+
+// ownRig is an application that manages tokens through routes of its own: a
+// gate without Options.Tokens, and APITokenMiddleware mounted by hand after it.
+type ownRig struct {
+	t      *testing.T
+	a      *neoapp.App
+	g      *Gate
+	tokens *spyTokens
+	now    time.Time
+}
+
+func newOwnRig(t *testing.T, provider **oidcauth.Provider) *ownRig {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	real, err := apitoken.NewSQLite(db, apitoken.SQLiteOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := &spyTokens{Store: real}
+
+	if provider == nil {
+		p := testProvider(t, "http://app.test")
+		provider = &p
+	}
+	resolve := func() *oidcauth.Provider { return *provider }
+	sessions := newMemStore()
+	sessions.put(ownerCookie, liveSession(true))
+
+	a := newTestApp(t)
+	g := New(a, Options{Provider: resolve, Sessions: sessions, CookiePrefix: "myapp", RateLimit: -1})
+	a.HTTP.Use(APITokenMiddleware(resolve, tokens, "own_"))
+	a.API.Get("/open", func(c fiber.Ctx) error {
+		id, ok := IdentityFrom(c)
+		if !ok {
+			return c.SendString("anon")
+		}
+		via := "session"
+		if ViaAPIToken(c) {
+			via = "token"
+		}
+		return c.SendString(id.Subject + " " + via)
+	})
+	a.API.Post("/secrets", RefuseAPIToken, g.RequireOwner(), func(c fiber.Ctx) error { return c.SendString("in") })
+	return &ownRig{t: t, a: a, g: g, tokens: tokens, now: time.Now().UTC().Truncate(time.Second)}
+}
+
+// mint stores a token the way an application's own route would, and returns
+// the secret.
+func (r *ownRig) mint(adjust ...func(*apitoken.Token)) string {
+	r.t.Helper()
+	secret, hash := apitoken.NewSecret("own_")
+	tok := apitoken.Token{
+		ID: apitoken.NewID(), Name: "phone", Issuer: r.g.Provider().Issuer(),
+		Subject: "u-7", DisplayName: "Sam", Groups: []string{"admins"}, CreatedAt: r.now,
+	}
+	for _, f := range adjust {
+		f(&tok)
+	}
+	if err := r.tokens.CreateToken(r.t.Context(), tok, hash); err != nil {
+		r.t.Fatal(err)
+	}
+	return secret
+}
+
+func (r *ownRig) call(method, path, cookie, bearer string) *http.Response {
+	r.t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	if cookie != "" {
+		withCookie(req, "myapp_session", cookie)
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	return do(r.t, r.a.HTTP, req)
+}
+
+// The whole point: a token is recognised, and the gate's token routes are not
+// there to duplicate the application's own.
+func TestTheMiddleware_RecognisesWithoutMountingRoutes(t *testing.T) {
+	r := newOwnRig(t, nil)
+	secret := r.mint()
+
+	if got := text(t, r.call(http.MethodGet, r.a.APIBase+"/open", "", secret)); got != "u-7 token" {
+		t.Errorf("open route saw %q, want the maker, by token", got)
+	}
+	// Owner is derived from the groups, as behind a gate; the guard that wants a
+	// browser still refuses by name.
+	resp := r.call(http.MethodPost, r.a.APIBase+"/secrets", "", secret)
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(text(t, resp), "token_not_allowed") {
+		t.Errorf("a token on a browser-only route: status = %d, want 403 token_not_allowed", resp.StatusCode)
+	}
+	for _, path := range []string{r.g.MyTokensPath(), r.g.TokensPath()} {
+		if resp := r.call(http.MethodGet, path, ownerCookie, ""); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s: status = %d, want 404: the gate must not mount its routes", path, resp.StatusCode)
+		}
+	}
+}
+
+// A token replaces a session, and the gate's own routes answer for the cookie
+// alone — the two things the mount position is for.
+func TestTheMiddleware_SitsWhereTheGatePutsIt(t *testing.T) {
+	r := newOwnRig(t, nil)
+	secret := r.mint()
+
+	if got := text(t, r.call(http.MethodGet, r.a.APIBase+"/open", ownerCookie, secret)); got != "u-7 token" {
+		t.Errorf("with a session and a token: %q, want the token to win", got)
+	}
+	who := decode[struct {
+		Subject string `json:"subject"`
+	}](t, r.call(http.MethodGet, r.g.WhoamiPath(), ownerCookie, secret))
+	if who.Subject != "u-1" {
+		t.Errorf("whoami answered for %q; it is mounted ahead of the middleware and goes by the cookie", who.Subject)
+	}
+}
+
+// Every refusal the gate's own mount makes, this one makes too: they are the
+// same code, and this is what holds them to it.
+func TestTheMiddleware_RefusesWhatAGateRefuses(t *testing.T) {
+	p := testProvider(t, "http://app.test")
+	r := newOwnRig(t, &p)
+	good := r.mint()
+	expired := r.mint(func(tok *apitoken.Token) {
+		at := r.now.Add(-time.Minute)
+		tok.ExpiresAt = &at
+	})
+	elsewhere := r.mint(func(tok *apitoken.Token) { tok.Issuer = "https://other-idp.example.com" })
+
+	for name, bearer := range map[string]string{
+		"unknown": "own_never-made", "expired": expired, "made under another login": elsewhere,
+	} {
+		resp := r.call(http.MethodGet, r.a.APIBase+"/open", ownerCookie, bearer)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want 401, session or not", name, resp.StatusCode)
+		}
+	}
+
+	// Somebody else's bearer value is not this application's business.
+	before := r.tokens.lookups.Load()
+	if got := text(t, r.call(http.MethodGet, r.a.APIBase+"/open", "", "myapp_not-ours")); got != "anon" {
+		t.Errorf("another prefix: %q, want it passed over", got)
+	}
+	if n := r.tokens.lookups.Load(); n != before {
+		t.Errorf("another prefix cost %d lookups, want none", n-before)
+	}
+
+	r.tokens.failLookup = errors.New("disk on fire")
+	if resp := r.call(http.MethodGet, r.a.APIBase+"/open", "", good); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("store failure: status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestTheMiddleware_IsInertWithoutALogin(t *testing.T) {
+	var none *oidcauth.Provider
+	r := newOwnRig(t, &none)
+
+	if got := text(t, r.call(http.MethodGet, r.a.APIBase+"/open", "", "own_anything")); got != "anon" {
+		t.Errorf("no login: %q, want the request passed through", got)
+	}
+	if n := r.tokens.lookups.Load(); n != 0 {
+		t.Errorf("no login cost %d lookups, want none", n)
+	}
+
+	// A nil provider func is "never configured", as it is for the gate.
+	a := newTestApp(t)
+	a.HTTP.Use(APITokenMiddleware(nil, r.tokens, "own_"))
+	a.API.Get("/open", func(c fiber.Ctx) error { return c.SendString("ok") })
+	req := httptest.NewRequest(http.MethodGet, a.APIBase+"/open", nil)
+	req.Header.Set("Authorization", "Bearer own_anything")
+	if resp := do(t, a.HTTP, req); resp.StatusCode != http.StatusOK {
+		t.Errorf("nil provider: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// An empty prefix would claim every bearer value and answer 401 to credentials
+// meant for something else, so it is refused where it is wired.
+func TestTheMiddleware_RefusesToBeMiswired(t *testing.T) {
+	for name, build := range map[string]func(){
+		"no store":  func() { APITokenMiddleware(nil, nil, "own_") },
+		"no prefix": func() { APITokenMiddleware(nil, &spyTokens{}, "") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("built a middleware that cannot work")
+				}
+			}()
+			build()
+		})
+	}
+}
+
 // ── Cost ────────────────────────────────────────────────────────────────────
 
 // The path without a token is nearly every request. It must match
