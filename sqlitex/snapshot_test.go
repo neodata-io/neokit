@@ -1,9 +1,11 @@
 package sqlitex_test
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/neodata-io/neokit/sqlitex"
@@ -61,5 +63,50 @@ func TestSnapshotToProducesAStandaloneDatabaseWithThePointInTimeRows(t *testing.
 	}
 	if name != "a" {
 		t.Errorf("name = %q, want %q", name, "a")
+	}
+}
+
+func TestSnapshotToWritesAPrivateFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no unix permission bits")
+	}
+	src := openMem(t)
+	if _, err := src.Exec("CREATE TABLE items (id INTEGER)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	dst := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := sqlitex.SnapshotTo(t.Context(), src, dst); err != nil {
+		t.Fatalf("SnapshotTo: %v", err)
+	}
+	if got := perm(t, dst); got != 0o600 {
+		t.Errorf("snapshot is %o, want 600", got)
+	}
+}
+
+func TestSnapshotToLeavesNothingBehindWhenItFails(t *testing.T) {
+	src := openMem(t)
+	dst := filepath.Join(t.TempDir(), "snapshot.db")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := sqlitex.SnapshotTo(ctx, src, dst); err == nil {
+		t.Fatal("want the cancelled snapshot reported")
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Errorf("a failed snapshot left its file behind (stat err = %v)", err)
+	}
+}
+
+// Overwriting is not this function's call: the caller named a file that exists.
+func TestSnapshotToRefusesAnExistingFile(t *testing.T) {
+	src := openMem(t)
+	dst := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := os.WriteFile(dst, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlitex.SnapshotTo(t.Context(), src, dst); err == nil {
+		t.Fatal("want an error for a destination that already exists")
+	}
+	if got, _ := os.ReadFile(dst); string(got) != "keep" {
+		t.Errorf("the existing file was changed to %q", got)
 	}
 }

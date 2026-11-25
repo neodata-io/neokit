@@ -35,7 +35,8 @@ const fetchTimeout = 20 * time.Second
 const retryBackoff = 5 * time.Second
 
 // Cache stores values by key. Concurrent misses for the same key result in a
-// single fetch; the other callers wait and share its result (single-flight).
+// single fetch; the other callers wait and share its result, error included
+// (single-flight).
 type Cache struct {
 	mu         sync.Mutex
 	entries    map[string]*entry
@@ -52,11 +53,11 @@ type entry struct {
 	expires time.Time
 	loaded  bool
 
-	// fetch serialises the *synchronous* cold path, so concurrent callers for a key
-	// that has no value yet queue up and share one fetch rather than stampeding the
-	// upstream. Revalidation of an already-loaded key doesn't use it — that path is
-	// gated by `refreshing` instead, and never makes anyone wait.
-	fetch sync.Mutex
+	// flight is the *synchronous* cold fetch in progress, if any. Concurrent
+	// callers for a key that has no value yet wait on it and share its outcome
+	// rather than stampeding the upstream. Revalidation of an already-loaded key
+	// doesn't use it — that path is gated by `refreshing` instead.
+	flight *flight
 
 	// refreshing is true while a background revalidation is in flight, so a burst of
 	// reads on a stale key spawns exactly one refresh rather than one per request.
@@ -74,6 +75,18 @@ type entry struct {
 	// mutation that invalidated the key, so publishing it would reinstate exactly
 	// the state the caller invalidated to get rid of.
 	gen uint64
+}
+
+// flight is one cold fetch and, once done is closed, its outcome. Everything but
+// done is written by the caller running the fetch before it closes done.
+type flight struct {
+	done chan struct{}
+	gen  uint64 // the entry's gen when the fetch started
+	val  any
+	st   Status
+	err  error
+	// ok is false if fn panicked: there is no outcome to share.
+	ok bool
 }
 
 // New creates an empty cache with the default key cap.
@@ -175,10 +188,18 @@ func (c *Cache) Len() int {
 // stale value here would show the household the state it just changed away from,
 // which reads as the command having failed.
 func (c *Cache) Invalidate(key string) {
-	e := c.entryFor(key)
+	// Looked up, not created: a key that was never fetched has nothing to drop,
+	// and minting an entry for it would evict one that does.
+	c.mu.Lock()
+	e := c.entries[key]
+	c.mu.Unlock()
+	if e == nil {
+		return
+	}
 	e.mu.Lock()
 	e.loaded = false
-	e.gen++ // discard any fetch already in flight; its value predates the mutation
+	e.gen++        // discard any fetch already in flight; its value predates the mutation
+	e.flight = nil // and let nobody new join it
 	e.mu.Unlock()
 }
 
@@ -203,9 +224,11 @@ func (c *Cache) Invalidate(key string) {
 // Errors are NOT cached. On the cold path fn's value is still returned alongside
 // the error, so a caller that builds a usable "degraded" value (e.g. a
 // configured-but-unreachable view) can hand it back without that failure sticking
-// for the full TTL. A failed *revalidation* keeps serving the last good value and
-// retries after retryBackoff — silently, as far as this function is concerned;
-// a caller that must know it is being served through an outage uses [Fetch].
+// for the full TTL. Callers already queued behind that fetch get the same value
+// and error; the next one to arrive fetches again. A failed *revalidation* keeps
+// serving the last good value and retries after retryBackoff — silently, as far
+// as this function is concerned; a caller that must know it is being served
+// through an outage uses [Fetch].
 func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error)) (T, error) {
 	v, _, err := Fetch(c, key, ttl, fn)
 	return v, err
@@ -222,50 +245,87 @@ func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.
 // keeping alive, and nothing in the value itself says so.
 func Fetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error)) (T, Status, error) {
 	e := c.entryFor(key)
+	var zero T
 
-	v, st, hit, spawn, err := load[T](e, key)
-	if err != nil {
-		var zero T
-		return zero, Status{}, err
-	}
-	if hit {
-		// Stale: hand back what we have and refresh behind it. `refreshing` is the
-		// gate — a burst of reads on a stale key spawns one refresh, not one each —
-		// and load already claimed it for us, so only one caller reaches this.
-		if spawn {
-			go revalidate(e, key, ttl, fn)
+	for {
+		v, st, hit, spawn, err := load[T](e, key)
+		if err != nil {
+			return zero, Status{}, err
 		}
-		return v, st, nil
-	}
+		if hit {
+			// Stale: hand back what we have and refresh behind it. `refreshing` is the
+			// gate — a burst of reads on a stale key spawns one refresh, not one each —
+			// and load already claimed it for us, so only one caller reaches this.
+			if spawn {
+				go revalidate(e, key, ttl, fn)
+			}
+			return v, st, nil
+		}
 
-	// Cold. Queue behind any caller already fetching this key.
-	e.fetch.Lock()
-	defer e.fetch.Unlock()
-
-	// Re-check under the fetch gate: whoever we queued behind has published by now.
-	v, st, hit, _, err = load[T](e, key)
-	if err != nil {
-		var zero T
-		return zero, Status{}, err
+		// Cold. Run the fetch, or wait on the caller already running it.
+		f, led := e.join()
+		if f == nil {
+			continue // published since load looked
+		}
+		if led {
+			return lead(e, f, ttl, fn)
+		}
+		<-f.done
+		if !f.ok {
+			continue // that fetch panicked; take a turn at it
+		}
+		got, ok := f.val.(T)
+		switch {
+		case ok:
+			return got, f.st, f.err
+		case f.err != nil:
+			return zero, Status{}, f.err
+		default:
+			return zero, Status{}, fmt.Errorf("%w: %q holds %T, not %T", ErrTypeMismatch, key, f.val, zero)
+		}
 	}
-	if hit {
-		return v, st, nil
-	}
+}
 
+// join returns the cold fetch in flight, starting one if there is none; led
+// reports that the caller started it and must run it. A nil flight means the
+// key was loaded in the meantime.
+func (e *entry) join() (f *flight, led bool) {
 	e.mu.Lock()
-	gen := e.gen
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	if e.loaded {
+		return nil, false
+	}
+	if e.flight == nil {
+		e.flight = &flight{done: make(chan struct{}), gen: e.gen}
+		return e.flight, true
+	}
+	return e.flight, false
+}
+
+// lead runs the cold fetch for f and publishes its outcome to the entry and to
+// everyone waiting on f.
+func lead[T any](e *entry, f *flight, ttl time.Duration, fn func(context.Context) (T, error)) (T, Status, error) {
+	// Deferred so that a panic in fn still releases the callers waiting on f.
+	defer func() {
+		e.mu.Lock()
+		if e.flight == f { // not already detached by Invalidate
+			e.flight = nil
+		}
+		e.mu.Unlock()
+		close(f.done)
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
-	v, err = fn(ctx)
+	v, err := fn(ctx)
+	f.val, f.err, f.ok = v, err, true
 	if err != nil {
 		return v, Status{}, err // hand the value back but don't cache the failure
 	}
 
 	now := time.Now()
 	e.mu.Lock()
-	if e.gen == gen { // not invalidated while we fetched
+	if e.gen == f.gen { // not invalidated while we fetched
 		e.val = v
 		e.expires = now.Add(ttl)
 		e.loaded = true
@@ -273,7 +333,8 @@ func Fetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Conte
 		e.fetchedAt = now
 	}
 	e.mu.Unlock()
-	return v, Status{FetchedAt: now}, nil
+	f.st = Status{FetchedAt: now}
+	return v, f.st, nil
 }
 
 // revalidate refreshes an already-loaded key in the background. It never blocks a

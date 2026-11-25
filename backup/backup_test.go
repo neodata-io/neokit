@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -257,4 +258,223 @@ func TestRunIsANoopWhenNoDirIsConfigured(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Run must return immediately when no backup directory is configured")
 	}
+}
+
+// today is the name WriteDaily gives a backup written now.
+func today(prefix string) string {
+	return prefix + time.Now().Format("2006-01-02") + ".db"
+}
+
+// dyingSnap writes half a file and then fails, as a cancelled or killed
+// snapshot does.
+type dyingSnap struct{}
+
+func (dyingSnap) SnapshotTo(_ context.Context, dst string) error {
+	if err := os.WriteFile(dst, []byte("half"), 0o600); err != nil {
+		return err
+	}
+	return fmt.Errorf("snapshot died")
+}
+
+func names(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Name())
+	}
+	return out
+}
+
+func TestAFailedSnapshotIsNotTodaysBackup(t *testing.T) {
+	dir := t.TempDir()
+	if err := backup.New(dyingSnap{}, backup.Options{Dir: dir}).WriteDaily(t.Context()); err == nil {
+		t.Fatal("WriteDaily must report the failed snapshot")
+	}
+	if got := names(t, dir); len(got) != 0 {
+		t.Fatalf("a failed snapshot left %v behind", got)
+	}
+
+	// The same day's retry has to write a real one rather than find the wreck.
+	snap := &fakeSnap{}
+	if err := backup.New(snap, backup.Options{Dir: dir}).WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, today(backup.DefaultPrefix)))
+	if err != nil || string(got) != "snapshot" {
+		t.Errorf("today's backup = %q, %v; want the retried snapshot", got, err)
+	}
+}
+
+// The wreck sorts newest, so accepting it used to prune the last good backup.
+func TestAFailedSnapshotDoesNotCostAnOlderBackup(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "backup-2020-01-01.db")
+	if err := os.WriteFile(good, []byte("good"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := backup.New(dyingSnap{}, backup.Options{Dir: dir, Retention: 1})
+	for range 2 {
+		if err := s.WriteDaily(t.Context()); err == nil {
+			t.Fatal("WriteDaily must report the failed snapshot")
+		}
+	}
+	if _, err := os.Stat(good); err != nil {
+		t.Errorf("the only good backup was pruned: %v", err)
+	}
+}
+
+// While the snapshot is being written it must not be visible as a backup.
+func TestASnapshotInProgressIsNotListed(t *testing.T) {
+	dir := t.TempDir()
+	var s *backup.Service
+	var during []backup.Info
+	s = backup.New(snapFunc(func(_ context.Context, dst string) error {
+		if err := os.WriteFile(dst, []byte("snapshot"), 0o600); err != nil {
+			return err
+		}
+		var err error
+		during, err = s.List(t.Context())
+		return err
+	}), backup.Options{Dir: dir})
+
+	if err := s.WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	if len(during) != 0 {
+		t.Errorf("List during the snapshot = %+v, want nothing until it is complete", during)
+	}
+	if got := names(t, dir); len(got) != 1 || got[0] != today(backup.DefaultPrefix) {
+		t.Errorf("directory holds %v, want only today's backup", got)
+	}
+}
+
+type snapFunc func(context.Context, string) error
+
+func (f snapFunc) SnapshotTo(ctx context.Context, dst string) error { return f(ctx, dst) }
+
+// A process killed mid-snapshot cannot clean up after itself; the next run does.
+func TestALeftoverTempFromACrashIsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	leftover := filepath.Join(dir, "backup-2020-01-01.db.tmp")
+	foreign := []string{"notes.tmp", "backup-pre-upgrade.db.tmp"}
+	for _, name := range append(foreign, filepath.Base(leftover)) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := backup.New(&fakeSnap{}, backup.Options{Dir: dir}).WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Errorf("the crashed run's temp file is still there (stat err = %v)", err)
+	}
+	for _, name := range foreign {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("removed %q, which is not this service's temp file: %v", name, err)
+		}
+	}
+}
+
+// What an older version left when its snapshot was cancelled.
+func TestAZeroByteDatedFileIsReplaced(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, today(backup.DefaultPrefix))
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.New(&fakeSnap{}, backup.Options{Dir: dir}).WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "snapshot" {
+		t.Errorf("today's backup = %q, want the empty file replaced by a snapshot", got)
+	}
+}
+
+// A file someone kept by hand sorts after every date, so it used to take the
+// one retention slot and get each day's backup deleted as it was written.
+func TestPruneLeavesAHandKeptFileAndTodaysBackup(t *testing.T) {
+	dir := t.TempDir()
+	kept := filepath.Join(dir, "backup-pre-upgrade.db")
+	if err := os.WriteFile(kept, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 1})
+	if err := s.WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	for _, p := range []string{kept, filepath.Join(dir, today(backup.DefaultPrefix))} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s is gone: %v", filepath.Base(p), err)
+		}
+	}
+	got, _ := s.List(t.Context())
+	if len(got) != 1 || got[0].Name != today(backup.DefaultPrefix) {
+		t.Errorf("List = %+v, want only the dated backup", got)
+	}
+}
+
+// A prefix without a separator also matches the live database's own name.
+func TestPruneNeverDeletesTheLiveDatabase(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "app.db")
+	if err := os.WriteFile(live, []byte("LIVE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 1, Prefix: "app"})
+	if err := s.WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Errorf("prune deleted the live database: %v", err)
+	}
+}
+
+func TestNewBackupsArePrivateToTheServiceUser(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no unix permission bits")
+	}
+	dir := filepath.Join(t.TempDir(), "backups")
+	// A snapshotter that leaves the file world-readable, as SQLite does.
+	s := backup.New(snapFunc(func(_ context.Context, dst string) error {
+		return os.WriteFile(dst, []byte("snapshot"), 0o644)
+	}), backup.Options{Dir: dir})
+	if err := s.WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	if got := mode(t, dir); got != 0o700 {
+		t.Errorf("new backup directory is %o, want 700", got)
+	}
+	if got := mode(t, filepath.Join(dir, today(backup.DefaultPrefix))); got != 0o600 {
+		t.Errorf("new backup file is %o, want 600", got)
+	}
+}
+
+// An operator who opened the directory up did so on purpose.
+func TestAnExistingBackupDirectoryKeepsItsMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no unix permission bits")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.New(&fakeSnap{}, backup.Options{Dir: dir}).WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	if got := mode(t, dir); got != 0o755 {
+		t.Errorf("existing directory became %o, want it left at 755", got)
+	}
+}
+
+func mode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	return fi.Mode().Perm()
 }

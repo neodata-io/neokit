@@ -2,7 +2,9 @@ package sqlitex_test
 
 import (
 	"database/sql"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/neodata-io/neokit/sqlitex"
 	_ "modernc.org/sqlite"
@@ -103,5 +105,51 @@ func TestMigrateRollsBackAFailingStep(t *testing.T) {
 	}
 	if _, err := db.Exec("INSERT INTO b (id) VALUES (1)"); err != nil {
 		t.Errorf("table b should exist after retry: %v", err)
+	}
+}
+
+// The same race end to end: two handles on one file, as two processes have.
+func TestTwoMigratorsStartingTogetherApplyAStepOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.db")
+	open := func() *sql.DB {
+		db, err := sqlitex.Open(path, nil)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return db
+	}
+	first, second := open(), open()
+	if _, err := first.Exec(`CREATE TABLE seed (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+
+	inStep, release := make(chan struct{}), make(chan struct{})
+	seed := func(tx *sql.Tx) error { _, err := tx.Exec(`INSERT INTO seed VALUES (1)`); return err }
+	held := []sqlitex.Migration{{Name: "seed", Up: func(tx *sql.Tx) error {
+		close(inStep)
+		<-release
+		return seed(tx)
+	}}}
+
+	errs := make(chan error, 2)
+	go func() { errs <- sqlitex.Migrate(first, held) }()
+	<-inStep
+	go func() { errs <- sqlitex.Migrate(second, []sqlitex.Migration{{Name: "seed", Up: seed}}) }()
+	// Long enough for the second to have read the old version and be waiting.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("Migrate: %v", err)
+		}
+	}
+	var rows int
+	if err := first.QueryRow(`SELECT count(*) FROM seed`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Errorf("the data step ran %d times, want 1", rows)
 	}
 }

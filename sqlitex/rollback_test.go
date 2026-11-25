@@ -132,3 +132,30 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// Two processes starting together both read the old version before either
+// applies the step. The second must find it done, not run it again.
+func TestApplyStep_SkipsAStepAnotherMigratorAlreadyApplied(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	if _, err := db.Exec(`CREATE TABLE seed (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	insert := step("seed_row", `INSERT INTO seed VALUES (1)`)
+
+	for range 2 {
+		if err := applyStep(context.Background(), db, 0, insert); err != nil {
+			t.Fatalf("applyStep: %v", err)
+		}
+	}
+	var rows int
+	if err := db.QueryRow(`SELECT count(*) FROM seed`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Errorf("the data step ran %d times, want 1", rows)
+	}
+	if got := userVersion(t, db); got != 1 {
+		t.Errorf("user_version = %d, want 1", got)
+	}
+}

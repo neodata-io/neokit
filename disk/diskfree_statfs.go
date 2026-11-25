@@ -4,13 +4,13 @@ package disk
 
 import (
 	"fmt"
-	"path/filepath"
 	"syscall"
 )
 
-// Usage reports free and total bytes on the filesystem holding the file at
-// path. On error it returns (0, 0, err): a caller that ignores the error reads
-// zero free, which is the alarming direction, so the error is not optional.
+// Usage reports free and total bytes on the filesystem holding path: the
+// directory itself, or the directory containing the file. On error it returns
+// (0, 0, err): a caller that ignores the error reads zero free, which is the
+// alarming direction, so the error is not optional.
 //
 // Usage calls syscall.Statfs, which can block indefinitely if path resolves to
 // an unreachable network mount. Only point this at local storage.
@@ -24,9 +24,10 @@ func Usage(path string) (free, total int64, err error) {
 	if !isMeasurable(path) {
 		return 0, 0, fmt.Errorf("%w: %q", ErrNotOnDisk, path)
 	}
+	dir := dirOf(path)
 	var st syscall.Statfs_t
-	if err := syscall.Statfs(filepath.Dir(path), &st); err != nil {
-		return 0, 0, fmt.Errorf("disk: statfs %q: %w", filepath.Dir(path), err)
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, 0, fmt.Errorf("disk: statfs %q: %w", dir, err)
 	}
 	// Bsize is int64 on Linux, uint32 on macOS; widen both to uint64 so the
 	// arithmetic compiles on every target above.

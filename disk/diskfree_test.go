@@ -60,3 +60,26 @@ func TestUsageRejectsPathsThatAreNotOnDisk(t *testing.T) {
 		assert.Zero(t, total, "path %q", path)
 	}
 }
+
+// A directory used to be measured by its parent, so the root of a mounted
+// volume — a backup directory, typically — reported the disk it was mounted on.
+func TestUsageOfADirectoryMeasuresThatDirectorysFilesystem(t *testing.T) {
+	if stubbed() || runtime.GOOS == "windows" {
+		t.Skip("needs a unix mount point")
+	}
+	_, parent, err := disk.Usage("/no-such-file")
+	require.NoError(t, err)
+
+	for _, mount := range []string{"/dev", "/proc", "/sys", "/run"} {
+		// A file inside the mount is measured by its directory: the mount itself.
+		_, want, err := disk.Usage(filepath.Join(mount, "no-such-file"))
+		if err != nil || want == parent {
+			continue // absent here, or not a filesystem of its own
+		}
+		_, got, err := disk.Usage(mount)
+		require.NoError(t, err)
+		assert.Equal(t, want, got, "Usage(%q) must report %s, not the filesystem it is mounted on", mount, mount)
+		return
+	}
+	t.Skip("no mount point with a filesystem distinct from the root's")
+}

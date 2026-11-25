@@ -30,21 +30,13 @@ var ErrSchemaFromTheFuture = errors.New("sqlitex: database schema is newer than 
 // IS its version, so editing or reordering a shipped step silently diverges
 // from every database already in the field. A fix is a new step.
 //
-// # One migrator at a time
+// # Concurrent migrators
 //
-// Migrate assumes it is the only process migrating this file. The version is
-// read before the first step's transaction opens, and database/sql can only
-// issue a plain BEGIN — which SQLite treats as DEFERRED, taking no write lock
-// until the first write — so two processes starting together can both observe
-// the old version and both apply the same step. Schema changes fail loudly on
-// the second; a data migration does not, and applies twice with both calls
-// returning nil.
-//
-// Running one migrator at a time is the intended deployment and the check is
-// not free to add: BEGIN IMMEDIATE has to be issued on a pinned *sql.Conn,
-// which cannot produce the *sql.Tx that [Migration.Up] receives. If you need
-// concurrent migrators, serialize them outside this package — a startup lock,
-// or a deploy that stops the old instance before starting the new one.
+// Two processes starting together cannot both apply a step: the version is read
+// again inside each step's transaction. On a handle from [Open] the second
+// waits for the first, bounded by busy_timeout, then finds the step done and
+// skips it. On a handle whose transactions are deferred it fails with
+// SQLITE_BUSY instead — loudly, and without applying anything twice.
 //
 // # PRAGMAs inside a step
 //
@@ -94,6 +86,16 @@ func applyStep(ctx context.Context, db *sql.DB, i int, m Migration) error {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	// Read again under the transaction: another process may have applied this
+	// step since MigrateContext looked.
+	var version int
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+	if version > i {
+		return nil
+	}
 
 	if err := m.Up(tx); err != nil {
 		return err
