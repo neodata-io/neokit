@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/neodata-io/neokit/health"
@@ -261,6 +263,112 @@ func TestAWedgedCheckIsEnteredOnceNoMatterHowOftenReadinessIsPolled(t *testing.T
 	if got := last.Checks[0].Err; !strings.Contains(got, "still running") {
 		t.Errorf("error = %q, want it to name the check as stuck rather than merely slow", got)
 	}
+}
+
+// Two probers — a kubelet and a load balancer, or two load-balancer nodes — poll
+// on their own timers and overlap. The second sweep must wait for the answer the
+// first is already fetching, not report a healthy dependency as stuck.
+func TestOverlappingSweepsShareTheInFlightCheck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := &health.Registry{Log: discard()}
+		release := make(chan struct{})
+		var entered atomic.Int64
+		r.Register("db", func(context.Context) error {
+			entered.Add(1)
+			<-release
+			return nil
+		})
+
+		const sweeps = 4
+		results := make([]health.Result, sweeps)
+		var wg sync.WaitGroup
+		for i := range results {
+			wg.Go(func() { results[i] = r.Check(t.Context()) })
+		}
+		synctest.Wait() // every sweep is now waiting on the one call
+		close(release)
+		wg.Wait()
+
+		for i, res := range results {
+			if !res.Ready {
+				t.Errorf("sweep %d: not ready (%q), want the shared passing result", i, res.Checks[0].Err)
+			}
+		}
+		if n := entered.Load(); n != 1 {
+			t.Errorf("check entered %d times for %d overlapping sweeps, want 1", n, sweeps)
+		}
+	})
+}
+
+// The in-flight call belongs to every sweep waiting on it, so one prober giving
+// up must not fail the check for the others.
+func TestACancelledSweepDoesNotFailTheCheckForTheOthers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := &health.Registry{Log: discard()}
+		release := make(chan struct{})
+		r.Register("db", func(ctx context.Context) error {
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+
+		first, cancel := context.WithCancel(t.Context())
+		var abandoned, patient health.Result
+		var wg sync.WaitGroup
+		wg.Go(func() { abandoned = r.Check(first) })
+		synctest.Wait()
+		wg.Go(func() { patient = r.Check(t.Context()) })
+		synctest.Wait()
+
+		cancel()
+		synctest.Wait()
+		close(release)
+		wg.Wait()
+
+		if abandoned.Ready {
+			t.Error("the cancelled sweep reported ready without an answer")
+		}
+		if !patient.Ready {
+			t.Errorf("the other sweep failed with %q after the first prober gave up", patient.Checks[0].Err)
+		}
+	})
+}
+
+// "Still running" is for a check that outlived its own deadline. One that is
+// merely in flight when the next sweep arrives is not stuck.
+func TestOnlyACheckPastItsDeadlineIsReportedStuck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := &health.Registry{Log: discard(), Timeout: time.Second}
+		release := make(chan struct{})
+		var wedged atomic.Bool
+		wedged.Store(true)
+		r.Register("wedged", func(context.Context) error {
+			if wedged.Load() {
+				<-release
+			}
+			return nil
+		})
+
+		first := r.Check(t.Context()) // returns at the deadline; the call stays wedged
+		if got := first.Checks[0].Err; strings.Contains(got, "still running") {
+			t.Errorf("first sweep error = %q, want its own deadline, not a stuck report", got)
+		}
+		second := r.Check(t.Context())
+		if got := second.Checks[0].Err; !strings.Contains(got, "still running") {
+			t.Errorf("second sweep error = %q, want the check named as stuck", got)
+		}
+
+		// Once the wedged call finally returns, the check is usable again.
+		wedged.Store(false)
+		close(release)
+		synctest.Wait()
+		if third := r.Check(t.Context()); !third.Ready {
+			t.Errorf("after the wedged call returned: %q, want ready", third.Checks[0].Err)
+		}
+	})
 }
 
 // A panicking check is a bug in that check, not a reason to take the endpoint

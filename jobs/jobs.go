@@ -64,14 +64,9 @@ type Job struct {
 // treating it as "run once" would turn a periodic job into a one-shot with
 // nothing to notice, the silent failure this package exists to remove.
 func (j Job) Run(ctx context.Context) {
-	if j.Every <= 0 {
-		panic("jobs: Job.Every must be positive (job " + j.Name + ")")
-	}
-	if j.Do == nil {
-		panic("jobs: Job.Do must be set (job " + j.Name + ")")
-	}
+	j.validate()
 
-	if j.RunAtStart {
+	if j.RunAtStart && ctx.Err() == nil {
 		j.tick(ctx)
 	}
 
@@ -82,8 +77,23 @@ func (j Job) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// A run that outlasted the interval leaves a tick waiting, and select
+			// picks at random between it and a cancellation that arrived meanwhile.
+			if ctx.Err() != nil {
+				return
+			}
 			j.tick(ctx)
 		}
+	}
+}
+
+// validate panics on a job that cannot run.
+func (j Job) validate() {
+	if j.Every <= 0 {
+		panic("jobs: Job.Every must be positive (job " + j.Name + ")")
+	}
+	if j.Do == nil {
+		panic("jobs: Job.Do must be set (job " + j.Name + ")")
 	}
 }
 
@@ -94,7 +104,11 @@ func (j Job) Run(ctx context.Context) {
 //
 // Use [Job.Run] directly when you own the goroutine — for instance to join it
 // with a [safe.Group] of your own rather than the package-level default.
+//
+// It panics on an unusable job, as [Job.Run] does, and does so here rather than
+// on the goroutine: the supervisor there would recover it and retry forever.
 func (j Job) Start(ctx context.Context) {
+	j.validate()
 	safe.Go(ctx, "job:"+j.Name, func() { j.Run(ctx) })
 }
 

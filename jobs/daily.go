@@ -60,6 +60,55 @@ type Daily struct {
 // It panics on an out-of-range Hour or Minute, or a nil Do: each is a
 // programming error that would otherwise silently fire at the wrong time.
 func (d Daily) Run(ctx context.Context) {
+	d.validate()
+
+	if d.RunAtStart && ctx.Err() == nil {
+		d.tick(ctx)
+	}
+
+	// The occurrence last run. The next one is always after it, so a clock
+	// stepped back during a run cannot make the same day's target come up twice.
+	var last time.Time
+	for {
+		// Recomputed every iteration rather than advanced by a fixed step: that is
+		// the whole point (see the type doc), and it also means a job that overran
+		// its slot lands on the next occurrence rather than immediately re-firing.
+		from := d.now()
+		if from.Before(last) {
+			from = last
+		}
+		next := d.Next(from)
+		if !d.sleepUntil(ctx, next) {
+			return
+		}
+		d.tick(ctx)
+		last = next
+	}
+}
+
+// sleepUntil waits until [Daily.Now] reaches target; false means ctx ended first.
+// The timer counts elapsed time, not wall-clock time, so the clock is re-read
+// when it fires and the wait re-armed if a step backwards left the target ahead.
+func (d Daily) sleepUntil(ctx context.Context, target time.Time) bool {
+	for {
+		// Derived from Daily.Now, not time.Until: an injected clock must control
+		// the delay as well as the schedule.
+		remaining := target.Sub(d.now())
+		if remaining <= 0 {
+			return ctx.Err() == nil
+		}
+		wait := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return false
+		case <-wait.C:
+		}
+	}
+}
+
+// validate panics on a schedule that cannot run.
+func (d Daily) validate() {
 	if d.Hour < 0 || d.Hour > 23 {
 		panic("jobs: Daily.Hour must be 0-23 (job " + d.Name + ")")
 	}
@@ -69,34 +118,12 @@ func (d Daily) Run(ctx context.Context) {
 	if d.Do == nil {
 		panic("jobs: Daily.Do must be set (job " + d.Name + ")")
 	}
-
-	if d.RunAtStart {
-		d.tick(ctx)
-	}
-
-	for {
-		// Recomputed every iteration rather than advanced by a fixed step: that is
-		// the whole point (see the type doc), and it also means a job that overran
-		// its slot lands on the next occurrence rather than immediately re-firing.
-		//
-		// The delay is derived from [Daily.Now] on both sides — not time.Until,
-		// which measures against the real wall clock. Mixing the two makes an
-		// injected clock produce a delay with no relation to the schedule it was
-		// injected to control.
-		wait := time.NewTimer(d.delay(d.now()))
-		select {
-		case <-ctx.Done():
-			wait.Stop()
-			return
-		case <-wait.C:
-			d.tick(ctx)
-		}
-	}
 }
 
 // Start runs the job on a supervised background goroutine and returns
-// immediately. See [Job.Start].
+// immediately. See [Job.Start], including for when it panics.
 func (d Daily) Start(ctx context.Context) {
+	d.validate()
 	safe.Go(ctx, "job:"+d.Name, func() { d.Run(ctx) })
 }
 
@@ -116,11 +143,6 @@ func (d Daily) Next(from time.Time) time.Time {
 	}
 	return next
 }
-
-// delay is how long to wait for the next occurrence, measured entirely on
-// [Daily.Now]'s clock. Split out from Run so the scheduling arithmetic is
-// testable without a real timer.
-func (d Daily) delay(now time.Time) time.Duration { return d.Next(now).Sub(now) }
 
 func (d Daily) tick(ctx context.Context) {
 	if d.Timeout > 0 {

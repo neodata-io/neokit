@@ -47,9 +47,9 @@ func (h ContextHandler) Handle(ctx context.Context, r slog.Record) error {
 	if id := RequestID(ctx); id != "" {
 		r.AddAttrs(slog.String("requestId", id))
 	}
-	// When a trace is active, stamp its ids so Grafana can pivot from a log line
-	// to the trace in Tempo and back. Only present when tracing is enabled and
-	// the span is sampled; otherwise the span context is invalid and skipped.
+	// When the context carries a span, stamp its ids so Grafana can pivot from a
+	// log line to the trace in Tempo and back. That is a local span, or a trusted
+	// proxy's trace context when tracing is off.
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		r.AddAttrs(
 			slog.String("trace_id", sc.TraceID().String()),

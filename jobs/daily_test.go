@@ -100,27 +100,37 @@ func TestNextSurvivesANonexistentLocalTime(t *testing.T) {
 	}
 }
 
-// The scheduling arithmetic must be measured entirely on the injected clock. It
-// previously mixed the two — Next() from Daily.Now, the wait from time.Until on
-// the real wall clock — so an injected clock produced a delay with no relation to
-// the schedule it was injected to control.
-func TestDelayIsMeasuredOnTheInjectedClock(t *testing.T) {
-	loc := brussels(t)
-	// A frozen clock 30 minutes before the target, and deliberately far from the
-	// real wall clock so a time.Until regression cannot pass by luck.
-	frozen := time.Date(2020, 1, 2, 7, 30, 0, 0, loc)
-	d := Daily{Hour: 8, Now: func() time.Time { return frozen }}
+// The wait must be measured entirely on the injected clock. It previously mixed
+// the two — Next() from Daily.Now, the wait from time.Until on the real wall
+// clock — so an injected clock produced a delay with no relation to the schedule
+// it was injected to control.
+func TestTheWaitIsMeasuredOnTheInjectedClock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// 30 minutes before the target, and deliberately years from the bubble's
+		// own clock so a time.Until regression cannot pass by luck.
+		start := time.Now()
+		now := func() time.Time {
+			return time.Date(2020, 1, 2, 7, 30, 0, 0, time.UTC).Add(time.Since(start))
+		}
+		var runs atomic.Int64
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go Daily{
+			Name: "digest", Hour: 8, Log: quiet(), Now: now,
+			Do: func(context.Context) error { runs.Add(1); return nil },
+		}.Run(ctx)
 
-	if got := d.delay(frozen); got != 30*time.Minute {
-		t.Errorf("delay = %v, want 30m measured on the injected clock", got)
-	}
-	// And it always agrees with Next, which is the property Run depends on.
-	if got, want := d.delay(frozen), d.Next(frozen).Sub(frozen); got != want {
-		t.Errorf("delay = %v, Next-derived = %v — the two must not drift", got, want)
-	}
-	if d.delay(frozen) <= 0 {
-		t.Error("delay must be positive, or Run would spin")
-	}
+		time.Sleep(30*time.Minute - time.Second)
+		synctest.Wait()
+		if got := runs.Load(); got != 0 {
+			t.Fatalf("runs = %d a second before the target, want 0", got)
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if got := runs.Load(); got != 1 {
+			t.Errorf("runs = %d a second after the target, want 1", got)
+		}
+	})
 }
 
 // Off by default: a process restarting five times in an afternoon must not send
@@ -179,6 +189,87 @@ func TestDailyReturnsOnCancellation(t *testing.T) {
 			t.Fatal("Run did not return on cancellation — the timer is not being selected on")
 		}
 	})
+}
+
+func TestDailyStartPanicsAtTheCallSiteOnAnUnusableSchedule(t *testing.T) {
+	cases := map[string]Daily{
+		"hour too high": {Name: "d", Hour: 24, Do: func(context.Context) error { return nil }},
+		"no Do":         {Name: "d", Hour: 8},
+	}
+	for name, d := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			defer func() {
+				if recover() == nil {
+					t.Error("Start must panic on an unusable schedule, not hand it to the supervisor")
+				}
+			}()
+			d.Start(ctx)
+		})
+	}
+}
+
+// The timer counts elapsed time; the schedule is a wall-clock time. When the
+// clock is stepped back the timer fires early, and a job that trusted it would
+// run, find the target still ahead, and run again when the clock got there.
+func TestDailyRunsOnceWhenTheClockStepsBack(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// One second before the 08:00 target; the test moves this clock by hand.
+		base := time.Date(2026, 3, 1, 7, 59, 59, 0, time.UTC)
+		var offset atomic.Int64
+		clock := func() time.Time { return base.Add(time.Duration(offset.Load())) }
+
+		var runs atomic.Int64
+		ctx, cancel := context.WithCancel(t.Context())
+		go Daily{
+			Name: "digest", Hour: 8, Log: quiet(), Now: clock,
+			Do: func(context.Context) error {
+				runs.Add(1)
+				offset.Store(int64(500 * time.Millisecond)) // stepped back during the run
+				return nil
+			},
+		}.Run(ctx)
+
+		// The one-second timer fires, but the wall clock has not moved.
+		time.Sleep(1500 * time.Millisecond)
+		synctest.Wait()
+		if got := runs.Load(); got != 0 {
+			t.Fatalf("runs = %d before the wall clock reached the target, want 0", got)
+		}
+
+		offset.Store(int64(time.Second)) // 08:00:00
+		time.Sleep(1500 * time.Millisecond)
+		synctest.Wait()
+		if got := runs.Load(); got != 1 {
+			t.Fatalf("runs = %d once the target was reached, want 1", got)
+		}
+
+		// The run left the clock at 07:59:59.5; let it pass 08:00 a second time.
+		time.Sleep(time.Second)
+		offset.Store(int64(2 * time.Second))
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if got := runs.Load(); got != 1 {
+			t.Errorf("runs = %d, want 1 — the same day's target fired twice", got)
+		}
+
+		cancel()
+		synctest.Wait()
+	})
+}
+
+func TestDailyDoesNotRunAfterCancellation(t *testing.T) {
+	var runs atomic.Int64
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	Daily{
+		Name: "d", Hour: 8, RunAtStart: true, Log: quiet(),
+		Do: func(context.Context) error { runs.Add(1); return nil },
+	}.Run(ctx)
+	if got := runs.Load(); got != 0 {
+		t.Errorf("runs = %d, want 0 on a context cancelled before Run", got)
+	}
 }
 
 func TestDailyPanicsOnAnUnusableSchedule(t *testing.T) {

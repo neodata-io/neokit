@@ -38,9 +38,18 @@ type check struct {
 	name string
 	fn   CheckFunc
 
-	// running is held for as long as fn has not returned. It is what caps the
-	// cost of a check that ignores its context — see runBounded.
-	running atomic.Bool
+	// mu guards flight, the one call of fn that may be in progress. Overlapping
+	// sweeps wait on it rather than each starting their own — see runBounded.
+	mu     sync.Mutex
+	flight *flight
+}
+
+// flight is one call of a check's fn, shared by every sweep that overlaps it.
+type flight struct {
+	ctx      context.Context // bounded by deadline, independent of any one sweep
+	deadline time.Time
+	done     chan struct{} // closed once res is set
+	res      CheckResult
 }
 
 // Registry holds the readiness checks. The zero value is ready to use and safe
@@ -121,7 +130,7 @@ type Result struct {
 // The sweep returns at the deadline whether or not every check has answered: one
 // that ignores ctx is reported as failed and left to finish on its own, so a
 // wedged dependency cannot hold the readiness endpoint open. A check is never
-// entered twice concurrently — see runBounded.
+// entered twice concurrently: sweeps that overlap share one call and its result.
 func (r *Registry) Check(ctx context.Context) Result {
 	r.mu.RLock()
 	checks := make([]*check, len(r.checks))
@@ -132,14 +141,15 @@ func (r *Registry) Check(ctx context.Context) Result {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
 	results := make([]CheckResult, len(checks))
 	var wg sync.WaitGroup
 	for i, c := range checks {
 		wg.Go(func() {
-			results[i] = runBounded(ctx, c)
+			results[i] = runBounded(ctx, c, deadline)
 		})
 	}
 	wg.Wait()
@@ -153,38 +163,51 @@ func (r *Registry) Check(ctx context.Context) Result {
 	return out
 }
 
-// runBounded does not wait beyond ctx's deadline, and never leaves more than one
-// call of c.fn in flight.
-//
-// Go cannot stop a callback that ignores its context. Handing the call to a
-// goroutine with a buffered result channel is what lets the readiness request
-// answer on time and lets the callback finish whenever it eventually does. On
-// its own, though, that trades a hang for a leak: readiness is polled on a
-// timer, so a permanently wedged dependency would strand a fresh goroutine —
-// and everything its check closed over — every few seconds for the life of the
-// process. The running flag bounds the wedged case to one stranded goroutine in
-// total, and says so in the result: "still running" tells an operator the
-// dependency is stuck rather than slow, which a repeated deadline error does not.
-func runBounded(ctx context.Context, c *check) CheckResult {
+// runBounded waits for c's answer no longer than ctx allows, and keeps at most
+// one call of c.fn in flight: an overlapping sweep joins it, and only a call
+// past its own deadline is reported as stuck — never started a second time.
+func runBounded(ctx context.Context, c *check, deadline time.Time) CheckResult {
 	started := time.Now()
-	if !c.running.CompareAndSwap(false, true) {
+
+	c.mu.Lock()
+	f := c.flight
+	if f == nil {
+		// Detached from the sweep that happens to start it: one prober hanging up
+		// must not fail the check for the others waiting on the same call.
+		fctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+		f = &flight{ctx: fctx, deadline: deadline, done: make(chan struct{})}
+		c.flight = f
+		go func() {
+			defer cancel()
+			res := run(fctx, c)
+			c.mu.Lock()
+			f.res = res
+			c.flight = nil
+			c.mu.Unlock()
+			close(f.done)
+		}()
+	} else if !started.Before(f.deadline) {
+		c.mu.Unlock()
 		return notAnswered(c.name, "still running from an earlier check", time.Since(started))
 	}
+	c.mu.Unlock()
 
-	result := make(chan CheckResult, 1)
-	go func() {
-		res := run(ctx, c)
-		// Released before the send, so the sweep that receives res can never
-		// observe the flag still held and report a finished check as wedged.
-		c.running.Store(false)
-		result <- res
-	}()
-
+	var reason error
 	select {
-	case res := <-result:
-		return res
+	case <-f.done:
+		return f.res
 	case <-ctx.Done():
-		return notAnswered(c.name, ctx.Err().Error(), time.Since(started))
+		reason = ctx.Err()
+	case <-f.ctx.Done():
+		reason = f.ctx.Err()
+	}
+	// The call's context is released as it finishes, so both can be ready at
+	// once; an answer that arrived wins over the luck of the select.
+	select {
+	case <-f.done:
+		return f.res
+	default:
+		return notAnswered(c.name, reason.Error(), time.Since(started))
 	}
 }
 

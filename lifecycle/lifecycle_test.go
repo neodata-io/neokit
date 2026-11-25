@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -211,6 +212,75 @@ func TestPushCloserAdaptsAnOrdinaryCloser(t *testing.T) {
 	if !closed {
 		t.Error("PushCloser did not call Close")
 	}
+}
+
+// Close() takes no context, so nothing the stack passes can stop it. The budget
+// has to hold anyway: a wedged database Close must not keep the process alive
+// until the orchestrator kills it, with every step below it never run.
+func TestAStepThatIgnoresItsContextIsAbandonedAtItsBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var ran []string
+		s := &Stack{Log: quiet()}
+		s.Push("store", func(context.Context) error { ran = append(ran, "store"); return nil })
+		s.PushCloser("wedged", closerFunc(func() error {
+			<-release
+			panic("late panic in an abandoned step") // must stay contained
+		}))
+
+		start := time.Now()
+		err := s.Shutdown(t.Context(), time.Second)
+		took := time.Since(start)
+
+		if took > 2*time.Second {
+			t.Errorf("Shutdown took %v with a 1s step budget — the wedged Close held it open", took)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "wedged") {
+			t.Errorf("err = %v, want the wedged step reported as timed out", err)
+		}
+		if len(ran) != 1 {
+			t.Errorf("ran = %v, want the step below the wedged one to have run", ran)
+		}
+
+		close(release)
+		synctest.Wait()
+	})
+}
+
+// The total budget is the caller's context. Steps that ignore it must not be
+// able to stretch a 30-second grace period into one per step.
+func TestTheTotalBudgetHoldsWhenStepsIgnoreTheirContext(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var closed bool
+		s := &Stack{Log: quiet()}
+		s.PushCloser("store", closerFunc(func() error { closed = true; return nil }))
+		for _, name := range []string{"a", "b", "c"} {
+			s.PushCloser(name, closerFunc(func() error { <-release; return nil }))
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		start := time.Now()
+		err := s.Shutdown(ctx, 2*time.Second)
+		took := time.Since(start)
+
+		if took > 4*time.Second {
+			t.Errorf("Shutdown took %v against a 3s total budget", took)
+		}
+		for _, name := range []string{"a", "b", "c"} {
+			if err == nil || !strings.Contains(err.Error(), name+":") {
+				t.Errorf("err = %v, want step %q reported", err, name)
+			}
+		}
+		// A quick Close still runs once the budget is spent: late beats never.
+		if !closed {
+			t.Error("the store was not closed after the budget ran out")
+		}
+
+		close(release)
+		synctest.Wait()
+	})
 }
 
 // A zero per-step budget means "only ctx bounds it", not "zero time".
