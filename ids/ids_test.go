@@ -16,7 +16,7 @@ func TestTokensHaveTheirDocumentedLength(t *testing.T) {
 	if n := len(g.GeneratePassword()); n != 22 {
 		t.Errorf("GeneratePassword length = %d, want 22", n)
 	}
-	if g.NewToken() == g.NewToken() {
+	if first, second := g.NewToken(), g.NewToken(); first == second {
 		t.Error("two tokens must differ")
 	}
 }

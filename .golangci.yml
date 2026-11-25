@@ -1,0 +1,22 @@
+version: "2"
+
+linters:
+  # The default set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  settings:
+    errcheck:
+      # A deferred or best-effort close has nowhere useful to send its error.
+      exclude-functions:
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*os.File).Close
+        - os.RemoveAll
+        - (*github.com/neodata-io/neokit/app.App).Close
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]
+      # The explicit types are the assertion: they prove the aliases are identical.
+      - path: oidcauth/alias_test\.go
+        linters: [staticcheck]
+        text: "ST1023|QF1011"
