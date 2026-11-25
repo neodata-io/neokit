@@ -4,8 +4,8 @@
 // Teardown has to run in reverse of the order things were built, because a step
 // can only be torn down while everything depending on it is still alive — stop
 // accepting requests before closing the database the in-flight ones are reading.
-// [Stack] enforces exactly that (LIFO) and nothing else: it starts nothing, owns
-// no goroutines, and decides no dependencies. Push a step right after building
+// [Stack] enforces exactly that (LIFO) and nothing else: it starts nothing and
+// decides no dependencies. Push a step right after building
 // the thing it tears down, so the ordering is readable at the call site.
 //
 // Each step is bounded so one wedged Close cannot hold the process open, a
@@ -49,8 +49,9 @@ func SignalsWith(parent context.Context, sig ...os.Signal) (context.Context, con
 	return signal.NotifyContext(parent, sig...)
 }
 
-// Step is one teardown action. It must honour ctx: that is how [Stack.Shutdown]
-// bounds it.
+// Step is one teardown action. It should honour ctx. One that does not is
+// abandoned when its budget runs out, and may then still be running while the
+// steps after it tear down what it uses.
 type Step func(ctx context.Context) error
 
 type step struct {
@@ -141,7 +142,9 @@ func (s *Stack) Names() []string {
 //
 // A step that exceeds its budget does not stop the sweep — otherwise a process
 // holds its database handle because an HTTP server was slow to drain, and the
-// step that hung is the one whose resource the OS reclaims at exit anyway.
+// step that hung is the one whose resource the OS reclaims at exit anyway. That
+// holds for a step that ignores ctx too: it is reported as timed out and left
+// behind, still running.
 //
 // Shutdown is idempotent: a second call does nothing and returns nil.
 func (s *Stack) Shutdown(ctx context.Context, each time.Duration) error {
@@ -174,21 +177,46 @@ func (s *Stack) Shutdown(ctx context.Context, each time.Duration) error {
 	return errors.Join(errs...)
 }
 
+// stepGrace is how long a step whose budget just ran out is given to return on
+// its own. It keeps a step that honours ctx in sequence — and reporting its own
+// error — while a Close that cannot hear ctx costs only this much extra.
+const stepGrace = 100 * time.Millisecond
+
 // runStep bounds and guards one step.
 //
-// The panic guard matters more here than anywhere else in a program: a panic in
-// a teardown function would otherwise unwind out of Shutdown and skip every step
-// below it — losing the database flush because the metrics server misbehaved.
-func runStep(ctx context.Context, st step, each time.Duration) (err error) {
+// The step runs on its own goroutine: that is the only way to stop waiting for
+// one that ignores ctx. The panic guard goes with it, so a panicking step can
+// neither skip the steps below it nor crash the process once abandoned.
+func runStep(ctx context.Context, st step, each time.Duration) error {
 	if each > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, each)
 		defer cancel()
 	}
-	if panicked := safe.Do("shutdown:"+st.name, func() { err = st.fn(ctx) }); panicked {
-		return errors.New("panicked during shutdown")
+
+	done := make(chan error, 1) // buffered: an abandoned step must not block on it
+	go func() {
+		var err error
+		if panicked := safe.Do("shutdown:"+st.name, func() { err = st.fn(ctx) }); panicked {
+			err = errors.New("panicked during shutdown")
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
 	}
-	return err
+
+	grace := time.NewTimer(stepGrace)
+	defer grace.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-grace.C:
+		return fmt.Errorf("abandoned, still running: %w", ctx.Err())
+	}
 }
 
 func (s *Stack) logger() *slog.Logger {

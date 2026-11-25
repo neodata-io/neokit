@@ -2,8 +2,8 @@
 //
 // It is opt-in: Init is a no-op unless an OTLP endpoint is configured. When
 // enabled it exports spans to an OTLP/HTTP collector (Tempo) and installs the
-// W3C Trace Context propagator so a `traceparent` header from an upstream proxy
-// continues the same trace. The per-request Middleware opens one server span;
+// W3C Trace Context propagator so a `traceparent` header from a trusted upstream
+// proxy continues the same trace. The per-request Middleware opens one server span;
 // logx then stamps that span's trace_id/span_id onto every log line, which is
 // what lets Grafana jump Loki ⇄ Tempo ("logs to trace" and back).
 package tracing
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -23,14 +24,15 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/neodata-io/neokit/logx"
 )
 
-// tracer is resolved lazily from the global provider so the Middleware works
-// whether or not Init installed a real provider (no-op provider otherwise).
+// The tracer is resolved from the global provider on each request, so the
+// Middleware follows whichever provider is installed, by Init or otherwise.
 const scopeName = "github.com/neodata-io/neokit/tracing"
 
 // Config is the application-supplied identity for the traced service. Everything
@@ -55,9 +57,9 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 		log = slog.Default()
 	}
 
-	// Always propagate: even with no local exporter we honor and forward an
-	// upstream traceparent, so trace_id still flows through logs behind a proxy
-	// that starts the trace.
+	// Always propagate: even with no local exporter a trusted proxy's traceparent
+	// is honoured, so trace_id still flows through logs behind a proxy that
+	// starts the trace.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
@@ -116,50 +118,95 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 	return tp.Shutdown, nil
 }
 
+// pristine is the global provider before anyone installs one. Spans started on
+// it are discarded, so [Middleware] skips the work of making them.
+var pristine = otel.GetTracerProvider()
+
+// off reports whether spans would go nowhere.
+func off() bool {
+	tp := otel.GetTracerProvider()
+	if _, ok := tp.(noop.TracerProvider); ok {
+		return true
+	}
+	return tp == pristine
+}
+
+// upstream extracts the trace context a trusted proxy sent, if any. A client's
+// own traceparent is not honoured: it picks the trace id and the sampling
+// decision, so it could force sampling, hide requests, or forge the id in logs.
+func upstream(c fiber.Ctx) (context.Context, bool) {
+	// IsProxyTrusted is false unless Config.TrustProxy is set and the peer matches.
+	if !c.IsProxyTrusted() {
+		return nil, false
+	}
+	var carrier propagation.MapCarrier
+	for _, k := range propagated {
+		if v := c.Get(k); v != "" {
+			if carrier == nil {
+				carrier = make(propagation.MapCarrier, len(propagated))
+			}
+			// Cloned: Fiber's string aliases a pooled buffer, and the parsed
+			// tracestate and baggage keep substrings of it.
+			carrier[k] = strings.Clone(v)
+		}
+	}
+	if carrier == nil {
+		return nil, false
+	}
+	return otel.GetTextMapPropagator().Extract(c.Context(), carrier), true
+}
+
+var propagated = [...]string{"traceparent", "tracestate", "baggage"}
+
 // Middleware opens one server span per request, continuing an upstream trace
-// when present. The span context is placed on the request context so downstream
-// handlers, services, and every log line share the same trace_id. Register it
-// after requestid and before the metrics/logger middleware so the summary line
-// carries the trace ids.
+// when a trusted proxy (Fiber's TrustProxy configuration) sent one. The span
+// context is placed on the request context so downstream handlers, services,
+// and every log line share the same trace_id. Register it after requestid and
+// before the metrics/logger middleware so the summary line carries the trace ids.
+//
+// With no tracer provider installed it only forwards a trusted proxy's trace
+// context to the logs, and otherwise costs nothing.
 func Middleware() fiber.Handler {
 	return func(c fiber.Ctx) error {
-		// Continue an upstream trace if the proxy/client sent one.
-		carrier := propagation.MapCarrier{}
-		for _, k := range []string{"traceparent", "tracestate", "baggage"} {
-			if v := c.Get(k); v != "" {
-				carrier[k] = v
+		parent, continued := upstream(c)
+		if off() {
+			if continued {
+				c.SetContext(parent)
 			}
+			return c.Next()
 		}
-		ctx := otel.GetTextMapPropagator().Extract(c.Context(), carrier)
+		if !continued {
+			parent = c.Context()
+		}
 
-		// Low-cardinality span name: METHOD + route template, e.g. "GET
-		// /api/invites/:id" — matches the Prometheus/log path label.
-		route := c.Route().Path
-		ctx, span := otel.Tracer(scopeName).Start(ctx, c.Method()+" "+route,
+		method := c.Method()
+		// Named by method alone for now: the route is not matched until c.Next().
+		ctx, span := otel.Tracer(scopeName).Start(parent, method,
 			trace.WithSpanKind(trace.SpanKindServer),
 			trace.WithAttributes(
-				attribute.String("http.request.method", c.Method()),
-				attribute.String("http.route", route),
-				attribute.String("url.path", c.Path()),
+				attribute.String("http.request.method", method),
+				// Cloned: the span is exported after Fiber has reused this buffer.
+				attribute.String("url.path", strings.Clone(c.Path())),
 			),
 		)
-		// A handler panic unwinds through here before the outer recover
-		// middleware catches it; without this the span would end Unset with no
-		// status_code — a blind spot on exactly the worst requests. Mark it and
-		// re-panic so recover.New still produces the response.
-		// Register span.End() FIRST so LIFO runs it LAST — after the recover handler
-		// below has marked the span errored. If End ran first (as when it was
-		// registered last), the recover handler's SetStatus/RecordError would no-op
-		// on an already-ended span, leaving a panicking request as an Unset span with
-		// no recorded error — the exact blind spot this instrumentation exists to
-		// close. End still runs as the re-panic unwinds.
-		defer span.End()
+		// One deferred function, so the span is named and marked before it ends
+		// whether the handler returned or panicked.
 		defer func() {
+			// Low-cardinality name: METHOD + route template, e.g. "GET
+			// /api/invites/:id" — the same label the metrics and the log line use.
+			route := c.Route().Path
+			span.SetName(method + " " + route)
+			span.SetAttributes(attribute.String("http.route", route))
+
+			// A handler panic unwinds through here before the outer recover
+			// middleware; mark the span and re-panic so that still responds.
 			if r := recover(); r != nil {
 				span.SetStatus(codes.Error, "panic")
 				span.RecordError(fmt.Errorf("%v", r))
+				span.End()
 				panic(r)
 			}
+			span.End()
 		}()
 
 		c.SetContext(ctx)

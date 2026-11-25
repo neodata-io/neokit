@@ -185,6 +185,68 @@ func TestRunPanicsOnAnUnusableJob(t *testing.T) {
 	}
 }
 
+// Start hands the job to a supervisor that recovers panics and retries. Without
+// a check at the call site, a misconfigured job boots a healthy-looking service
+// that logs a stack trace every few seconds and never runs the work.
+func TestStartPanicsAtTheCallSiteOnAnUnusableJob(t *testing.T) {
+	cases := map[string]Job{
+		"zero interval": {Name: "t", Every: 0, Do: func(context.Context) error { return nil }},
+		"no Do":         {Name: "t", Every: time.Second},
+	}
+	for name, j := range cases {
+		t.Run(name, func(t *testing.T) {
+			// Already cancelled, so a Start that wrongly spawns leaves nothing behind.
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			defer func() {
+				if recover() == nil {
+					t.Error("Start must panic on an unusable job, not hand it to the supervisor")
+				}
+			}()
+			j.Start(ctx)
+		})
+	}
+}
+
+// A run that outlasts the interval leaves a tick buffered. If shutdown arrives
+// during that run, the tick and the cancellation are both ready, and the tick
+// must lose: a run started into a shutdown only holds the drain open.
+func TestNoRunStartsAfterCancellationEvenWithATickBuffered(t *testing.T) {
+	// Repeated because the bug is a coin flip per shutdown. Real time, not a
+	// synctest bubble: the buffered tick is the thing under test.
+	for range 40 {
+		var runs atomic.Int64
+		ctx, cancel := context.WithCancel(t.Context())
+		Job{
+			// No RunAtStart: the run has to come from the ticker for a tick to queue.
+			Name: "t", Every: time.Millisecond, Log: quiet(),
+			Do: func(context.Context) error {
+				runs.Add(1)
+				cancel()
+				time.Sleep(5 * time.Millisecond) // long enough for a tick to queue up
+				return nil
+			},
+		}.Run(ctx)
+
+		if got := runs.Load(); got != 1 {
+			t.Fatalf("runs = %d, want 1 — a run started after cancellation", got)
+		}
+	}
+}
+
+func TestRunAtStartDoesNotRunOnACancelledContext(t *testing.T) {
+	var runs atomic.Int64
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	Job{
+		Name: "t", Every: time.Hour, RunAtStart: true, Log: quiet(),
+		Do: func(context.Context) error { runs.Add(1); return nil },
+	}.Run(ctx)
+	if got := runs.Load(); got != 0 {
+		t.Errorf("runs = %d, want 0 on a context cancelled before Run", got)
+	}
+}
+
 // A cancelled context must stop the loop promptly even mid-run.
 func TestCancellationStopsAJobAlreadyRunning(t *testing.T) {
 	started := make(chan struct{})
