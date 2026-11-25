@@ -9,6 +9,10 @@
 // [github.com/neodata-io/neokit/session.NewSQLite], or your own
 // [oidcauth.SessionStore] over whatever database you already have.
 //
+// Set [Options.Tokens] and a script or a native app can be a signed-in person
+// too: a personal API token is recognised wherever a session is, and six more
+// routes manage them. See apitoken.go.
+//
 // # Optional by construction
 //
 // [Options.Provider] is a function returning a possibly-nil provider, so "no
@@ -54,9 +58,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/neodata-io/neokit/apitoken"
 	"github.com/neodata-io/neokit/app"
+	"github.com/neodata-io/neokit/fiberx"
 	"github.com/neodata-io/neokit/jobs"
 	"github.com/neodata-io/neokit/oidcauth"
 )
@@ -128,6 +135,28 @@ type Options struct {
 	// the URL.
 	ReasonParam string
 
+	// Tokens enables personal API tokens: `Authorization: Bearer <prefix>…` is
+	// recognised wherever a session is, and the routes that make, list and revoke
+	// tokens are mounted. Nil leaves all of it off — no middleware, no routes.
+	// [github.com/neodata-io/neokit/apitoken.NewSQLite] is the store neokit ships.
+	//
+	// Like the rest of the gate it is inert while no login is configured: a token
+	// is a way to be a signed-in person, and without a login there is none.
+	Tokens apitoken.Store
+
+	// TokenPrefix starts every token this application mints, and is how a request
+	// tells one of its own from any other bearer value. Defaults to the cookie
+	// prefix and an underscore ("myapp_").
+	//
+	// Choose it once and keep it, like CookiePrefix: a token under the old prefix
+	// is no longer recognised as this application's, and is passed over.
+	TokenPrefix string
+
+	// TokenMaxAge is the longest a token may live. A request may ask for less;
+	// one that asks for more, or for nothing, gets this. Zero lets a token be made
+	// without an expiry.
+	TokenMaxAge time.Duration
+
 	// Log receives the gate's diagnostics. Nil means slog.Default().
 	Log *slog.Logger
 }
@@ -147,6 +176,12 @@ type Gate struct {
 	stateCookie   string // "{prefix}_auth_state"
 
 	onFailure func(c fiber.Ctx, reason Reason, cause error) error
+
+	// tokens is nil when personal API tokens are off. See apitoken.go.
+	tokens      apitoken.Store
+	tokenPrefix string
+	tokenMaxAge time.Duration
+	validate    *validator.Validate
 
 	// now is the clock, injectable for tests. Never nil after New.
 	now func() time.Time
@@ -188,6 +223,9 @@ func New(a *app.App, o Options) *Gate {
 		sessionCookie: prefix + "_session",
 		stateCookie:   prefix + "_auth_state",
 		onFailure:     o.OnLoginFailure,
+		tokens:        o.Tokens,
+		tokenPrefix:   orDefault(o.TokenPrefix, prefix+"_"),
+		tokenMaxAge:   o.TokenMaxAge,
 		now:           time.Now,
 	}
 	if g.rateLimit == 0 {
@@ -208,6 +246,13 @@ func New(a *app.App, o Options) *Gate {
 	// only runs middleware registered ahead of a route.
 	a.HTTP.Use(g.ResolveIdentity())
 	g.register(a.HTTP)
+	// After the gate's own routes, so those never see a token; ahead of every
+	// route the caller mounts once this returns, so those always do.
+	if g.tokens != nil {
+		// Built once: a validator caches the struct layout it reflected over.
+		g.validate = fiberx.NewValidator()
+		g.registerTokens(a.HTTP)
+	}
 
 	// The sweep runs whether or not login is configured — a store outlives the
 	// login that filled it, and nothing else prunes it.
