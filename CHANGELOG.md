@@ -5,8 +5,26 @@ Changes a service built on neokit could notice. Releases are minor tags only
 
 ## Unreleased
 
+### Security
+
+- **`app`: with no `CORS_ORIGINS`, no other origin may read the API.** Fiber
+  read an empty list as "every origin", so an app built without origins
+  answered `Access-Control-Allow-Origin: *`.
+- **`fiberx`, `app`, `tracing`: a raw request path no longer reaches a log or a
+  span.** The "request failed" and "panic recovered" lines name the route
+  template, and server spans drop `url.path`; `http.route` remains.
+- **`app`: without `METRICS_TOKEN`, `/metrics` refuses a request forwarded by a
+  proxy in `TRUSTED_PROXIES`** with 403. A direct scrape is still served; set
+  the token to scrape through the proxy.
+- `tracing`, `metrics`: the startup line names the OTLP endpoint's host only.
+
 ### Changed
 
+- **`config`: `CORS_ORIGINS` has no default.** It was `http://localhost:3000`;
+  a local frontend sets it explicitly.
+- `app`: a client's `X-Request-Id` is kept only if it is at most 64 letters,
+  digits, `-`, `_` or `.`; anything else is replaced with a generated id.
+- `fiberx.RateLimiter`: an IPv6 client is counted by its /64.
 - **`oidcauth`: a blank `OwnerGroup` now makes nobody an owner.** It used to
   make every signed-in user one. Set the group whose members should be owners;
   `fiberauth.New` warns at boot when a login has none.
@@ -51,6 +69,10 @@ Changes a service built on neokit could notice. Releases are minor tags only
 - `capset`: `All` and `ByName` return copies, so a caller that writes to the
   result no longer changes it for every other caller. The package no longer
   uses reflection.
+- `tracing`, `fiberx`: a span records the status the client got for a returned
+  error (a mapped 404, a 500) instead of 200.
+- `fiberx.MetricsAndLogger`: a panicking request gets its `http` summary line
+  and duration sample, with status 500.
 
 ## v0.20.0 — 2026-11-25
 
