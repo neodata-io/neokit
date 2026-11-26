@@ -16,6 +16,9 @@ import (
 // Go never blocks the caller. A task past the limit waits on the goroutine it
 // was given until a slot frees, or until its context ends. The zero Pool is
 // ready to use and unbounded; set Limit for a bound.
+//
+// Limit bounds running tasks, not waiting ones: the queue has no cap, so a
+// caller that can be flooded (a request handler) must bound its own rate.
 type Pool struct {
 	// Limit caps how many tasks run at once. Zero means no cap. It is read on the
 	// first Go and fixed from then on.

@@ -125,13 +125,13 @@ func TestAnyReportsPresence(t *testing.T) {
 // — and cheap.
 func TestLookupsAreMemoised(t *testing.T) {
 	s := fixture()
-	first := All[Charger](s)
-	second := All[Charger](s)
+	first := all[Charger](s)
+	second := all[Charger](s)
 	if len(first) != len(second) {
 		t.Fatal("a memoised lookup changed length")
 	}
 	if &first[0] != &second[0] {
-		t.Error("All must return the cached slice rather than rebuilding it")
+		t.Error("the lookup must come from the cache rather than being rebuilt")
 	}
 }
 
@@ -172,6 +172,26 @@ func TestEmptySetResolvesToNothing(t *testing.T) {
 	}
 	if s.Len() != 0 {
 		t.Errorf("Len = %d, want 0", s.Len())
+	}
+}
+
+// The cache is shared by every caller; one that writes to its result must not
+// change what the next caller sees.
+func TestACallerCannotChangeTheCachedResults(t *testing.T) {
+	s := fixture()
+
+	list := All[Charger](s)
+	list[0] = nil
+	_ = append(All[Charger](s)[:1], chargerOnly{base{"intruder"}})
+	if got := All[Charger](s); got[0] == nil || got[1].Name() != "equalizer" {
+		t.Errorf("All after a caller wrote to its result = %v", got)
+	}
+
+	table := ByName[Charger](s)
+	delete(table, "easee")
+	table["intruder"] = chargerOnly{base{"intruder"}}
+	if Of[Charger](s, "easee") == nil || Of[Charger](s, "intruder") != nil {
+		t.Error("ByName after a caller wrote to its result changed what Of resolves")
 	}
 }
 

@@ -310,7 +310,7 @@ gets exactly that.
 | Data | `sqlitex` | `PRAGMA user_version` append-only migration runner, `Query`/`Each`/`QueryOne`, `Placeholders`/`Args`/`CheckAffected`, `VACUUM INTO` snapshot backup |
 | | `backup` | a fresh snapshot streamed on demand, and a dated copy written daily at a set local time, with retention |
 | | `cache` | stale-while-revalidate `GetOrFetch`; `Fetch` adds a `Status` saying when a value is only being kept alive through an outage |
-| Background | `safe` | goroutine recovery, `Group` supervision, `Pool` for bounded one-shot tasks, `All` fan-out |
+| Background | `safe` | goroutine recovery, `Group` supervision, `Pool` for concurrency-capped one-shot tasks, `All` fan-out |
 | | `jobs` | `Job{Every, Timeout, RunAtStart, Do}` — periodic work that is bounded and panic-guarded |
 | | `pubsub` | `Bus[T]` — keyed fan-out for SSE/WebSocket, drop-on-slow |
 | Observability | `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |

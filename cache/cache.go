@@ -257,7 +257,9 @@ func Fetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Conte
 			// gate — a burst of reads on a stale key spawns one refresh, not one each —
 			// and load already claimed it for us, so only one caller reaches this.
 			if spawn {
-				go revalidate(e, key, ttl, fn)
+				// In safe's group, so app.Run's drain waits for it before closing
+				// what fn uses.
+				safe.Go(context.Background(), "cache.revalidate", func() { revalidate(e, ttl, fn) })
 			}
 			return v, st, nil
 		}
@@ -339,19 +341,18 @@ func lead[T any](e *entry, f *flight, ttl time.Duration, fn func(context.Context
 
 // revalidate refreshes an already-loaded key in the background. It never blocks a
 // caller: readers are served the stale value while this runs.
-func revalidate[T any](e *entry, key string, ttl time.Duration, fn func(context.Context) (T, error)) {
+func revalidate[T any](e *entry, ttl time.Duration, fn func(context.Context) (T, error)) {
 	e.mu.Lock()
 	gen := e.gen
 	e.mu.Unlock()
 
 	var v T
 	ok := false
-	// The fetch is wrapped so a panicking upstream can't escape this detached
-	// goroutine (which runs outside Fiber's recover middleware) and can't leave
-	// `refreshing` stuck true, which would wedge the key on its stale value forever.
-	// A panic leaves ok false, so it is handled exactly like a failed fetch.
+	// Recovered here, not by safe.Go, so a panic can't leave `refreshing` stuck
+	// true (wedging the key on its stale value) or respawn the fetch. A panic
+	// leaves ok false, so it is handled exactly like a failed fetch.
 	func() {
-		defer safe.Recover("cache.revalidate " + key)
+		defer safe.Recover("cache.revalidate") // not the key: it may carry user input
 		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
 		got, err := fn(ctx)
