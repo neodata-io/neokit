@@ -24,11 +24,36 @@ import (
 // A timeout of zero or less applies no per-item bound beyond ctx itself. name
 // labels a panic in the log.
 func All[T, R any](ctx context.Context, items []T, timeout time.Duration, name string, fn func(context.Context, T) (R, error)) (results []R, ok []bool) {
+	return AllLimit(ctx, items, 0, timeout, name, fn)
+}
+
+// AllLimit is [All] with at most limit calls in flight, for an upstream that
+// rate-limits. Zero or less means no limit. An item's timeout starts when it
+// does, not while it waits; an item still waiting when ctx ends is not started.
+func AllLimit[T, R any](ctx context.Context, items []T, limit int, timeout time.Duration, name string, fn func(context.Context, T) (R, error)) (results []R, ok []bool) {
 	results = make([]R, len(items))
 	ok = make([]bool, len(items))
+	var slots chan struct{}
+	if limit > 0 {
+		slots = make(chan struct{}, limit)
+	}
 	var wg sync.WaitGroup
 	for i, item := range items {
+		if slots != nil {
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+			}
+			// Checked again: select picks at random when both are ready.
+			if ctx.Err() != nil {
+				wg.Wait()
+				return results, ok
+			}
+		}
 		wg.Go(func() {
+			if slots != nil {
+				defer func() { <-slots }()
+			}
 			// Detached from any request goroutine, so no recover middleware covers
 			// it: an unguarded panic in one source would take the process down.
 			runGuarded(nil, name, func() {
