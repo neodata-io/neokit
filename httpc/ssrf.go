@@ -34,7 +34,8 @@ import (
 type Policy func(ip netip.Addr) bool
 
 // IsPrivateAddr reports whether ip is in one of the address classes an SSRF
-// payload aims at: RFC1918/ULA private space, carrier-grade NAT, and everything
+// payload aims at: RFC1918/ULA and site-local space, carrier-grade NAT, Teredo,
+// the benchmarking and IETF-reserved IPv4 blocks, and everything
 // [IsInternalAddr] refuses. A public CDN never resolves to one of these.
 //
 // This is the strict policy, and the right default. Use it whenever the fetch
@@ -55,8 +56,9 @@ func IsPrivateAddr(ip netip.Addr) bool {
 
 // IsInternalAddr reports whether ip means "this machine" or "this link" rather
 // than "a host on the network": loopback, link-local (169.254.169.254 among
-// them), the cloud metadata endpoints that live elsewhere, multicast, and the
-// reserved blocks no host has (0.0.0.0/8, 240.0.0.0/4 and broadcast).
+// them), the cloud metadata endpoints that live elsewhere, multicast, the
+// reserved blocks no host has (0.0.0.0/8, 240.0.0.0/4 and broadcast), and the
+// deprecated IPv6 forms some stacks route to the IPv4 address inside them.
 //
 // It is [IsPrivateAddr] minus the private ranges, for the fetch that is
 // *supposed* to reach the local network — a self-hosted app resolving the
@@ -81,14 +83,17 @@ func IsInternalAddr(ip netip.Addr) bool {
 		inAny(ip, internalRanges)
 }
 
-// internalRanges are never "a box on the network": blocks no host has, and the
-// metadata endpoints that sit outside link-local.
+// internalRanges are never "a box on the network": blocks no host has, the
+// metadata endpoints that sit outside link-local, and IPv4-in-IPv6 forms that
+// no longer have a legitimate use.
 var internalRanges = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),          // "this network"
 	netip.MustParsePrefix("240.0.0.0/4"),        // reserved, and broadcast
 	netip.MustParsePrefix("100.100.100.200/32"), // Alibaba Cloud metadata
 	netip.MustParsePrefix("168.63.129.16/32"),   // Azure WireServer
 	netip.MustParsePrefix("fd00:ec2::254/128"),  // AWS IMDS over IPv6
+	netip.MustParsePrefix("::/96"),              // IPv4-compatible, deprecated
+	netip.MustParsePrefix("::ffff:0:0:0/96"),    // SIIT-translated, deprecated
 }
 
 // privateRanges are networks the strict policy refuses beyond what
@@ -96,6 +101,10 @@ var internalRanges = []netip.Prefix{
 var privateRanges = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),  // carrier-grade NAT; also tailnets
 	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
+	netip.MustParsePrefix("fec0::/10"),      // site-local, ULA's predecessor
+	netip.MustParsePrefix("2001::/32"),      // Teredo tunnels
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking, common as lab space
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
 }
 
 var (
