@@ -59,7 +59,9 @@ func TestDoJSON_Non2xxReturnsAPIError(t *testing.T) {
 	if apiErr.Body != "boom" {
 		t.Errorf("Body = %q, want boom", apiErr.Body)
 	}
-	if want := "svc API 500: boom"; apiErr.Error() != want {
+	// The reply stays on the error for code to read, but out of the message,
+	// which is what reaches a log: an upstream reply can carry a credential.
+	if want := "svc API 500"; apiErr.Error() != want {
 		t.Errorf("Error() = %q, want %q", apiErr.Error(), want)
 	}
 }

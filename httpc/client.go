@@ -27,15 +27,14 @@ import (
 type APIError struct {
 	Service    string
 	StatusCode int
-	Body       string
+	// Body is the start of the server's reply, bounded, for code that needs the
+	// reason. It is not part of Error(): a reply can carry a credential, and the
+	// message is what reaches a log.
+	Body string
 }
 
 func (e *APIError) Error() string {
-	// A body-less APIError (see StatusError) must not render a dangling "403: ".
-	if e.Body == "" {
-		return fmt.Sprintf("%s API %d", e.Service, e.StatusCode)
-	}
-	return fmt.Sprintf("%s API %d: %s", e.Service, e.StatusCode, e.Body)
+	return fmt.Sprintf("%s API %d", e.Service, e.StatusCode)
 }
 
 // errorBodyLimit bounds how much of a non-2xx body is kept in an [APIError]: a
