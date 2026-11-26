@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"net/url"
 	"strings"
@@ -38,6 +39,20 @@ import (
 type Keys struct {
 	Public  string
 	Private string
+}
+
+// String, GoString and LogValue print the public key only, so a Keys that ends
+// up in a log line or a %v does not leak the signing key.
+func (k Keys) String() string { return "{Public:" + k.Public + " Private:[REDACTED]}" }
+
+// GoString covers %#v, which bypasses String.
+func (k Keys) GoString() string {
+	return `webpush.Keys{Public:"` + k.Public + `", Private:"[REDACTED]"}`
+}
+
+// LogValue implements [slog.LogValuer].
+func (k Keys) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("public", k.Public), slog.String("private", "[REDACTED]"))
 }
 
 // Key sizes on the wire, before base64url encoding.

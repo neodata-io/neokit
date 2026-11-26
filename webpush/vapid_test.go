@@ -1,11 +1,40 @@
 package webpush
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 )
+
+// The private key signs every push; logging or printing a Keys, or a struct
+// that holds one, must not put it in a log line.
+func TestLoggingOrPrintingKeysNeverShowsThePrivateKey(t *testing.T) {
+	k, err := GenerateKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("boot", "vapid", k)
+	outputs := map[string]string{
+		"slog": buf.String(),
+		"%v":   fmt.Sprintf("%v", k),
+		"%+v":  fmt.Sprintf("%+v", struct{ K Keys }{k}),
+		"%#v":  fmt.Sprintf("%#v", k),
+		"%s":   k.String(),
+	}
+	for verb, out := range outputs {
+		if strings.Contains(out, k.Private) {
+			t.Errorf("%s output shows the private key: %s", verb, out)
+		}
+		if !strings.Contains(out, k.Public) {
+			t.Errorf("%s output lost the public key, which is not secret: %s", verb, out)
+		}
+	}
+}
 
 // The encodings are a compatibility contract, not an internal detail: a keypair
 // is persisted on first boot and every browser subscription is bound to it, so
