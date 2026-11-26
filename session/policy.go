@@ -77,11 +77,11 @@ func (p Policy) ExpiryFor(createdAt, now time.Time) time.Time {
 // wired in. A store that returns a row verbatim would otherwise silently
 // authenticate an expired session.
 //
-// A zero CreatedAt is treated as "unknown, not expired" so a row written before
-// the cap existed is retired by the TTL rather than rejected outright.
+// A zero ExpiresAt is not live: unknown fails closed. A zero CreatedAt is
+// "unknown, not expired" so a row from before the cap is retired by the TTL.
 func (p Policy) Live(s Session, now time.Time) bool {
 	p = p.withDefaults()
-	if !s.ExpiresAt.IsZero() && !s.ExpiresAt.After(now) {
+	if !s.ExpiresAt.After(now) {
 		return false
 	}
 	if !s.CreatedAt.IsZero() && now.Sub(s.CreatedAt) >= p.MaxLifetime {

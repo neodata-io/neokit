@@ -44,6 +44,18 @@ func TestLiveRejectsExpiredAndOverAgedSessions(t *testing.T) {
 	}
 }
 
+// A store that leaves the expiry unset must not get a session that never ends:
+// unknown means no, so the rule holds whichever store is wired in.
+func TestASessionWithNoExpiryIsNotLive(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	if session.DefaultPolicy().Live(session.Session{}, now) {
+		t.Error("a session with no timestamps must not be live")
+	}
+	if session.DefaultPolicy().Live(session.Session{CreatedAt: now.Add(-time.Hour)}, now) {
+		t.Error("a session with no expiry must not be live")
+	}
+}
+
 // A zero field means "unset", so one override does not force restating the rest.
 func TestZeroFieldsFallBackToDefaults(t *testing.T) {
 	base := time.Unix(0, 0).UTC()
