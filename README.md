@@ -298,7 +298,7 @@ gets exactly that.
 | | `lifecycle` | `Signals` context + a LIFO named shutdown `Stack` |
 | | `config` | `config.Base`, the settings every service has, and `Load` to parse the environment into your own struct |
 | | `buildinfo` | version/commit/date with Go's embedded VCS metadata as the fallback |
-| HTTP in | `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, security headers, the cross-origin write guard, a rate limiter, `Created` + `Location`, strong ETags + 304 for cacheable bytes |
+| HTTP in | `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, security headers, the cross-origin write guard, a rate limiter, `Created` + `Location`, strong ETags + 304 for cacheable bytes (`NotModified` before the work) |
 | Login | `oidcauth` | provider-agnostic OpenID Connect relying party: PKCE, nonce, typed error sentinels |
 | | `oidcauth/fiberauth` | the browser half — handshake routes, `__Host-` cookies, session middleware, guards — and API tokens recognised wherever a session is |
 | | `session` | `Session`, `Store`, `Policy` — and `NewSQLite`, the store neokit ships. Standard library only |
@@ -307,10 +307,10 @@ gets exactly that.
 | | `notify` | `Sender` — webhook, ntfy, Apprise, and a `Multi` fan-out |
 | | `webpush` | VAPID keypair generation and `sub` normalisation (no dependencies) |
 | | `webpush/delivery` | `Sender` — delivers to every subscription on a topic and prunes the ones that have gone away |
-| Data | `sqlitex` | `PRAGMA user_version` append-only migration runner, `Query`/`Each`/`QueryOne`, `Placeholders`/`Args`/`CheckAffected`, `VACUUM INTO` snapshot backup |
+| Data | `sqlitex` | `PRAGMA user_version` append-only migration runner, `Query`/`Each`/`QueryOne`, `InTx`, `Placeholders`/`Args`/`CheckAffected`, `VACUUM INTO` snapshot backup |
 | | `backup` | a fresh snapshot streamed on demand, and a dated copy written daily at a set local time, with retention |
-| | `cache` | stale-while-revalidate `GetOrFetch`; `Fetch` adds a `Status` saying when a value is only being kept alive through an outage |
-| Background | `safe` | goroutine recovery, `Group` supervision, `Pool` for concurrency-capped one-shot tasks, `All` fan-out |
+| | `cache` | stale-while-revalidate `GetOrFetch`, `GetOrFetchWithBackoff` for a source that may be down from the start; `Fetch` adds a `Status` saying when a value is only being kept alive through an outage |
+| Background | `safe` | goroutine recovery, `Group` supervision, `Pool` for concurrency-capped one-shot tasks, `All`/`AllLimit` fan-out |
 | | `jobs` | `Job{Every, Timeout, RunAtStart, Do}` — periodic work that is bounded and panic-guarded |
 | | `pubsub` | `Bus[T]` — keyed fan-out for SSE/WebSocket, drop-on-slow |
 | Observability | `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
