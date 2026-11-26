@@ -142,3 +142,24 @@ func TestPushEndpointExportsOnShutdown(t *testing.T) {
 		t.Error("Shutdown did not flush the pipeline to the collector")
 	}
 }
+
+// An OTLP endpoint may carry credentials in its userinfo or a secret path; the
+// startup line names the host.
+func TestInitLogsOnlyThePushEndpointHost(t *testing.T) {
+	isolate(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://user:pw@127.0.0.1:1/secret/v1/metrics")
+	var logged strings.Builder
+	log := slog.New(slog.NewTextHandler(&logged, nil))
+
+	p, err := Init(context.Background(), Config{ServiceName: "svc", Log: log})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = p.Shutdown(ctx) // the endpoint is dead; only the log line matters
+
+	if out := logged.String(); strings.Contains(out, "pw") || strings.Contains(out, "secret") || !strings.Contains(out, "127.0.0.1:1") {
+		t.Errorf("startup line = %q, want only the host", out)
+	}
+}

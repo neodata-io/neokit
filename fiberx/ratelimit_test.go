@@ -62,6 +62,37 @@ func TestRateLimiterIgnoresAForwardedForNobodyVouchedFor(t *testing.T) {
 	}
 }
 
+// An IPv6 client is handed a whole /64, so rotating the low bits must not buy
+// a fresh budget; a different /64 is a different client.
+func TestRateLimiterCountsAnIPv6ClientByIts64Prefix(t *testing.T) {
+	app := fiber.New(fiber.Config{
+		TrustProxy:         true,
+		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0"}}, // app.Test's peer
+		ProxyHeader:        fiber.HeaderXForwardedFor,
+		EnableIPValidation: true,
+	})
+	app.Get("/x", RateLimiter(2), func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusOK) })
+
+	get := func(xff string) int {
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Header.Set("X-Forwarded-For", xff)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatalf("request from %s: %v", xff, err)
+		}
+		return resp.StatusCode
+	}
+
+	get("2001:db8:1:2::1")
+	get("2001:db8:1:2::2")
+	if got := get("2001:db8:1:2:ffff::3"); got != fiber.StatusTooManyRequests {
+		t.Errorf("third request from the same /64 = %d, want 429", got)
+	}
+	if got := get("2001:db8:1:3::1"); got != fiber.StatusOK {
+		t.Errorf("first request from another /64 = %d, want 200", got)
+	}
+}
+
 // RateLimiterByPeer ignores X-Forwarded-For entirely, so a caller cannot buy a
 // fresh budget just by rotating a header it fully controls. It exists for a
 // route whose limit is a security boundary rather than a courtesy — see the

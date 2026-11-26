@@ -124,6 +124,18 @@ func TestACorsOriginMayWrite(t *testing.T) {
 	}
 }
 
+// No CORS_ORIGINS means no other site may read the API. Fiber's own reading of
+// an empty list is "every origin", which is the opposite.
+func TestWithNoCorsOriginsNoOtherSiteMayRead(t *testing.T) {
+	a := newApp(t)
+	a.API.Get("/things", func(c fiber.Ctx) error { return c.SendString("[]") })
+
+	resp := request(t, a, http.MethodGet, a.APIBase+"/things", map[string]string{"Origin": "https://evil.example"})
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want none", got)
+	}
+}
+
 func TestCrossOriginWritesCanBeAllowedOnPurpose(t *testing.T) {
 	a := newAppWith(t, app.Options{Security: func(s *app.Security) { s.AllowCrossOriginWrites = true }})
 	a.API.Post("/things", func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })

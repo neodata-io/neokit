@@ -33,6 +33,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -180,6 +181,17 @@ func Init(ctx context.Context, cfg Config) (Pipeline, error) {
 		log.Warn("runtime metrics instrumentation failed to start", logx.Err(err))
 	}
 
-	log.Info("metrics enabled", "pull", handler != nil, "push", endpoint)
+	log.Info("metrics enabled", "pull", handler != nil, "push", hostOf(endpoint))
 	return Pipeline{Handler: handler, Shutdown: mp.Shutdown}, nil
+}
+
+// hostOf names an endpoint by its host: userinfo and path can hold credentials.
+func hostOf(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "(unparseable)"
 }

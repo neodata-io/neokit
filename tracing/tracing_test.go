@@ -118,9 +118,8 @@ func TestSpanKeepsItsOwnStringsAfterLaterRequests(t *testing.T) {
 	f := newServer(true)
 	f.Get("/api/invites/:id", func(c fiber.Ctx) error { return c.SendString("ok") })
 
-	firstPath := "/api/invites/" + strings.Repeat("A", 40)
 	firstState := "vendor=" + strings.Repeat("a", 40)
-	get(t, f, firstPath, map[string]string{"traceparent": clientTraceparent, "tracestate": firstState})
+	get(t, f, "/api/invites/"+strings.Repeat("A", 40), map[string]string{"traceparent": clientTraceparent, "tracestate": firstState})
 	for range 50 {
 		get(t, f, "/api/invites/"+strings.Repeat("B", 40), map[string]string{
 			"traceparent": clientTraceparent, "tracestate": "vendor=" + strings.Repeat("b", 40),
@@ -128,9 +127,6 @@ func TestSpanKeepsItsOwnStringsAfterLaterRequests(t *testing.T) {
 	}
 
 	first := rec.Ended()[0]
-	if got := attr(first, "url.path"); got != firstPath {
-		t.Errorf("url.path = %q, want %q", got, firstPath)
-	}
 	if got := first.SpanContext().TraceState().String(); got != firstState {
 		t.Errorf("tracestate = %q, want %q", got, firstState)
 	}
@@ -294,6 +290,44 @@ func TestInitWithAnEndpointInstallsARecordingProvider(t *testing.T) {
 }
 
 func baggageFrom(ctx context.Context) string { return baggage.FromContext(ctx).String() }
+
+// The raw path can carry a token (an invite, a reset link); a span names the
+// route template only.
+func TestSpanDoesNotCarryTheRawPath(t *testing.T) {
+	noEndpoint(t)
+	rec := record(t)
+	f := newServer(false)
+	f.Get("/api/invites/:id", func(c fiber.Ctx) error { return c.SendString("ok") })
+
+	get(t, f, "/api/invites/SECRETTOKEN123", nil)
+
+	for _, a := range rec.Ended()[0].Attributes() {
+		if strings.Contains(a.Value.String(), "SECRETTOKEN123") {
+			t.Errorf("attribute %s = %q carries the raw path", a.Key, a.Value.String())
+		}
+	}
+}
+
+// An OTLP endpoint may carry credentials in its userinfo or a secret path; the
+// startup line names the host.
+func TestInitLogsOnlyTheEndpointHost(t *testing.T) {
+	noEndpoint(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://user:pw@127.0.0.1:1/secret/v1/traces")
+	prev := otel.GetTracerProvider()
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+	var logged strings.Builder
+	log := slog.New(slog.NewTextHandler(&logged, nil))
+
+	shutdown, err := Init(context.Background(), Config{ServiceName: "svc", Log: log})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	if out := logged.String(); strings.Contains(out, "pw") || strings.Contains(out, "secret") || !strings.Contains(out, "127.0.0.1:1") {
+		t.Errorf("startup line = %q, want only the host", out)
+	}
+}
 
 // benchHandler drives one GET through f without the cost of f.Test's
 // connection plumbing, so the numbers are the middleware's own.

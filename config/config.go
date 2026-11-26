@@ -38,12 +38,10 @@ type Base struct {
 	// when redirected), or "text"/"json" to force one.
 	LogFormat string `env:"LOG_FORMAT" envDefault:"auto"`
 
-	// CorsOrigins is the browser origins allowed to call the API.
-	//
-	// The localhost default is a development convenience so a fresh checkout
-	// works with a local frontend. Set CORS_ORIGINS explicitly in production —
-	// this default is not a security boundary, it is a convenience.
-	CorsOrigins []string `env:"CORS_ORIGINS" envDefault:"http://localhost:3000" envSeparator:","`
+	// CorsOrigins is the browser origins allowed to call the API and to write
+	// past the cross-origin guard. None by default: a dev frontend on another
+	// port sets CORS_ORIGINS=http://localhost:3000 itself.
+	CorsOrigins []string `env:"CORS_ORIGINS" envSeparator:","`
 
 	// TrustedProxies is the addresses or CIDR ranges of the reverse proxies in
 	// front of this service, comma-separated: "10.0.0.2" or "172.16.0.0/12".
@@ -71,11 +69,9 @@ type Base struct {
 	// counts, latencies and Go runtime stats — no request contents, no
 	// configuration.
 	//
-	// Empty serves it unauthenticated, which is what Grafana, Traefik and most
-	// self-hosted software do and is fine on a private network. Set it when the
-	// application port is reachable from anywhere you would not hand a traffic
-	// profile to; Prometheus sends it with `authorization:` in the scrape config.
-	// Nothing announces which of the two you are running, so choose it on purpose.
+	// Empty serves it only to a direct peer: a request a TRUSTED_PROXIES proxy
+	// forwarded gets 403. Set it when the port is reachable from anywhere you
+	// would not hand a traffic profile to; Prometheus sends it with `authorization:`.
 	MetricsToken string `env:"METRICS_TOKEN"`
 
 	// DatabasePath is passed through to whatever store the application opens.

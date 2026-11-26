@@ -1,6 +1,7 @@
 package fiberx
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -8,7 +9,7 @@ import (
 )
 
 // RateLimiter builds a per-minute rate limit keyed on the client address,
-// c.IP().
+// c.IP(), counting an IPv6 client by its /64.
 //
 // Behind a reverse proxy that address is the proxy's until the deployment names
 // it in TRUSTED_PROXIES (see [github.com/neodata-io/neokit/config.Base]); every
@@ -18,9 +19,22 @@ func RateLimiter(maxPerMinute int) fiber.Handler {
 	return limiter.New(limiter.Config{
 		Max:          maxPerMinute,
 		Expiration:   time.Minute,
-		KeyGenerator: func(c fiber.Ctx) string { return c.IP() },
+		KeyGenerator: func(c fiber.Ctx) string { return clientKey(c.IP()) },
 		LimitReached: limitReached,
 	})
+}
+
+// clientKey is an IPv4 address itself, and an IPv6 address's /64: one client
+// is normally handed a whole /64 and could otherwise rotate through it.
+func clientKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	if addr = addr.Unmap(); addr.Is4() {
+		return addr.String()
+	}
+	return netip.PrefixFrom(addr.WithZone(""), 64).Masked().String()
 }
 
 // limitReached renders a throttled request as the same {"error","code"} envelope

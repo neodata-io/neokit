@@ -2,13 +2,16 @@ package fiberx
 
 import (
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/semconv/v1.41.0/httpconv"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/neodata-io/neokit/logx"
 )
@@ -114,7 +117,9 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 		// emitted while handling this request — downstream handlers, services, and
 		// the summary line below — shares one correlation ID.
 		if rid := requestid.FromContext(c); rid != "" {
-			c.SetContext(logx.WithRequestID(c.Context(), rid))
+			// Cloned: it aliases the pooled header buffer, and the context can
+			// outlive the request in a goroutine.
+			c.SetContext(logx.WithRequestID(c.Context(), strings.Clone(rid)))
 		}
 
 		// Deferred, not paired inline: a panic in a downstream handler unwinds
@@ -125,22 +130,16 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 		m.active.Add(c.Context(), 1, reqMethod, scheme)
 		defer m.active.Add(c.Context(), -1, reqMethod, scheme)
 
-		err := c.Next()
+		// A panic skips the code after c.Next(); record it as the 500 the recover
+		// middleware will answer, then let it unwind.
+		defer func() {
+			if r := recover(); r != nil {
+				e.observe(c, m, time.Since(start), method, reqMethod, scheme, fiber.StatusInternalServerError)
+				panic(r)
+			}
+		}()
 
-		// The route template (e.g. /api/invites/:id) — and it can only be read
-		// HERE, after c.Next(). Read before the chain runs, the router hasn't
-		// matched yet and c.Route() reports *this middleware's own* catch-all Use
-		// route, whose path is "/", collapsing every series into one.
-		//
-		// Why a *template* and not the raw URL: the raw path is attacker-controlled,
-		// and a time series is never evicted — one port scan would mint a permanent
-		// series per probed URL. A request that matches no route at all falls back
-		// to this middleware's own "/" route (a Use route always matches), so
-		// unrouted junk lands on a single bounded series rather than minting one
-		// each. If this middleware ever stops being registered with Use, re-check
-		// that: c.Route() falls back to the *raw* path when nothing matched at all,
-		// which is exactly the unbounded case.
-		path := c.Route().Path
+		err := c.Next()
 
 		// A returned error hasn't been rendered yet — the global ErrorHandler runs
 		// after this middleware unwinds, so c.Response().StatusCode() is still the
@@ -151,45 +150,73 @@ func (e *Errors) MetricsAndLogger() fiber.Handler {
 		if err != nil {
 			status = e.StatusForError(err)
 		}
-		duration := time.Since(start)
-
-		// Record everything, including health probes. The SDK attaches a trace
-		// exemplar by itself when this request carried a sampled span — its default
-		// exemplar filter is trace-based — so a slow bucket in Grafana still links
-		// straight to the span in Tempo, with no exemplar plumbing here.
-		m.duration.Record(c.Context(), duration.Seconds(), reqMethod, scheme,
-			semconv.HTTPRoute(path),
-			semconv.HTTPResponseStatusCode(status),
-		)
-
-		// Logging is for humans, so it is noisier to be quieter: skip the traffic
-		// that carries no signal (health probes, 304s) and only escalate the level
-		// for real problems.
-		if e.skipLog(path, status) {
-			return err
-		}
-
-		level := slog.LevelInfo
-		switch {
-		case status >= 500:
-			level = slog.LevelError
-		case status >= 400:
-			level = slog.LevelWarn
-		}
-
-		// requestId is stamped on automatically by logx.ContextHandler from the
-		// context set above — no need to add it here.
-		e.logger().Log(c.Context(), level, "http",
-			"method", method,
-			"path", path, // template path, matches the http.route attribute
-			"status", status,
-			// Milliseconds as a float so LogQL can `unwrap duration_ms` directly for
-			// latency dashboards without dividing raw nanoseconds in every query.
-			"duration_ms", float64(duration.Nanoseconds())/1e6,
-		)
-
+		e.observe(c, m, time.Since(start), method, reqMethod, scheme, status)
 		return err
 	}
+}
+
+// observe records one finished request: the duration sample, the status on the
+// request's span, and the summary log line.
+func (e *Errors) observe(c fiber.Ctx, m httpMetrics, duration time.Duration, method string,
+	reqMethod httpconv.RequestMethodAttr, scheme string, status int,
+) {
+	// The route template (e.g. /api/invites/:id) — and it can only be read
+	// HERE, after c.Next(). Read before the chain runs, the router hasn't
+	// matched yet and c.Route() reports *this middleware's own* catch-all Use
+	// route, whose path is "/", collapsing every series into one.
+	//
+	// Why a *template* and not the raw URL: the raw path is attacker-controlled,
+	// and a time series is never evicted — one port scan would mint a permanent
+	// series per probed URL. A request that matches no route at all falls back
+	// to this middleware's own "/" route (a Use route always matches), so
+	// unrouted junk lands on a single bounded series rather than minting one
+	// each. If this middleware ever stops being registered with Use, re-check
+	// that: c.Route() falls back to the *raw* path when nothing matched at all,
+	// which is exactly the unbounded case.
+	path := c.Route().Path
+
+	// The tracing middleware cannot see how the app maps a returned error, so
+	// the status the client gets is stamped here. A no-op without a span.
+	span := trace.SpanFromContext(c.Context())
+	span.SetAttributes(semconv.HTTPResponseStatusCode(status))
+	if status >= 500 {
+		span.SetStatus(codes.Error, "")
+	}
+
+	// Record everything, including health probes. The SDK attaches a trace
+	// exemplar by itself when this request carried a sampled span — its default
+	// exemplar filter is trace-based — so a slow bucket in Grafana still links
+	// straight to the span in Tempo, with no exemplar plumbing here.
+	m.duration.Record(c.Context(), duration.Seconds(), reqMethod, scheme,
+		semconv.HTTPRoute(path),
+		semconv.HTTPResponseStatusCode(status),
+	)
+
+	// Logging is for humans, so it is noisier to be quieter: skip the traffic
+	// that carries no signal (health probes, 304s) and only escalate the level
+	// for real problems.
+	if e.skipLog(path, status) {
+		return
+	}
+
+	level := slog.LevelInfo
+	switch {
+	case status >= 500:
+		level = slog.LevelError
+	case status >= 400:
+		level = slog.LevelWarn
+	}
+
+	// requestId is stamped on automatically by logx.ContextHandler from the
+	// context set above — no need to add it here.
+	e.logger().Log(c.Context(), level, "http",
+		"method", method,
+		"path", path, // template path, matches the http.route attribute
+		"status", status,
+		// Milliseconds as a float so LogQL can `unwrap duration_ms` directly for
+		// latency dashboards without dividing raw nanoseconds in every query.
+		"duration_ms", float64(duration.Nanoseconds())/1e6,
+	)
 }
 
 // skipLog reports whether a request is pure noise that would drown the useful

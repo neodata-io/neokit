@@ -141,7 +141,9 @@ service can rely on in the next.
 | Request bounds | 1 MiB body, 16 KB headers, 15 s to send a request, 120 s idle | `Options.Fiber` |
 | Error bodies | Public sentence and code only; panics recovered and logged with a stack | `a.Errors.Mapper` |
 | Client address | The connection's own peer; forwarded headers ignored | `TRUSTED_PROXIES` |
-| Metrics | Route templates only, never raw paths; open unless `METRICS_TOKEN` is set | `METRICS_TOKEN` |
+| Cross-site reads | None: CORS allows no origin until `CORS_ORIGINS` names one | `CORS_ORIGINS` |
+| Logs and spans | Route templates only, never raw paths; a client's `X-Request-Id` kept only if short and plain | — |
+| Metrics | Route templates only; served to a direct scrape, refused through a trusted proxy unless `METRICS_TOKEN` is set | `METRICS_TOKEN` |
 | Outbound calls | `httpc` clients are bounded, retried, and can refuse internal addresses | `httpc.GuardedTransport` |
 
 The cross-site check is the one to understand rather than just leave on. It

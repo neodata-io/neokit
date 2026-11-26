@@ -28,8 +28,9 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if got.LogLevel != "info" || got.LogFormat != "auto" {
 		t.Errorf("log defaults not applied: %+v", got.Base)
 	}
-	if len(got.CorsOrigins) != 1 || got.CorsOrigins[0] != "http://localhost:3000" {
-		t.Errorf("CorsOrigins = %v, want the single localhost default", got.CorsOrigins)
+	// Fail closed: no origin is trusted cross-site until a deployment names one.
+	if len(got.CorsOrigins) != 0 {
+		t.Errorf("CorsOrigins = %v, want none by default", got.CorsOrigins)
 	}
 }
 

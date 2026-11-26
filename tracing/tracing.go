@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 
@@ -113,9 +114,17 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
-	log.Info("tracing enabled", "endpoint", endpoint)
+	log.Info("tracing enabled", "endpoint", hostOf(endpoint))
 
 	return tp.Shutdown, nil
+}
+
+// hostOf names an endpoint by its host: userinfo and path can hold credentials.
+func hostOf(endpoint string) string {
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "(unparseable)"
 }
 
 // pristine is the global provider before anyone installs one. Spans started on
@@ -183,11 +192,8 @@ func Middleware() fiber.Handler {
 		// Named by method alone for now: the route is not matched until c.Next().
 		ctx, span := otel.Tracer(scopeName).Start(parent, method,
 			trace.WithSpanKind(trace.SpanKindServer),
-			trace.WithAttributes(
-				attribute.String("http.request.method", method),
-				// Cloned: the span is exported after Fiber has reused this buffer.
-				attribute.String("url.path", strings.Clone(c.Path())),
-			),
+			// No url.path: a raw path can carry a token. http.route is set below.
+			trace.WithAttributes(attribute.String("http.request.method", method)),
 		)
 		// One deferred function, so the span is named and marked before it ends
 		// whether the handler returned or panicked.
@@ -212,14 +218,17 @@ func Middleware() fiber.Handler {
 		c.SetContext(ctx)
 		err := c.Next()
 
+		// A returned error is not rendered yet, so the response still says 200.
+		// fiberx's MetricsAndLogger knows the app's mapping and stamps that status.
+		if err != nil {
+			span.RecordError(err)
+			return err
+		}
 		status := c.Response().StatusCode()
 		span.SetAttributes(attribute.Int("http.response.status_code", status))
 		if status >= 500 {
 			span.SetStatus(codes.Error, "")
 		}
-		if err != nil {
-			span.RecordError(err)
-		}
-		return err
+		return nil
 	}
 }
