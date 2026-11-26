@@ -63,20 +63,32 @@ func ETagMatches(header, etag string) bool {
 	return false
 }
 
-// SendWithETag writes body with its validator and cache policy, answering 304
-// Not Modified when the request's If-None-Match already covers etag. Both the
-// 304 and the full response carry ETag and Cache-Control, so a client or an
-// intermediary refreshes its copy's lifetime either way.
+// NotModified answers 304 Not Modified, with etag and cacheControl, when the
+// request's If-None-Match already covers etag, and reports whether it did. Call
+// it before producing an expensive body:
 //
-// A handler whose body is expensive to produce checks [ETagMatches] itself
-// before producing it, and still ends with this call; the second check costs
-// nothing.
-func SendWithETag(c fiber.Ctx, etag, cacheControl, contentType string, body []byte) error {
+//	if fiberx.NotModified(c, etag, cc) {
+//		return nil
+//	}
+func NotModified(c fiber.Ctx, etag, cacheControl string) bool {
+	if !ETagMatches(c.Get(fiber.HeaderIfNoneMatch), etag) {
+		return false
+	}
 	c.Set(fiber.HeaderETag, etag)
 	c.Set(fiber.HeaderCacheControl, cacheControl)
-	if ETagMatches(c.Get(fiber.HeaderIfNoneMatch), etag) {
-		return c.SendStatus(fiber.StatusNotModified)
+	c.Status(fiber.StatusNotModified)
+	return true
+}
+
+// SendWithETag writes body with its validator and cache policy, or answers 304
+// as [NotModified] does. Both carry ETag and Cache-Control, so a client or an
+// intermediary refreshes its copy's lifetime either way.
+func SendWithETag(c fiber.Ctx, etag, cacheControl, contentType string, body []byte) error {
+	if NotModified(c, etag, cacheControl) {
+		return nil
 	}
+	c.Set(fiber.HeaderETag, etag)
+	c.Set(fiber.HeaderCacheControl, cacheControl)
 	c.Set(fiber.HeaderContentType, contentType)
 	return c.Send(body)
 }
