@@ -308,8 +308,8 @@ func (c *BaseClient) send(req *http.Request, method, url string) (*http.Response
 	resp, err := c.HTTPClient.Do(req)
 	duration := time.Since(start)
 	// The ring and the returned error both end up where others read them (a
-	// diagnostics endpoint, a log), so both are redacted: a client whose auth rides
-	// in an api_key query parameter would otherwise publish that token.
+	// diagnostics endpoint, a log), so both name only the host: a bot token or an
+	// api_key in the URL would otherwise be published there.
 	if err != nil {
 		err = Redact(err)
 		if c.Debug != nil {

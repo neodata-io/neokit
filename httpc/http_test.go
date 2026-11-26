@@ -190,10 +190,10 @@ func TestStatusError(t *testing.T) {
 func TestRedact_StripsCredentialsFromURLErrors(t *testing.T) {
 	const secret = "SECRET-API-TOKEN"
 
-	t.Run("query string and userinfo are dropped", func(t *testing.T) {
+	t.Run("path, query string and userinfo are dropped", func(t *testing.T) {
 		err := &url.Error{
 			Op:  "Get",
-			URL: "https://user:pw@api.example.com/prices?securityToken=" + secret + "&period=day",
+			URL: "https://user:pw@api.example.com:8443/bot" + secret + "/prices?securityToken=" + secret + "&period=day",
 			Err: errors.New("connection refused"),
 		}
 
@@ -205,7 +205,7 @@ func TestRedact_StripsCredentialsFromURLErrors(t *testing.T) {
 			t.Errorf("userinfo survived redaction: %s", got)
 		}
 		// Still useful: you must be able to see *which* upstream failed and why.
-		if !strings.Contains(got, "api.example.com/prices") || !strings.Contains(got, "connection refused") {
+		if !strings.Contains(got, `"https://api.example.com:8443"`) || !strings.Contains(got, "connection refused") {
 			t.Errorf("redaction destroyed the diagnostic value: %s", got)
 		}
 	})

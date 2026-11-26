@@ -225,6 +225,20 @@ func TestPoliciesCoverTheRangesBetweenPrivateAndPublic(t *testing.T) {
 		{"2002:c0a8:101::1", true, false},     // 192.168.1.1
 		{"2002:808:808::1", false, false},     // 8.8.8.8
 		{"64:ff9b:1::a9fe:a9fe", true, false}, // local-use NAT64 prefix
+
+		// Deprecated IPv6 forms that some stacks route to the IPv4 inside them,
+		// so neither policy lets them through.
+		{"::7f00:1", true, true},             // IPv4-compatible 127.0.0.1
+		{"::808:808", true, true},            // IPv4-compatible, even a public one
+		{"::ffff:0:7f00:1", true, true},      // SIIT-translated 127.0.0.1
+		{"fec0::1", true, false},             // site-local, the old ULA
+		{"2001:0:4136:e378::1", true, false}, // Teredo tunnel
+		{"198.18.0.1", true, false},          // benchmarking, used as lab space
+		{"198.19.255.254", true, false},
+		{"198.20.0.1", false, false},           // just past 198.18.0.0/15
+		{"192.0.0.8", true, false},             // IETF protocol assignments
+		{"192.0.2.1", false, false},            // TEST-NET-1 is outside 192.0.0.0/24
+		{"2001:4860:4860::8888", false, false}, // public, next to Teredo
 	}
 	for _, c := range cases {
 		ip := netip.MustParseAddr(c.ip)

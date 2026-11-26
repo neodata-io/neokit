@@ -38,7 +38,8 @@ type HTTPOptions struct {
 	// Tracing opens an otel client span per request attempt and carries the
 	// traceparent header outbound. Set it where a collector actually runs: the
 	// wrapper costs roughly +1.2µs and +22 allocations per request even with no
-	// provider installed, which is why it is opt-in.
+	// provider installed, which is why it is opt-in. The upstream host becomes a
+	// metric label, so leave it off a client fetching caller-supplied URLs.
 	Tracing bool
 }
 
@@ -139,15 +140,10 @@ func StatusError(service string, status int) error {
 	return newAPIError(service, status, nil)
 }
 
-// Redact returns err with credential-bearing detail stripped. For a *url.Error —
-// what every net/http transport failure is — it drops the query string and any
-// userinfo, keeping scheme://host/path.
-//
-// Wrap any transport error from a client whose auth rides in the URL rather than
-// a header (an api_key query parameter); otherwise the token travels inside
-// err.Error() into logs and out through any API that surfaces them. Apply it to
-// the raw transport error, before adding context with %w. It is a no-op for
-// errors carrying no URL, so it is always safe to apply.
+// Redact returns err with its URL reduced to scheme://host, for a *url.Error —
+// what every net/http transport failure is. Bot tokens and webhook secrets ride
+// in the path, so only the host is kept. Apply it before adding context with %w;
+// it is a no-op for errors carrying no URL.
 func Redact(err error) error {
 	var urlErr *url.Error
 	if !errors.As(err, &urlErr) {
@@ -158,20 +154,14 @@ func Redact(err error) error {
 	return &safe
 }
 
-// RedactURL strips the credential-bearing parts of a URL — query string,
-// fragment and userinfo — keeping scheme://host/path.
-//
-// Apply it anywhere a request URL is stored or surfaced rather than dialled: a
-// [DebugRing] served from a diagnostics endpoint leaks an api_key query
-// parameter exactly as readily as a log line does.
+// RedactURL reduces a URL to scheme://host[:port] for anywhere it is stored or
+// surfaced rather than dialled: path, query, fragment and userinfo can all carry
+// a credential (a bot token, a webhook secret, an api_key).
 func RedactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		// Unparseable: drop it entirely rather than risk emitting a token.
 		return ""
 	}
-	u.RawQuery = ""
-	u.Fragment = ""
-	u.User = nil
-	return u.String()
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }

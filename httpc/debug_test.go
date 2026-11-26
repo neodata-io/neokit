@@ -37,8 +37,33 @@ func TestDebugRingDoesNotCaptureCredentialsFromTheURL(t *testing.T) {
 	if strings.Contains(entries[0].URL, "SUPERSECRET") {
 		t.Errorf("debug ring captured the credential: %q", entries[0].URL)
 	}
-	if !strings.Contains(entries[0].URL, "/things") {
-		t.Errorf("redaction ate the path too: %q", entries[0].URL)
+	if entries[0].URL != srv.URL {
+		t.Errorf("ring URL = %q, want only scheme://host %q", entries[0].URL, srv.URL)
+	}
+}
+
+// Telegram bot tokens and webhook secrets ride in the path, so a path is as
+// secret as a query string and the ring names only the host.
+func TestDebugRingDoesNotCaptureASecretInThePath(t *testing.T) {
+	const secret = "bot123456:SECRETTOKEN"
+	ring := NewDebugRing(4)
+	c := BaseClient{HTTPClient: http.DefaultClient, Service: "tg", Debug: ring}
+
+	target := "http://neokit-nonexistent.invalid/" + secret + "/sendMessage"
+	req, err := http.NewRequest(http.MethodPost, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.send(req, http.MethodPost, target)
+	if err == nil {
+		t.Fatal("send must fail against an unresolvable host")
+	}
+	if strings.Contains(err.Error(), "SECRETTOKEN") {
+		t.Errorf("returned error carries the path secret: %v", err)
+	}
+	e := ring.Entries()[0]
+	if strings.Contains(e.URL, "SECRETTOKEN") || strings.Contains(e.Error, "SECRETTOKEN") {
+		t.Errorf("debug ring carries the path secret: %+v", e)
 	}
 }
 

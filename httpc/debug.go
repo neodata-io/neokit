@@ -9,7 +9,7 @@ import (
 type DebugEntry struct {
 	Time       time.Time `json:"time"`
 	Method     string    `json:"method"`
-	URL        string    `json:"url"`
+	URL        string    `json:"url"` // scheme://host only; see [RedactURL]
 	StatusCode int       `json:"statusCode"`
 	DurationMs int64     `json:"durationMs"`
 	Error      string    `json:"error,omitempty"`
