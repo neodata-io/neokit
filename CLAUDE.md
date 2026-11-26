@@ -69,8 +69,8 @@ These hold everywhere; a change that breaks one is wrong even if tests pass.
 - **Nothing secret leaves.** Clients get a public sentence and a stable code;
   the cause goes to the log. Never log or return a token, a secret, or a URL
   with credentials or a secret path — name the host. An upstream response body
-  never reaches a client, and reaches a log only bounded; an identity
-  provider's body is dropped entirely.
+  never reaches a client or an error message; code that needs it reads
+  `APIError.Body`. An identity provider's body is dropped entirely.
 - **Tokens:** `crypto/rand`, 32 bytes, only the SHA-256 stored. Static secrets
   are compared in constant time.
 - **Client address is `c.IP()` only.** Never read `X-Forwarded-For` yourself;
