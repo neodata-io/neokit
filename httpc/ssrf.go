@@ -153,7 +153,8 @@ func inAny(ip netip.Addr, ranges []netip.Prefix) bool {
 //	tr := httpc.GuardedTransport(httpc.IsInternalAddr)
 //	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 //
-// Pass it as [HTTPOptions.Transport] so the retry and otel layers still wrap it:
+// Pass it as [HTTPOptions.Transport] so the retry layer still wraps it. Leave
+// [HTTPOptions.Tracing] off: caller-chosen hosts would become metric labels.
 //
 //	http: httpc.NewHTTPClient(httpc.HTTPOptions{Transport: httpc.GuardedTransport(httpc.IsPrivateAddr)})
 func GuardedTransport(deny Policy) *http.Transport {

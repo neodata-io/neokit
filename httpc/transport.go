@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // RetryConfig tunes RetryTransport's backoff. Use DefaultRetryConfig for the
@@ -86,12 +88,26 @@ func withDefaultCap(cfg RetryConfig) RetryConfig {
 // go nowhere but still cost ~1.2µs and 22 allocations per request, which is why
 // this is a separate constructor rather than the default — see
 // BenchmarkTransport_Default and BenchmarkTransport_Traced.
+//
+// Spans record the URL as scheme://host only. The host itself becomes a span
+// name and a metric label, so do not trace a client whose hosts a caller picks.
 func NewTracedRetryTransport(base http.RoundTripper, cfg RetryConfig) *RetryTransport {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	base = otelhttp.NewTransport(base, otelhttp.WithSpanNameFormatter(spanName))
+	base = otelhttp.NewTransport(redactSpanURL{base}, otelhttp.WithSpanNameFormatter(spanName))
 	return &RetryTransport{base: base, cfg: withDefaultCap(cfg)}
+}
+
+// redactSpanURL sits inside otelhttp and overwrites the url.full it recorded,
+// which keeps path and query, with the host-only [RedactURL] form.
+type redactSpanURL struct{ base http.RoundTripper }
+
+func (t redactSpanURL) RoundTrip(r *http.Request) (*http.Response, error) {
+	if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+		span.SetAttributes(attribute.String("url.full", (&url.URL{Scheme: r.URL.Scheme, Host: r.URL.Host}).String()))
+	}
+	return t.base.RoundTrip(r)
 }
 
 // spanName gives outbound client spans a low-cardinality, readable name like
