@@ -5,8 +5,6 @@ Changes a service built on neokit could notice. Releases are minor tags only
 
 ## Unreleased
 
-## v0.21.0 — 2026-11-26
-
 ### Security
 
 - **`app`: with no `CORS_ORIGINS`, no other origin may read the API.** Fiber
@@ -43,11 +41,22 @@ Changes a service built on neokit could notice. Releases are minor tags only
   refuses `fec0::/10`, Teredo `2001::/32`, `198.18.0.0/15` and `192.0.0.0/24`.
 - `safe.Pool`: the doc now says that `Limit` bounds running tasks only; the
   queue of waiting tasks is unbounded.
+- **`httpc.APIError.Error()` no longer includes the server's reply.** It reads
+  `"svc API 500"`; the reply is still on `Body` for code that needs the reason.
+  A reply can carry a credential, and the message is what reaches a log.
 
 ### Added
 
 - `webpush.Keys` implements `String`, `GoString` and `slog.LogValuer`, printing
   the private key as `[REDACTED]`. JSON encoding is unchanged.
+- `cache.GetOrFetchWithBackoff` is `GetOrFetch` for a source that may be down
+  from its first read: a failed cold fetch is remembered for five seconds, then
+  retried once behind that answer, so the source costs one wait instead of one
+  per read. `Invalidate` forgets the failure.
+- `sqlitex.InTx` runs a function in a transaction: commit on success, roll back
+  on an error or a panic.
+- `safe.AllLimit` is `safe.All` with at most a given number of calls in flight.
+- `fiberx.NotModified` answers 304 before an expensive body is produced.
 
 ### Fixed
 
