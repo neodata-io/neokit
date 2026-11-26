@@ -182,7 +182,7 @@ func (e *Errors) logCause(c fiber.Ctx, status int, cause error) {
 	// the request context — the same id on the `http` summary line.
 	e.logger().Log(c.Context(), level, "request failed",
 		"status", status,
-		"path", c.Path(),
+		"path", c.Route().Path, // the template: a raw path can carry a token
 		logx.Err(cause), // the mapped error's real cause, not the public message
 	)
 }
