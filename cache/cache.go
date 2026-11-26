@@ -70,6 +70,13 @@ type entry struct {
 	failed    bool
 	fetchedAt time.Time
 
+	// coldErr is the failure of the last cold fetch by GetOrFetchWithBackoff,
+	// served with coldVal until retryAt. A retry then runs behind the answer,
+	// gated by refreshing.
+	coldVal any
+	coldErr error
+	retryAt time.Time
+
 	// gen increments on every Invalidate. A fetch captures it before starting and
 	// discards its result if it changed meanwhile: the value was read *before* the
 	// mutation that invalidated the key, so publishing it would reinstate exactly
@@ -198,8 +205,9 @@ func (c *Cache) Invalidate(key string) {
 	}
 	e.mu.Lock()
 	e.loaded = false
-	e.gen++        // discard any fetch already in flight; its value predates the mutation
-	e.flight = nil // and let nobody new join it
+	e.coldErr = nil // a caller asking for a fresh read means it
+	e.gen++         // discard any fetch already in flight; its value predates the mutation
+	e.flight = nil  // and let nobody new join it
 	e.mu.Unlock()
 }
 
@@ -221,16 +229,24 @@ func (c *Cache) Invalidate(key string) {
 // callers, one impatient client disconnecting must not cancel the fetch everyone
 // else is waiting on.
 //
-// Errors are NOT cached. On the cold path fn's value is still returned alongside
-// the error, so a caller that builds a usable "degraded" value (e.g. a
-// configured-but-unreachable view) can hand it back without that failure sticking
-// for the full TTL. Callers already queued behind that fetch get the same value
-// and error; the next one to arrive fetches again. A failed *revalidation* keeps
-// serving the last good value and retries after retryBackoff — silently, as far
-// as this function is concerned; a caller that must know it is being served
-// through an outage uses [Fetch].
+// Errors are not cached: on the cold path fn's value is returned alongside the
+// error, callers already queued behind that fetch share both, and the next
+// caller fetches again. [GetOrFetchWithBackoff] remembers the failure instead.
+// A failed *revalidation* keeps serving the last good value and retries after a
+// short back-off, silently; a caller that must know it is being served through
+// an outage uses [Fetch].
 func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error)) (T, error) {
-	v, _, err := Fetch(c, key, ttl, fn)
+	v, _, err := fetch(c, key, ttl, fn, false)
+	return v, err
+}
+
+// GetOrFetchWithBackoff is [GetOrFetch] for a source that may be down from its
+// first read, when there is no last good value to serve. A failed cold fetch is
+// remembered: fn's value and error go to every caller for five seconds, then
+// one retry runs behind that answer until one succeeds. The source then costs
+// one wait, not one per read. [Cache.Invalidate] forgets the failure.
+func GetOrFetchWithBackoff[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error)) (T, error) {
+	v, _, err := fetch(c, key, ttl, fn, true)
 	return v, err
 }
 
@@ -244,6 +260,11 @@ func GetOrFetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.
 // cached power reading into energy must skip a reading the cache is merely
 // keeping alive, and nothing in the value itself says so.
 func Fetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error)) (T, Status, error) {
+	return fetch(c, key, ttl, fn, false)
+}
+
+// fetch is Fetch; backoff remembers a failed cold fetch.
+func fetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Context) (T, error), backoff bool) (T, Status, error) {
 	e := c.entryFor(key)
 	var zero T
 
@@ -264,13 +285,19 @@ func Fetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Conte
 			return v, st, nil
 		}
 
+		// Cold, and failed lately: answer with that failure, retrying behind it.
+		if backoff {
+			if v, err, ok := remembered(e, key, ttl, fn); ok {
+				return v, Status{}, err
+			}
+		}
 		// Cold. Run the fetch, or wait on the caller already running it.
 		f, led := e.join()
 		if f == nil {
 			continue // published since load looked
 		}
 		if led {
-			return lead(e, f, ttl, fn)
+			return lead(e, f, ttl, fn, backoff)
 		}
 		<-f.done
 		if !f.ok {
@@ -286,6 +313,25 @@ func Fetch[T any](c *Cache, key string, ttl time.Duration, fn func(context.Conte
 			return zero, Status{}, fmt.Errorf("%w: %q holds %T, not %T", ErrTypeMismatch, key, f.val, zero)
 		}
 	}
+}
+
+// remembered returns the failure of the last cold fetch while it is still
+// remembered, and starts the one retry once the back-off has passed.
+func remembered[T any](e *entry, key string, ttl time.Duration, fn func(context.Context) (T, error)) (v T, err error, ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.loaded || e.coldErr == nil {
+		return v, nil, false
+	}
+	got, isT := e.coldVal.(T)
+	if !isT && e.coldVal != nil {
+		return v, fmt.Errorf("%w: %q holds %T, not %T", ErrTypeMismatch, key, e.coldVal, v), true
+	}
+	if !e.refreshing && !time.Now().Before(e.retryAt) {
+		e.refreshing = true
+		safe.Go(context.Background(), "cache.revalidate", func() { revalidate(e, ttl, fn) })
+	}
+	return got, e.coldErr, true
 }
 
 // join returns the cold fetch in flight, starting one if there is none; led
@@ -306,7 +352,7 @@ func (e *entry) join() (f *flight, led bool) {
 
 // lead runs the cold fetch for f and publishes its outcome to the entry and to
 // everyone waiting on f.
-func lead[T any](e *entry, f *flight, ttl time.Duration, fn func(context.Context) (T, error)) (T, Status, error) {
+func lead[T any](e *entry, f *flight, ttl time.Duration, fn func(context.Context) (T, error), backoff bool) (T, Status, error) {
 	// Deferred so that a panic in fn still releases the callers waiting on f.
 	defer func() {
 		e.mu.Lock()
@@ -322,7 +368,15 @@ func lead[T any](e *entry, f *flight, ttl time.Duration, fn func(context.Context
 	v, err := fn(ctx)
 	f.val, f.err, f.ok = v, err, true
 	if err != nil {
-		return v, Status{}, err // hand the value back but don't cache the failure
+		if backoff {
+			e.mu.Lock()
+			if e.gen == f.gen {
+				e.coldVal, e.coldErr = v, err
+				e.retryAt = time.Now().Add(retryBackoff)
+			}
+			e.mu.Unlock()
+		}
+		return v, Status{}, err
 	}
 
 	now := time.Now()
@@ -333,6 +387,7 @@ func lead[T any](e *entry, f *flight, ttl time.Duration, fn func(context.Context
 		e.loaded = true
 		e.failed = false
 		e.fetchedAt = now
+		e.coldErr = nil
 	}
 	e.mu.Unlock()
 	f.st = Status{FetchedAt: now}
@@ -347,6 +402,7 @@ func revalidate[T any](e *entry, ttl time.Duration, fn func(context.Context) (T,
 	e.mu.Unlock()
 
 	var v T
+	var fetchErr error
 	ok := false
 	// Recovered here, not by safe.Go, so a panic can't leave `refreshing` stuck
 	// true (wedging the key on its stale value) or respawn the fetch. A panic
@@ -356,9 +412,7 @@ func revalidate[T any](e *entry, ttl time.Duration, fn func(context.Context) (T,
 		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
 		got, err := fn(ctx)
-		if err == nil {
-			v, ok = got, true
-		}
+		v, fetchErr, ok = got, err, err == nil
 	}()
 
 	e.mu.Lock()
@@ -374,6 +428,13 @@ func revalidate[T any](e *entry, ttl time.Duration, fn func(context.Context) (T,
 		e.loaded = true
 		e.failed = false
 		e.fetchedAt = now
+		e.coldErr = nil
+	case !e.loaded:
+		// A retry of a cold failure: remember the latest one and wait again.
+		if fetchErr != nil {
+			e.coldVal, e.coldErr = v, fetchErr
+		}
+		e.retryAt = time.Now().Add(retryBackoff)
 	default:
 		// Keep serving the last good value; try again after the backoff rather than
 		// on the very next read. Say so through Status, so a consumer that must
