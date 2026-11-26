@@ -5,6 +5,14 @@ Changes a service built on neokit could notice. Releases are minor tags only
 
 ## Unreleased
 
+## v0.20.0 — 2026-11-25
+
+### Fixed
+
+- `httpc.Image`: the error for a response that is not an image is now
+  `errs.ErrNotFound`, so a caller proxying art can answer 404. In v0.19.0 it
+  was an error nothing could recognise, which a host rendered as a 500.
+
 ## v0.19.0 — 2026-11-25
 
 Fixes from a full security and correctness review. Read **Changed** before
