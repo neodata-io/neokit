@@ -277,7 +277,7 @@ a.HTTP.Use(fiberauth.APITokenMiddleware(provider, tokens, "myapp_")) // after th
 | Need | Example |
 | --- | --- |
 | A small HTTP service | [`examples/minimal-api`](examples/minimal-api) |
-| HTTP, health, metrics, shutdown, and SQLite | [`examples/production-service`](examples/production-service) |
+| HTTP, health, metrics, shutdown, and SQLite | [`examples/batteries`](examples/batteries) |
 | A bounded, retrying external API client | [`examples/external-client`](examples/external-client) |
 | A whole service in layers: domain, use cases, store, HTTP module, login, tokens, a nightly job — with tests for each | [`examples/reference`](examples/reference) |
 
@@ -291,29 +291,36 @@ than adopting the whole thing.
 service that wants a retrying HTTP client and nothing else imports `httpc` and
 gets exactly that.
 
-| Package | What |
-| --- | --- |
-| `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
-| `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify` + `Fault.LogLevel`, SSRF guard |
-| `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, security headers, the cross-origin write guard, a rate limiter, `Created` + `Location`, strong ETags + 304 for cacheable bytes |
-| `cache` | stale-while-revalidate `GetOrFetch`; `Fetch` adds a `Status` saying when a value is only being kept alive through an outage |
-| `sqlitex` | `PRAGMA user_version` append-only migration runner, `Query`/`Each`/`QueryOne`, `Placeholders`/`Args`/`CheckAffected`, `VACUUM INTO` snapshot backup |
-| `tracing` `metrics` | OpenTelemetry traces and metrics — `/metrics` to scrape, OTLP to push, one set of instruments |
-| `health` | liveness/readiness registry — bounded sweep, terse public verdict, detail behind your own auth |
-| `safe` `ids` `clock` | goroutine recovery, `Group` supervision, `Pool` for bounded one-shot tasks, `All` fan-out, id/token generation, injectable clock |
-| `netx` | `AddrInUseHint` — a readable message for a listener already bound |
-| `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
-| `session` | `Session`, `Store`, `Policy` — and `NewSQLite`, the store neokit ships. Standard library only |
-| `oidcauth` | provider-agnostic OpenID Connect relying party: PKCE, nonce, typed error sentinels |
-| `apitoken` | `Token`, `Store` — and `NewSQLite`: personal API tokens, stored as hashes, with optional expiry. Standard library only |
-| `oidcauth/fiberauth` | the browser half — handshake routes, `__Host-` cookies, session middleware, guards — and API tokens recognised wherever a session is |
-| `jobs` | `Job{Every, Timeout, RunAtStart, Do}` — periodic work that is bounded and panic-guarded |
-| `lifecycle` | `Signals` context + a LIFO named shutdown `Stack` |
-| `pubsub` | `Bus[T]` — keyed fan-out for SSE/WebSocket, drop-on-slow |
-| `capset` | generic capability resolution by type assertion, memoised |
-| `notify` | `Sender` — webhook, ntfy, Apprise, and a `Multi` fan-out |
-| `webpush` | VAPID keypair generation and `sub` normalisation (no dependencies) |
-| `buildinfo` | version/commit/date with Go's embedded VCS metadata as the fallback |
+| Area | Package | What |
+| --- | --- | --- |
+| Boot and shutdown | `app` | the builder: config, logger, middleware chain, probes, `/metrics`, `Run` with an ordered drain |
+| | `neokit` | `neokit.New` — `app` plus one method per feature: `a.Database`, `a.Login`, `a.Backups`, the notify senders |
+| | `lifecycle` | `Signals` context + a LIFO named shutdown `Stack` |
+| | `config` | `config.Base`, the settings every service has, and `Load` to parse the environment into your own struct |
+| | `buildinfo` | version/commit/date with Go's embedded VCS metadata as the fallback |
+| HTTP in | `fiberx` | `{"error": …}` envelope, bind+validate, metrics/logging middleware, security headers, the cross-origin write guard, a rate limiter, `Created` + `Location`, strong ETags + 304 for cacheable bytes |
+| Login | `oidcauth` | provider-agnostic OpenID Connect relying party: PKCE, nonce, typed error sentinels |
+| | `oidcauth/fiberauth` | the browser half — handshake routes, `__Host-` cookies, session middleware, guards — and API tokens recognised wherever a session is |
+| | `session` | `Session`, `Store`, `Policy` — and `NewSQLite`, the store neokit ships. Standard library only |
+| | `apitoken` | `Token`, `Store` — and `NewSQLite`: personal API tokens, stored as hashes, with optional expiry. Standard library only |
+| HTTP out | `httpc` | `NewHTTPClient`, `BaseClient`, retry transport, `APIError`, `Classify` + `Fault.LogLevel`, SSRF guard |
+| | `notify` | `Sender` — webhook, ntfy, Apprise, and a `Multi` fan-out |
+| | `webpush` | VAPID keypair generation and `sub` normalisation (no dependencies) |
+| | `webpush/delivery` | `Sender` — delivers to every subscription on a topic and prunes the ones that have gone away |
+| Data | `sqlitex` | `PRAGMA user_version` append-only migration runner, `Query`/`Each`/`QueryOne`, `Placeholders`/`Args`/`CheckAffected`, `VACUUM INTO` snapshot backup |
+| | `backup` | a fresh snapshot streamed on demand, and a dated copy written daily at a set local time, with retention |
+| | `cache` | stale-while-revalidate `GetOrFetch`; `Fetch` adds a `Status` saying when a value is only being kept alive through an outage |
+| Background | `safe` | goroutine recovery, `Group` supervision, `Pool` for bounded one-shot tasks, `All` fan-out |
+| | `jobs` | `Job{Every, Timeout, RunAtStart, Do}` — periodic work that is bounded and panic-guarded |
+| | `pubsub` | `Bus[T]` — keyed fan-out for SSE/WebSocket, drop-on-slow |
+| Observability | `logx` | `slog` context handler, canonical `Err` attribute, request-id propagation |
+| | `tracing` `metrics` | OpenTelemetry traces and metrics — `/metrics` to scrape, OTLP to push, one set of instruments |
+| | `health` | liveness/readiness registry — bounded sweep, terse public verdict, detail behind your own auth |
+| Small | `errs` | `ErrNotFound`, `ErrInvalidInput`, `ErrConflict` — sentinels `fiberx` renders without a mapper |
+| | `ids` `clock` | id/token generation, and a real and a fake `Now()` |
+| | `capset` | generic capability resolution by type assertion, memoised |
+| | `disk` | `Usage` — free/total filesystem space via `syscall.Statfs` |
+| | `netx` | `AddrInUseHint` — a readable message for a listener already bound |
 
 Every package is independent: importing one never drags in another's dependencies.
 A binary that does not import `oidcauth` links neither `go-oidc` nor `oauth2`.

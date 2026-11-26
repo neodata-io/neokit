@@ -24,7 +24,7 @@ func main() {
 func run() error {
 	// config.Base directly, with no struct of its own: a service with no settings
 	// beyond the generic ones does not need to declare a type to hold none. Add
-	// one the moment you have a field of your own — see production-service.
+	// one the moment you have a field of your own — see examples/batteries.
 	cfg, err := config.Load[config.Base](".env")
 	if err != nil {
 		return err

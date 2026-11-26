@@ -1,4 +1,4 @@
-// Production-service is the batteries-included layer: neokit.New, then one call
+// Batteries is the batteries-included layer: neokit.New, then one call
 // per feature. a.Database is the handle and the shutdown step at once — without
 // a service container.
 package main
@@ -29,11 +29,11 @@ func run() error {
 		return err
 	}
 	if cfg.DatabasePath == "" {
-		cfg.DatabasePath = "./data/production-service.db"
+		cfg.DatabasePath = "./data/batteries.db"
 	}
 
 	service, err := neokit.New(app.Options{
-		Name: "production-service",
+		Name: "batteries",
 		Base: cfg.Base,
 	})
 	if err != nil {
