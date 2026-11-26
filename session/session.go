@@ -22,12 +22,13 @@ type Identity struct {
 	// Name is a display name; it falls back to Subject when the provider sends
 	// none, so it is never empty for an authenticated identity.
 	Name string
-	// Email is the address, when the provider supplies one.
+	// Email is the address, when the provider supplies one. It is empty when the
+	// provider marks it unverified (`email_verified: false`).
 	Email string
 	// Groups is the group membership from the configured claim.
 	Groups []string
 	// Owner reports administrative rights: membership in the configured owner
-	// group, or true for every authenticated identity when none is configured.
+	// group. With no owner group configured, nobody is an owner.
 	Owner bool
 }
 

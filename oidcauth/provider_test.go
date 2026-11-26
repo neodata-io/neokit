@@ -72,23 +72,117 @@ func TestExchangeOwnerOnlyWhenInGroup(t *testing.T) {
 	}
 }
 
-// A blank OwnerGroup means single-admin deployment: everyone who can sign in is
-// an owner. It is the default, so it had better be the documented one.
-func TestExchangeBlankOwnerGroupMakesEveryoneOwner(t *testing.T) {
+// A blank OwnerGroup must fail closed: forgetting it on a shared identity
+// provider would otherwise make every account there an owner.
+func TestABlankOwnerGroupMakesNobodyAnOwner(t *testing.T) {
 	i := newIDP()
 	srv := httptest.NewServer(i.handler(t))
 	defer srv.Close()
 	i.url = srv.URL
 	p, _ := New(Config{Issuer: srv.URL, ClientID: "app", ClientSecret: "s", BaseURL: "https://a.test"})
 	i.claims = goodClaims(i.url, "app", "n0nce")
-	i.claims["groups"] = []string{"nobody-special"}
+	i.claims["groups"] = []string{"admins", ""}
 
 	id, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
-	if !id.Owner {
-		t.Error("with no owner group configured every signed-in user is an owner")
+	if id.Owner {
+		t.Error("with no owner group configured nobody may be an owner")
+	}
+	if p.IsOwner([]string{"", "admins"}) {
+		t.Error("IsOwner must refuse every group list when no owner group is configured")
+	}
+}
+
+// Authentik and Auth0 publish their issuer with a trailing slash, and go-oidc
+// demands an exact match, so stripping it from the configuration locked them out.
+func TestAnIssuerPublishedWithATrailingSlashCanSignIn(t *testing.T) {
+	for name, configured := range map[string]func(string) string{
+		"configured without the slash": func(u string) string { return u },
+		"configured with the slash":    func(u string) string { return u + "/" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			i := newIDP()
+			i.publish = func(base string) string { return base + "/" }
+			srv := httptest.NewServer(i.handler(t))
+			defer srv.Close()
+			i.url = srv.URL
+			p, _ := New(Config{Issuer: configured(srv.URL), ClientID: "app", ClientSecret: "s", BaseURL: "https://a.test"})
+			i.claims = goodClaims(srv.URL+"/", "app", "n0nce")
+
+			if _, err := p.Exchange(t.Context(), "code", "n0nce", "verifier"); err != nil {
+				t.Fatalf("Exchange: %v", err)
+			}
+			if err := p.CheckHealth(t.Context()); err != nil {
+				t.Errorf("CheckHealth: %v", err)
+			}
+			// Stored sessions carry the stripped form, so it must not change.
+			if p.Issuer() != srv.URL {
+				t.Errorf("Issuer() = %q, want %q", p.Issuer(), srv.URL)
+			}
+		})
+	}
+}
+
+// Tolerating the slash must not loosen the issuer check in any other way.
+func TestTheTrailingSlashToleranceAcceptsNoOtherIssuer(t *testing.T) {
+	for name, publish := range map[string]func(string) string{
+		"another host":    func(string) string { return "http://other.example" },
+		"a longer path":   func(base string) string { return base + "/x/" },
+		"a doubled slash": func(base string) string { return base + "//" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			i := newIDP()
+			i.publish = publish
+			srv := httptest.NewServer(i.handler(t))
+			defer srv.Close()
+			p, _ := New(Config{Issuer: srv.URL, ClientID: "app", ClientSecret: "s", BaseURL: "https://a.test"})
+			if _, err := p.AuthorizeURL(t.Context(), "s", "n", "v"); !errors.Is(err, ErrDiscoveryFailed) {
+				t.Errorf("err = %v, want ErrDiscoveryFailed", err)
+			}
+		})
+	}
+
+	// An ID token must name the issuer exactly as published.
+	i := newIDP()
+	i.publish = func(base string) string { return base + "/" }
+	srv := httptest.NewServer(i.handler(t))
+	defer srv.Close()
+	p, _ := New(Config{Issuer: srv.URL, ClientID: "app", ClientSecret: "s", BaseURL: "https://a.test"})
+	i.claims = goodClaims(srv.URL, "app", "n0nce")
+	if _, err := p.Exchange(t.Context(), "code", "n0nce", "verifier"); !errors.Is(err, ErrTokenInvalid) {
+		t.Errorf("err = %v, want ErrTokenInvalid for an iss the provider did not publish", err)
+	}
+}
+
+// An address the provider marks unverified is one the user typed, so no
+// consumer may be handed it as if it were vouched for.
+func TestAnEmailTheProviderMarksUnverifiedIsDropped(t *testing.T) {
+	for name, tc := range map[string]struct {
+		verified any // nil: claim absent
+		want     string
+	}{
+		"verified":                {true, "alex@example.com"},
+		"claim absent":            {nil, "alex@example.com"},
+		"unverified":              {false, ""},
+		"unverified, as a string": {"false", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			i := newIDP()
+			p := newTestProvider(t, i)
+			i.claims = goodClaims(i.url, "app", "n0nce")
+			if tc.verified != nil {
+				i.claims["email_verified"] = tc.verified
+			}
+			id, err := p.Exchange(t.Context(), "code", "n0nce", "verifier")
+			if err != nil {
+				t.Fatalf("Exchange: %v", err)
+			}
+			if id.Email != tc.want {
+				t.Errorf("Email = %q, want %q", id.Email, tc.want)
+			}
+		})
 	}
 }
 

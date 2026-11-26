@@ -62,7 +62,8 @@ const DefaultHTTPTimeout = 15 * time.Second
 // credentials.
 type Config struct {
 	// Issuer is the provider's base URL, the value its discovery document
-	// publishes as `issuer` (e.g. "https://id.example.com").
+	// publishes as `issuer` (e.g. "https://id.example.com"). A trailing slash
+	// may be given or left off; the provider's published form is accepted either way.
 	Issuer string
 	// ClientID and ClientSecret are the credentials registered with the provider.
 	ClientID     string
@@ -82,9 +83,8 @@ type Config struct {
 	// OwnerGroup gates administrative access: an identity is [Identity.Owner]
 	// when it is a member of this group (compared case-insensitively).
 	//
-	// Blank means **every authenticated user is an owner**. That is the right
-	// default for a single-admin deployment and the wrong one for anything else,
-	// so set it whenever more than one person can sign in at the provider.
+	// Blank means **nobody is an owner**, so a forgotten setting cannot hand
+	// every account at a shared provider administrative access.
 	OwnerGroup string
 
 	// Scopes overrides [DefaultScopes].
@@ -114,7 +114,8 @@ type Config struct {
 
 // Normalize trims every value and strips the trailing slash from the two URLs,
 // so a pasted "https://id.example.com/" and "https://id.example.com" resolve to
-// the same provider and produce the same redirect URI. It also fills the
+// the same provider and produce the same redirect URI. Discovery still accepts
+// an issuer the provider publishes with the slash. It also fills the
 // defaults, so a normalized Config reads back exactly what [New] will use.
 func (c *Config) Normalize() {
 	c.Issuer = strings.TrimRight(strings.TrimSpace(c.Issuer), "/")

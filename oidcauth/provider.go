@@ -85,11 +85,25 @@ func (p *Provider) discover(ctx context.Context) (*gooidc.Provider, error) {
 	if p.provider != nil {
 		return p.provider, nil
 	}
+	prov, err := p.fetchDiscovery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.provider = prov
+	return prov, nil
+}
+
+// fetchDiscovery fetches the discovery document, also accepting the issuer when
+// it is published with a trailing slash (Authentik, Auth0). Normalize strips it,
+// and go-oidc otherwise demands an exact match.
+func (p *Provider) fetchDiscovery(ctx context.Context) (*gooidc.Provider, error) {
 	prov, err := gooidc.NewProvider(p.clientCtx(ctx), p.cfg.Issuer)
+	if mm, ok := errors.AsType[*gooidc.IssuerMismatchError](err); ok && mm.Discovered == p.cfg.Issuer+"/" {
+		prov, err = gooidc.NewProvider(p.clientCtx(ctx), mm.Discovered)
+	}
 	if err != nil {
 		return nil, discoveryErr(err)
 	}
-	p.provider = prov
 	return prov, nil
 }
 
@@ -202,6 +216,11 @@ func (p *Provider) identityFrom(idToken *gooidc.IDToken) (Identity, error) {
 	if id.Subject == "" {
 		return Identity{}, fmt.Errorf("%w: id_token carries no subject", ErrTokenInvalid)
 	}
+	// An address the provider says is unverified is only what the user typed.
+	// Some providers send the claim as a string.
+	if v, ok := claims["email_verified"]; ok && (v == false || v == "false") {
+		id.Email = ""
+	}
 	if id.Name == "" {
 		// A display name is optional in OIDC; falling back to the subject keeps
 		// every consumer free of "" handling.
@@ -211,15 +230,15 @@ func (p *Provider) identityFrom(idToken *gooidc.IDToken) (Identity, error) {
 	return id, nil
 }
 
-// IsOwner reports whether a group list confers ownership: any identity when no
-// owner group is configured, else membership in that group (case-insensitive).
+// IsOwner reports whether a group list confers ownership: membership in the
+// configured owner group (case-insensitive). With no owner group, nobody is.
 //
 // Exported because an application that re-derives authorization later — after a
 // group list changed at the provider — must use the same rule this package
 // applied at login, not a second copy of it.
 func (p *Provider) IsOwner(groups []string) bool {
 	if p.cfg.OwnerGroup == "" {
-		return true
+		return false
 	}
 	for _, g := range groups {
 		if strings.EqualFold(strings.TrimSpace(g), p.cfg.OwnerGroup) {
@@ -309,9 +328,9 @@ func (p *Provider) EndSessionURL(ctx context.Context) (string, error) {
 // waves a mistyped secret through and the gate then closes on a login that can
 // never complete.
 func (p *Provider) CheckHealth(ctx context.Context) error {
-	prov, err := gooidc.NewProvider(p.clientCtx(ctx), p.cfg.Issuer)
+	prov, err := p.fetchDiscovery(ctx)
 	if err != nil {
-		return discoveryErr(err)
+		return err
 	}
 	return p.verifyClientCredentials(ctx, prov)
 }
