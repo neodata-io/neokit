@@ -3,11 +3,14 @@ package httpc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/neodata-io/neokit/errs"
 )
 
 var pngBytes = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
@@ -194,6 +197,24 @@ func TestImage_RefusesAContentTypeThatIsNotAnImage(t *testing.T) {
 		if err == nil {
 			t.Errorf("Content-Type %q: got a blob typed %q, want an error", ct, blob.ContentType)
 		}
+	}
+}
+
+// "There is no image here" is a not-found: a caller proxying art must be able
+// to answer 404, and a login page served with 200 is the usual cause.
+func TestImage_AResponseThatIsNotAnImageIsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<!doctype html><title>Sign in</title>"))
+	}))
+	defer srv.Close()
+
+	_, err := artClient(srv.Client(), nil).Image(t.Context(), srv.URL, 0)
+	if !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("err = %v, want one that is errs.ErrNotFound", err)
+	}
+	if got := Classify(err); got != FaultNotFound {
+		t.Errorf("Classify = %v, want FaultNotFound", got)
 	}
 }
 

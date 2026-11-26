@@ -6,6 +6,8 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+
+	"github.com/neodata-io/neokit/errs"
 )
 
 // ImageBlob carries raw image bytes and their content type — for an image
@@ -19,7 +21,8 @@ type ImageBlob struct {
 // Image fetches url and returns it as an [ImageBlob], applying the client's
 // auth + 401 retry and bounding the read ([MaxResponseBytes] when maxBytes
 // <= 0). A missing Content-Type defaults to image/jpeg; one that is present
-// must be an image/* type, or the fetch fails.
+// must be an image/* type, or the fetch fails with an error that is
+// [errs.ErrNotFound].
 //
 // That check stops text/html reaching a browser from your origin. It does not
 // make image/svg+xml safe to navigate to: serve blobs with a sandboxing CSP.
@@ -39,7 +42,9 @@ func (c *BaseClient) Image(ctx context.Context, url string, maxBytes int64) (*Im
 	}
 	mediaType, _, err := mime.ParseMediaType(ct)
 	if err != nil || !strings.HasPrefix(mediaType, "image/") {
-		return nil, fmt.Errorf("%s: response is not an image (Content-Type %q)", c.Service, ct)
+		// A not-found, so a caller proxying art can answer 404: a login page
+		// served with 200 is the usual cause.
+		return nil, fmt.Errorf("%s: response is not an image (Content-Type %q): %w", c.Service, ct, errs.ErrNotFound)
 	}
 	return &ImageBlob{Data: data, ContentType: ct}, nil
 }
