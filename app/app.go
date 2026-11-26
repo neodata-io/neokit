@@ -342,8 +342,8 @@ func isAddrOrRange(s string) bool {
 	return net.ParseIP(s) != nil
 }
 
-// bearerGuard requires `Authorization: Bearer <token>`, or passes everything
-// through when token is empty.
+// bearerGuard requires `Authorization: Bearer <token>`. With no token it serves
+// only a direct peer: a request a trusted proxy forwarded came from outside.
 //
 // The comparison is constant-time. A token check that returns as soon as it
 // finds a wrong byte leaks the correct prefix through its own timing, and
@@ -351,7 +351,12 @@ func isAddrOrRange(s string) bool {
 // technique rather than a theoretical one.
 func bearerGuard(token string) fiber.Handler {
 	if token == "" {
-		return func(c fiber.Ctx) error { return c.Next() }
+		return func(c fiber.Ctx) error {
+			if c.IsProxyTrusted() {
+				return fiber.NewError(fiber.StatusForbidden, "set METRICS_TOKEN to scrape through a proxy")
+			}
+			return c.Next()
+		}
 	}
 	want := []byte("Bearer " + token)
 	return func(c fiber.Ctx) error {
@@ -365,6 +370,33 @@ func bearerGuard(token string) fiber.Handler {
 		}
 		return c.Next()
 	}
+}
+
+// requestID is Fiber's requestid, keeping a caller's X-Request-Id only when it
+// is short and plain; anything else is replaced, so it cannot pad every log line.
+func requestID() fiber.Handler {
+	next := requestid.New()
+	return func(c fiber.Ctx) error {
+		if id := c.Get(fiber.HeaderXRequestID); id != "" && !plainID(id) {
+			c.Request().Header.Del(fiber.HeaderXRequestID)
+		}
+		return next(c)
+	}
+}
+
+// plainID reports whether id is at most 64 letters, digits, '-', '_' or '.'.
+func plainID(id string) bool {
+	if len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // newFiber builds the HTTP server and the standard middleware chain.
@@ -419,7 +451,7 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 			a.Log.LogAttrs(c.Context(), slog.LevelError, "panic recovered",
 				slog.Any("panic", e),
 				slog.String("method", c.Method()),
-				slog.String("path", c.Path()),
+				slog.String("path", c.Route().Path), // the template: a raw path can carry a token
 				slog.String("stack", string(debug.Stack())),
 			)
 		},
@@ -443,7 +475,7 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 		f.Get(MetricsPath, bearerGuard(o.Base.MetricsToken), adaptor.HTTPHandler(scrape))
 	}
 
-	f.Use(requestid.New())
+	f.Use(requestID())
 	// After requestid so both ids exist, before the logger so its summary line
 	// carries the trace id.
 	f.Use(tracing.Middleware())
@@ -460,7 +492,7 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 			return strings.Contains(c.Get("Accept"), "text/event-stream")
 		},
 	}))
-	f.Use(cors.New(cors.Config{
+	corsCfg := cors.Config{
 		AllowOrigins: a.Cfg.CorsOrigins,
 		// Authorization for a bearer token, the two conditionals for the ETag
 		// helpers in fiberx: a header missing here is one a frontend on another
@@ -472,7 +504,12 @@ func (a *App) newFiber(o Options, scrape http.Handler) *fiber.App {
 		// client sees the body of a 201, a 412 or a 429 and none of the header that
 		// tells it what to do next.
 		ExposeHeaders: []string{"ETag", "Location", "Retry-After", "X-Request-Id"},
-	}))
+	}
+	if len(corsCfg.AllowOrigins) == 0 {
+		// Fiber reads an empty list as "every origin"; none configured means none.
+		corsCfg.AllowOriginsFunc = func(string) bool { return false }
+	}
+	f.Use(cors.New(corsCfg))
 	// After CORS, so the refusal carries the CORS headers a trusted frontend needs
 	// in order to read it — and so a preflight is answered by the middleware whose
 	// job that is.

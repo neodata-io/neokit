@@ -105,11 +105,11 @@ is OpenTelemetry-native and leaves by both exits at once:
 Nothing is declared or recorded twice — the two are readers on one MeterProvider,
 so a metric you add anywhere shows up on both without being touched again.
 
-**The endpoint is unauthenticated by default**, which is what Grafana and Traefik
-do and is fine on a private network. Set `METRICS_TOKEN` and it requires
-`Authorization: Bearer …` — the same header Prometheus sends from `authorization:`
-in a scrape config. Nothing announces which of the two you are running, so treat
-the empty default as a decision rather than a leftover.
+**Without `METRICS_TOKEN` the endpoint answers only direct scrapes**, which is
+fine on a private network; a request forwarded by a proxy in `TRUSTED_PROXIES`
+gets 403. Set `METRICS_TOKEN` and it requires `Authorization: Bearer …` — the
+same header Prometheus sends from `authorization:` in a scrape config —
+wherever the scrape comes from.
 
 `/healthz` is mounted for you and answers 200 unconditionally — a liveness probe
 that consulted a dependency would have Kubernetes restart a healthy process
