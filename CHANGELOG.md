@@ -5,6 +5,53 @@ Changes a service built on neokit could notice. Releases are minor tags only
 
 ## Unreleased
 
+### Changed
+
+- **`oidcauth`: a blank `OwnerGroup` now makes nobody an owner.** It used to
+  make every signed-in user one. Set the group whose members should be owners;
+  `fiberauth.New` warns at boot when a login has none.
+- **`oidcauth`: an email the provider marks `email_verified: false` is
+  dropped** — `Identity.Email` is empty for it.
+- **`httpc.RedactURL` and `httpc.Redact` keep only `scheme://host[:port]`.**
+  The path is dropped too, because bot tokens and webhook secrets ride in it;
+  `BaseClient` errors and `DebugRing` entries no longer show the path.
+- **`httpc` traced clients record `url.full` as `scheme://host` only.** Do not
+  set `HTTPOptions.Tracing` on a client that fetches caller-supplied URLs: the
+  host is a span name and a metric label.
+- **The SSRF guard refuses more ranges.** Both policies refuse IPv4-compatible
+  (`::/96`) and SIIT (`::ffff:0:0:0/96`) addresses; `IsPrivateAddr` also
+  refuses `fec0::/10`, Teredo `2001::/32`, `198.18.0.0/15` and `192.0.0.0/24`.
+- `safe.Pool`: the doc now says that `Limit` bounds running tasks only; the
+  queue of waiting tasks is unbounded.
+
+### Added
+
+- `webpush.Keys` implements `String`, `GoString` and `slog.LogValuer`, printing
+  the private key as `[REDACTED]`. JSON encoding is unchanged.
+
+### Fixed
+
+- `oidcauth`: an issuer published with a trailing slash (Authentik, Auth0) can
+  sign in. Discovery accepts the configured issuer with or without it.
+- `fiberauth`: a renewed session re-sends its cookie with the new expiry, so an
+  active user is no longer signed out at the original TTL when `TTL` is shorter
+  than `MaxLifetime`.
+- `fiberauth`: the stored User-Agent no longer aliases Fiber's request buffer,
+  which let a store that keeps the session see a later request's value.
+- `session.Policy.Live`: a session with no `ExpiresAt` is not live.
+- **`backup`: a backup file dated in the future no longer gets each day's
+  backup deleted as it is written.** Pruning ranks only backups dated up to
+  today.
+- **`backup`: two services writing to one directory no longer delete or
+  publish each other's unfinished snapshot.** Snapshots go to a random temp
+  name, and a leftover temp is removed only once it is over an hour old.
+- `cache`: a background refresh is drained by `app.Run` at shutdown instead of
+  running on against closed resources, and its panic log no longer includes
+  the cache key.
+- `capset`: `All` and `ByName` return copies, so a caller that writes to the
+  result no longer changes it for every other caller. The package no longer
+  uses reflection.
+
 ## v0.20.0 — 2026-11-25
 
 ### Fixed
