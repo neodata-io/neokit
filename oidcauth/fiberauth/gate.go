@@ -258,6 +258,9 @@ func New(a *app.App, o Options) *Gate {
 	if g.sessions == nil && g.Enabled() {
 		g.logger().Error("login is configured but Options.Sessions is nil; sign-in will fail")
 	}
+	if p := g.Provider(); p != nil && p.Config().OwnerGroup == "" {
+		g.logger().Warn("login is configured without an owner group; no one is an owner")
+	}
 
 	if g.required && !g.Enabled() {
 		g.logger().Error("login is required but not configured; guarded routes answer 503")

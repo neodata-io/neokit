@@ -292,7 +292,8 @@ func parseStateCookie(raw string) (hs oidcauth.Handshake, next string, ok bool) 
 // additional log entries — and the result is length-bounded so it cannot flood
 // the log.
 func boundedDescription(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
+	// Cloned: a one-word input comes back as a slice of Fiber's pooled buffer.
+	s = strings.Clone(strings.Join(strings.Fields(s), " "))
 	if len(s) > 200 {
 		s = s[:200]
 	}

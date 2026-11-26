@@ -35,6 +35,10 @@ type idp struct {
 	// discovery succeeded, but the token request never landed.
 	tokenEndpoint string
 
+	// publish, when set, turns the server's own URL into the issuer it
+	// advertises, so a test can publish "base/" or another host.
+	publish func(base string) string
+
 	key    *rsa.PrivateKey
 	url    string
 	claims jwt.MapClaims // mutated per test before calling Exchange
@@ -63,9 +67,13 @@ func (i *idp) handler(t *testing.T) http.Handler {
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		base := "http://" + r.Host
 		i.url = base
+		issuer := base
+		if i.publish != nil {
+			issuer = i.publish(base)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		doc := map[string]any{
-			"issuer":                                base,
+			"issuer":                                issuer,
 			"authorization_endpoint":                base + "/authorize",
 			"token_endpoint":                        base + "/token",
 			"jwks_uri":                              base + "/jwks",
