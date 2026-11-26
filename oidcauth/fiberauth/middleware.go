@@ -76,9 +76,13 @@ func (g *Gate) resolveSession(c fiber.Ctx, provider *oidcauth.Provider) *oidcaut
 		// ExpiryFor clamps the sliding renewal to the absolute cap, which is what
 		// lets a sweeper collect the row on schedule instead of it sitting
 		// unreachable — rejected at read time but never expired — forever.
-		if err := g.sessions.TouchSession(ctx, sess.ID, now, g.policy.ExpiryFor(sess.CreatedAt, now)); err != nil {
+		expires := g.policy.ExpiryFor(sess.CreatedAt, now)
+		if err := g.sessions.TouchSession(ctx, sess.ID, now, expires); err != nil {
 			// Freshness is not worth failing a request the user is entitled to.
 			g.logger().WarnContext(ctx, "session touch failed", logx.Err(err))
+		} else {
+			// The browser keeps the cookie only until its own Expires, so it moves too.
+			g.setSessionCookie(c, token, expires, provider.CookieSecure())
 		}
 	}
 
