@@ -14,10 +14,12 @@ package backup
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -50,6 +52,10 @@ const (
 	// tempSuffix marks a snapshot still being written. It ends the name, so an
 	// unfinished file never matches isBackupName.
 	tempSuffix = ".tmp"
+
+	// staleTemp is when an unfinished snapshot is surely abandoned: no run lasts
+	// longer than scheduleTimeout, so a younger one may belong to a live run.
+	staleTemp = scheduleTimeout
 )
 
 // Clock is a local wall-clock time of day, read in the deployment's own
@@ -105,7 +111,8 @@ type Service struct {
 	at        Clock
 	now       func() time.Time
 
-	// mu keeps one WriteDaily from clearing away another's unfinished snapshot.
+	// mu serialises WriteDaily within one Service; random temp names keep
+	// separate Services on one Dir apart.
 	mu sync.Mutex
 }
 
@@ -208,25 +215,27 @@ func (s *Service) WriteDaily(ctx context.Context) error {
 	}
 	s.removeTemps()
 
-	path := filepath.Join(s.dir, s.prefix+s.now().Format(dateLayout)+fileSuffix)
+	now := s.now()
+	path := filepath.Join(s.dir, s.prefix+now.Format(dateLayout)+fileSuffix)
 	// An empty file is not a backup: releases that snapshotted straight to this
 	// name left one behind when the snapshot was cancelled.
 	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
-		s.prune()
+		s.prune(now)
 		return nil // already written today
 	}
 
 	if err := s.write(ctx, path); err != nil {
 		return err
 	}
-	s.prune()
+	s.prune(now)
 	return nil
 }
 
 // write snapshots to a temporary name and renames it into place, so the dated
-// name only ever holds a complete backup.
+// name only ever holds a complete backup. The temp name is random so a second
+// Service on the same Dir never writes into or publishes this one's file.
 func (s *Service) write(ctx context.Context, path string) error {
-	tmp := path + tempSuffix
+	tmp := path + "." + rand.Text() + tempSuffix
 	if err := s.snap.SnapshotTo(ctx, tmp); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("backup: snapshot: %w", err)
@@ -265,19 +274,35 @@ func seal(path string) error {
 	return f.Close()
 }
 
-// removeTemps clears snapshots a killed run left unfinished. Only names this
-// service would itself have written are touched.
+// removeTemps clears snapshots a killed run left unfinished: only names this
+// service would itself have written, and only once older than any run can be.
 func (s *Service) removeTemps() {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		name, ok := strings.CutSuffix(e.Name(), tempSuffix)
-		if ok && !e.IsDir() && s.isBackupName(name) {
+		if e.IsDir() || !s.isTempName(e.Name()) {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && s.now().Sub(fi.ModTime()) > staleTemp {
 			_ = os.Remove(filepath.Join(s.dir, e.Name()))
 		}
 	}
+}
+
+// isTempName reports whether name is a snapshot write left: a backup name plus
+// a random part and tempSuffix, or plus tempSuffix alone as older releases wrote.
+func (s *Service) isTempName(name string) bool {
+	name, ok := strings.CutSuffix(name, tempSuffix)
+	if !ok {
+		return false
+	}
+	if s.isBackupName(name) {
+		return true
+	}
+	i := strings.LastIndexByte(name, '.')
+	return i > 0 && s.isBackupName(name[:i])
 }
 
 // Info describes one stored backup.
@@ -318,12 +343,17 @@ func (s *Service) List(context.Context) ([]Info, error) {
 	return out, nil
 }
 
-// prune deletes all but the newest retention backups. Best-effort: a file that
-// cannot be removed is left alone rather than failing the backup that just
-// succeeded.
-func (s *Service) prune() {
+// prune deletes all but the newest retention backups dated up to now, so a
+// future-dated file can never outrank, and cost, the one just written.
+// Best-effort: a file that cannot be removed is left alone.
+func (s *Service) prune(now time.Time) {
 	list, err := s.List(context.Background())
-	if err != nil || len(list) <= s.retention {
+	if err != nil {
+		return
+	}
+	latest := s.prefix + now.Format(dateLayout) + fileSuffix
+	list = slices.DeleteFunc(list, func(i Info) bool { return i.Name > latest })
+	if len(list) <= s.retention {
 		return
 	}
 	for _, info := range list[s.retention:] {

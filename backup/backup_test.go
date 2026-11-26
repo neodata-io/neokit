@@ -356,21 +356,29 @@ type snapFunc func(context.Context, string) error
 
 func (f snapFunc) SnapshotTo(ctx context.Context, dst string) error { return f(ctx, dst) }
 
-// A process killed mid-snapshot cannot clean up after itself; the next run does.
+// A process killed mid-snapshot cannot clean up after itself; the next run does,
+// once the file is older than any run can last.
 func TestALeftoverTempFromACrashIsRemoved(t *testing.T) {
 	dir := t.TempDir()
-	leftover := filepath.Join(dir, "backup-2020-01-01.db.tmp")
+	leftovers := []string{"backup-2020-01-01.db.tmp", "backup-2020-01-01.db.ABC123.tmp"}
 	foreign := []string{"notes.tmp", "backup-pre-upgrade.db.tmp"}
-	for _, name := range append(foreign, filepath.Base(leftover)) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+	old := time.Now().Add(-2 * time.Hour)
+	for _, name := range append(foreign, leftovers...) {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := backup.New(&fakeSnap{}, backup.Options{Dir: dir}).WriteDaily(t.Context()); err != nil {
 		t.Fatalf("WriteDaily: %v", err)
 	}
-	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
-		t.Errorf("the crashed run's temp file is still there (stat err = %v)", err)
+	for _, name := range leftovers {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("the crashed run's temp file %q is still there (stat err = %v)", name, err)
+		}
 	}
 	for _, name := range foreign {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
@@ -477,4 +485,68 @@ func mode(t *testing.T, path string) os.FileMode {
 		t.Fatalf("stat: %v", err)
 	}
 	return fi.Mode().Perm()
+}
+
+// A future-dated name (a clock that once ran ahead, a copy from another host)
+// sorts newest, so ranking by name used to delete each day's backup on write.
+func TestAFutureDatedFileDoesNotCostTodaysBackup(t *testing.T) {
+	dir := t.TempDir()
+	future := filepath.Join(dir, "backup-2099-01-01.db")
+	if err := os.WriteFile(future, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := backup.New(&fakeSnap{}, backup.Options{Dir: dir, Retention: 1})
+	if err := s.WriteDaily(t.Context()); err != nil {
+		t.Fatalf("WriteDaily: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, today(backup.DefaultPrefix))); err != nil {
+		t.Errorf("today's backup was pruned as it was written: %v", err)
+	}
+}
+
+// Two services on one directory (two processes, or a restart overlapping a run)
+// must not delete or publish each other's half-written snapshot.
+func TestTwoServicesOnOneDirectoryDoNotClobberEachOther(t *testing.T) {
+	dir := t.TempDir()
+	started, release := make(chan struct{}), make(chan struct{})
+	var aTemp string
+	a := backup.New(snapFunc(func(_ context.Context, dst string) error {
+		aTemp = dst
+		if err := os.WriteFile(dst, []byte("half"), 0o600); err != nil {
+			return err
+		}
+		close(started)
+		<-release
+		return os.WriteFile(dst, []byte("snapshot-a"), 0o600)
+	}), backup.Options{Dir: dir})
+
+	done := make(chan error, 1)
+	go func() { done <- a.WriteDaily(t.Context()) }()
+	<-started
+
+	// B runs to completion while A is mid-snapshot.
+	b := backup.New(snapFunc(func(_ context.Context, dst string) error {
+		if dst == aTemp {
+			t.Errorf("B snapshotted to A's temp name %q", dst)
+		}
+		return os.WriteFile(dst, []byte("snapshot-b"), 0o600)
+	}), backup.Options{Dir: dir})
+	if err := b.WriteDaily(t.Context()); err != nil {
+		t.Fatalf("B WriteDaily: %v", err)
+	}
+	if _, err := os.Stat(aTemp); err != nil {
+		t.Errorf("B removed A's snapshot in progress: %v", err)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("A WriteDaily: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, today(backup.DefaultPrefix)))
+	if err != nil || !strings.HasPrefix(string(got), "snapshot-") {
+		t.Errorf("today's backup = %q, %v; want a complete snapshot", got, err)
+	}
+	if left := names(t, dir); len(left) != 1 {
+		t.Errorf("directory holds %v, want only today's backup", left)
+	}
 }
