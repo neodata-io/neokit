@@ -5,6 +5,8 @@ Changes a service built on neokit could notice. Releases are minor tags only
 
 ## Unreleased
 
+## v0.21.0 — 2026-11-26
+
 ### Security
 
 - **`app`: with no `CORS_ORIGINS`, no other origin may read the API.** Fiber
