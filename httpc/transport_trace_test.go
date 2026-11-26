@@ -46,7 +46,7 @@ func TestTracedClientSpansCarryOnlyTheHostOfTheURL(t *testing.T) {
 	}
 	var sawURL bool
 	for _, kv := range client.Attributes() {
-		v := kv.Value.Emit()
+		v := kv.Value.String()
 		if strings.Contains(v, "SECRET") {
 			t.Errorf("span attribute %s carries a secret: %q", kv.Key, v)
 		}
